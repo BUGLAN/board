@@ -1,6 +1,7 @@
 /* 拖拽松手时幽灵的落点（settledRect）：状态块刚解冻、正从冻结时的位置补间到新位置（default/main#419） */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { settledRect, snapZones, zoneAt, type Zone } from './drag';
+import { snapZones, zoneAt, type Zone } from './drag';
+import { settledRect } from './landing';
 
 const rect = (left: number, top: number, width = 40, height = 24) => new DOMRect(left, top, width, height);
 

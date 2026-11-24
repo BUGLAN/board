@@ -1,8 +1,11 @@
 /* ==========================================================================
-   FLIP：卡片位置变化（排序、换状态、别处的修改）用弹簧补间；被删除的卡片在原位淡出
+   FLIP：卡片位置变化（排序、让位、别处的修改）用弹簧补间；被删除的卡片在原位淡出。
+   换了状态块的卡片（别的窗口拖过去、撤回补丁回到原处）不做平移补间，播和本窗口拖动松手同一段落位动画：
+   原位置抬起一个幽灵飞过去、按目标形态变形、落下轻弹（lib/landing，default/main#653）
    用法：数据变更前 capture()，渲染完成后（useLayoutEffect）play()
    需要动画的元素带 data-flip="唯一标识"，父元素带 data-list="状态"
    ========================================================================== */
+import { flyIn } from './landing';
 import { reduceMotion } from './util';
 
 interface Snap {
@@ -12,6 +15,8 @@ interface Snap {
 }
 
 const SPRING = 'cubic-bezier(.22, 1.18, .36, 1)';
+/** 一次最多几张换状态块的卡片播落位动画（每张一个幽灵）：批量移动几十张时，多出来的照旧平移补间 */
+export const MAX_FLIGHTS = 6;
 let first: Map<string, Snap> | null = null;
 /** 记录的时间：记下后一直没有重画（例如撤掉的补丁没改变画面），过一会儿就作废，不拿旧位置去补间之后无关的变化 */
 let firstAt = 0;
@@ -54,6 +59,7 @@ export function play() {
 
   // 第一遍：只读
   const moves: { el: HTMLElement; keyframes: Keyframe[]; options: KeyframeAnimationOptions }[] = [];
+  const flights: { old: HTMLElement; from: DOMRect; el: HTMLElement; now: DOMRect }[] = [];
   const exits: Snap[] = [];
   for (const [id, snap] of f) {
     const el = now.get(id);
@@ -73,6 +79,10 @@ export function play() {
     const dy = snap.rect.top - r.top;
     if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
     const cross = snap.col !== el.parentElement?.dataset.list;
+    if (cross && flights.length < MAX_FLIGHTS) {
+      flights.push({ old: snap.el, from: snap.rect, el, now: r });
+      continue;
+    }
     moves.push({
       el,
       keyframes: cross
@@ -87,6 +97,7 @@ export function play() {
 
   // 第二遍：只写
   for (const m of moves) m.el.animate(m.keyframes, m.options);
+  for (const x of flights) flyIn(x.old, x.from, x.el, x.now);
   for (const s of exits) exitGhost(s.el, s.rect);
 }
 

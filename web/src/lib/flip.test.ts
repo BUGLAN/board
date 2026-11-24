@@ -19,9 +19,10 @@ function card(id: string, at: [number, number], parent: HTMLElement = list) {
   };
   const animate = vi.fn((..._a: unknown[]) => {
     log.push(`animate:${id}`);
-    return {} as Animation;
+    return { cancel: () => {} } as Animation;
   });
   el.animate = animate as unknown as typeof el.animate;
+  el.getAnimations = () => [];
   return { el, animate, move: (to: [number, number]) => (cur = to) };
 }
 
@@ -66,23 +67,89 @@ describe('FLIP play（default/main#629）', () => {
     expect(leaves.animate).toHaveBeenCalledTimes(1);
   });
 
-  it('位置没变的不补间；换了状态的带倾斜和层级；占位换位置时淡入', () => {
+  it('位置没变的不补间；占位换位置时淡入', () => {
     const still = card('still', [0, 0]);
-    const cross = card('cross', [0, 100]);
     const ph = card('ph', [0, 200]);
     ph.el.classList.add('is-placeholder');
     flip.capture();
-    const other = document.createElement('div');
-    other.dataset.list = 'done';
-    document.body.appendChild(other);
-    other.appendChild(cross.el);
-    cross.move([300, 100]);
     ph.move([0, 300]);
     flip.play();
     expect(still.animate).not.toHaveBeenCalled();
-    expect(cross.animate.mock.calls[0][1]).toMatchObject({ duration: 640 });
-    expect((cross.animate.mock.calls[0][0] as Keyframe[])[0].zIndex).toBe(5);
     expect((ph.animate.mock.calls[0][0] as Keyframe[])[0]).toMatchObject({ opacity: 0 });
+  });
+
+  describe('换了状态块的卡片：和本窗口拖动松手同一段落位动画（default/main#653）', () => {
+    // jsdom 没有 Element.animate：幽灵是克隆出来的新元素，记下每次动画是谁、什么关键帧
+    let anims: { el: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions; anim: { onfinish: null | (() => void); cancel: () => void } }[];
+    // jsdom 不排版，offsetWidth / offsetHeight 恒为 0：按行内宽度、高 40 算，和卡片一样大（不变形）
+    const real = {
+      w: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')!,
+      h: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')!,
+    };
+    beforeEach(() => {
+      anims = [];
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get(this: HTMLElement) { return parseFloat(this.style.width) || 0; } });
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 40 });
+      HTMLElement.prototype.animate = function (this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+        const anim = { onfinish: null as null | (() => void), cancel: vi.fn() };
+        anims.push({ el: this, keyframes, options, anim });
+        return anim as unknown as Animation;
+      } as unknown as typeof HTMLElement.prototype.animate;
+    });
+    afterEach(() => {
+      delete (HTMLElement.prototype as { animate?: unknown }).animate;
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', real.w);
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', real.h);
+    });
+
+    const moveTo = (c: ReturnType<typeof card>, col: string, at: [number, number]) => {
+      let other = document.querySelector<HTMLElement>(`[data-list="${col}"]`);
+      if (!other) {
+        other = document.createElement('div');
+        other.dataset.list = col;
+        document.body.appendChild(other);
+      }
+      // React 在新状态块里新建一个元素：旧元素拿走、新元素带同一个 data-flip
+      const old = c.el;
+      old.remove();
+      const fresh = card(c.el.dataset.flip!, at, other);
+      return { old, fresh };
+    };
+
+    it('原位置抬起一个幽灵飞到新位置；真卡片藏到幽灵落下；幽灵落下后移除、真卡片轻弹', () => {
+      const a = card('a', [0, 100]);
+      a.el.textContent = '原来的样子';
+      flip.capture();
+      const { fresh } = moveTo(a, 'done', [300, 120]);
+      fresh.el.textContent = '新位置';
+      flip.play();
+      const ghost = document.querySelector<HTMLElement>('.drag-ghost')!;
+      expect(ghost.textContent).toBe('原来的样子');
+      expect(ghost.dataset.flip).toBeUndefined();
+      // 平移补间不再用在它身上：真卡片只有一段「藏着」的透明度动画
+      expect(fresh.animate).toHaveBeenCalledTimes(1);
+      expect(fresh.animate.mock.calls[0][0]).toEqual([{ opacity: 0 }, { opacity: 0 }]);
+      // 先在原处抬起（放大、朝右倾斜），抬起结束再飞到新位置落下
+      const [up] = anims.filter(x => x.el === ghost);
+      expect(up.keyframes[1]).toMatchObject({ transform: 'translate(0px, 100px) rotate(4deg)', scale: '1.045' });
+      up.anim.onfinish!();
+      const flight = anims.filter(x => x.el === ghost)[1];
+      expect(flight.keyframes[0]).toMatchObject({ transform: 'translate(0px, 100px) rotate(4deg)', scale: '1.045' });
+      expect(flight.keyframes[1]).toMatchObject({ transform: 'translate(300px, 120px) rotate(0deg)', scale: '1' });
+      flight.anim.onfinish!();
+      expect(ghost.isConnected).toBe(false);
+      expect((fresh.animate.mock.calls[1][0] as Keyframe[])[0]).toEqual({ transform: 'scale(1.03)' });
+    });
+
+    it(`一次最多 ${flip.MAX_FLIGHTS} 张播落位动画，多出来的照旧平移补间`, () => {
+      const cs = Array.from({ length: flip.MAX_FLIGHTS + 2 }, (_, i) => card(`c${i}`, [0, i * 50]));
+      flip.capture();
+      const moved = cs.map((c, i) => moveTo(c, 'done', [300, i * 50]).fresh);
+      flip.play();
+      expect(document.querySelectorAll('.drag-ghost')).toHaveLength(flip.MAX_FLIGHTS);
+      const rest = moved.slice(flip.MAX_FLIGHTS);
+      for (const c of rest) expect((c.animate.mock.calls[0][0] as Keyframe[])[0].zIndex).toBe(5);
+    });
   });
 
   it('被删掉的卡片在原位淡出；删掉时在窗口外面的不管', () => {

@@ -7,6 +7,7 @@
 import { flushSync } from 'react-dom';
 import { openCard } from './actions';
 import * as flip from './flip';
+import { fly, landed, lift, makeGhost } from './landing';
 import { gridTracks } from './masonry';
 import { boardFlow, INBOX, type FlowQ } from './schema';
 import type { Card, ColumnKey } from './types';
@@ -253,21 +254,13 @@ function start() {
   const r = s.card.getBoundingClientRect();
   s.offX = s.x0 - r.left;
   s.offY = s.y0 - r.top;
-  const ghost = s.card.cloneNode(true) as HTMLElement;
-  ghost.classList.remove('flash', 'entering', 'is-open', 'pulse');
-  ghost.removeAttribute('data-flip');
-  ghost.querySelector('.card-badge')?.remove();
-  ghost.classList.add('drag-ghost');
-  ghost.style.width = `${r.width}px`;
-  ghost.style.animation = 'none';
-  ghost.style.transform = `translate(${r.left}px, ${r.top}px)`;
-  document.body.appendChild(ghost);
+  const ghost = makeGhost(s.card, r);
   s.ghost = ghost;
   document.body.classList.add('is-dragging');
   s.target = { col: s.fromCol, index: s.fromIndex };
   setDrag({ id: s.id, fromCol: s.fromCol, col: s.fromCol, index: s.fromIndex, over: s.fromCol, valid: true, veto: null });
   if (s.type !== 'mouse') navigator.vibrate?.(10);
-  ghost.animate([{ scale: '1' }, { scale: '1.045' }], { duration: 220, easing: 'cubic-bezier(.34,1.56,.64,1)', fill: 'forwards' });
+  lift(ghost);
   frame();
 }
 
@@ -517,49 +510,22 @@ function finish(cancelled: boolean) {
   const now = useUI.getState().drag;
   if (now && !now.dropping) flushSync(() => setDrag({ ...now, dropping: true }));
 
-  // 幽灵飞回占位处。占位是按目标块的卡片形态画的（卡片 / 单行 / 磁贴，列宽也可能不同）：
-  // 幽灵一路变成占位的尺寸、圆角、阴影；形态不同时幽灵里的内容先淡出，占位接着显出真卡片、幽灵淡出，两者交叉过渡，松手到落位连成一段，不跳变
+  // 幽灵飞回占位处（lib/landing，别的窗口收到这次移动时播的是同一段）。占位是按目标块的卡片形态画的（卡片 / 单行 / 磁贴，列宽也可能不同）：
+  // 幽灵一路变成占位的尺寸、圆角、阴影；形态不同时幽灵里的内容先淡出，占位接着显出真卡片（data-landing，见 board.css）、幽灵淡出，
+  // 两者交叉过渡，松手到落位连成一段，不跳变
   const ghost = s.ghost!;
   const ph = cardEl(s.id);
-  const dest = ph ? settledRect(ph) : undefined;
   const motion = !reduceMotion();
-  const w0 = ghost.offsetWidth;
-  const h0 = ghost.offsetHeight;
-  const shapeOf = (el: Element) => (el.classList.contains('v-tile') ? 'tile' : el.classList.contains('v-line') ? 'line' : 'card');
-  const reshape = !!ph && shapeOf(ph) !== shapeOf(ghost);
-  const morph = motion && !!ph && !!dest && (reshape || Math.abs(dest.width - w0) > 1 || Math.abs(dest.height - h0) > 1);
-  const duration = !motion ? 1 : morph ? 380 : commit ? 280 : 460;
-  const keyframes: Keyframe[] = [
-    { transform: ghost.style.transform, scale: '1.045' },
-    { transform: dest ? `translate(${dest.left}px, ${dest.top}px) rotate(0deg)` : ghost.style.transform, scale: '1' },
-  ];
-  if (morph && ph && dest) {
-    // 落位后的样子：目标块里别的卡片（没有就用占位）的圆角和阴影
-    const like = [...(ph.parentElement?.children ?? [])].find(n => n !== ph && n.classList.contains('card') && !n.classList.contains('is-placeholder')) ?? ph;
-    const cs = getComputedStyle(like);
-    Object.assign(keyframes[0], { width: `${w0}px`, height: `${h0}px`, borderRadius: getComputedStyle(ghost).borderRadius });
-    Object.assign(keyframes[1], { width: `${dest.width}px`, height: `${dest.height}px`, borderRadius: cs.borderRadius });
-    ghost.style.overflow = 'hidden';
-    // 幽灵的阴影写在样式表里且带 !important，动画盖不过：写成行内 !important，靠 transition 过渡
-    ghost.style.setProperty('transition', `box-shadow ${duration}ms cubic-bezier(.2,.9,.3,1)`);
-    requestAnimationFrame(() => ghost.style.setProperty('box-shadow', cs.boxShadow, 'important'));
-    if (reshape)
-      for (const n of ghost.children) (n as HTMLElement).animate([{ opacity: 1 }, { opacity: 0 }], { duration: duration * 0.3, easing: 'ease-out', fill: 'forwards' });
-  }
-  // 形态变了、要落进目标块（例如卡片拖进「已完成」的磁贴）：幽灵里的内容淡完，占位就显出真卡片（data-landing，见 board.css），
-  // 幽灵在后半程淡出，真卡片从它下面透出来。以前幽灵内容淡完后是一块空框，要等落位、再等真卡片淡入，中间像卡住了一下
-  const landing = commit && morph && reshape ? ph : null;
   let reveal = 0;
-  if (landing) {
-    reveal = window.setTimeout(() => landing.setAttribute('data-landing', ''), duration * 0.25);
-    ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: duration * 0.5, delay: duration * 0.25, easing: 'ease-out', fill: 'forwards' });
-  }
-  const anim = ghost.animate(keyframes, {
-    duration,
-    // 尺寸在变时不回弹（宽高回弹看起来像抖），只在原样飞回时带一点弹性
-    easing: morph ? 'cubic-bezier(.2,.9,.3,1)' : commit ? 'cubic-bezier(.2,1.2,.4,1)' : 'cubic-bezier(.34,1.3,.64,1)',
-    fill: 'forwards',
+  const flight = fly({
+    ghost,
+    to: ph,
+    from: { x: s.x - s.offX, y: s.y - s.offY, rot: s.rot },
+    commit,
+    reveal: ms => (reveal = window.setTimeout(() => ph?.setAttribute('data-landing', ''), ms)),
   });
+  const { anim } = flight;
+  const landing = flight.landing ? ph : null;
   const id = s.id;
   anim.onfinish = () => {
     // 先记下占位（幽灵刚落在这里）和其他卡片的位置：落位后卡片的最终位置可能不是落点
@@ -581,28 +547,13 @@ function finish(cancelled: boolean) {
     if (commit && !failed && motion) {
       requestAnimationFrame(() => {
         const el = cardEl(id);
-        if (!el) return;
-        // 形态变了：真卡片的内容接着幽灵淡出的内容淡入（落进目标块时飞行中已经显出来了，不再淡入）；
-        // 没变、也没有在移向最终位置：轻轻弹一下
-        if (reshape && !landing) for (const n of el.children) (n as HTMLElement).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
-        else if (!morph && !el.getAnimations().length) el.animate([{ transform: 'scale(1.03)' }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+        // 落位后的收尾（lib/landing landed）：形态变了时内容淡入，没变时轻轻弹一下
+        if (el) landed(el, flight);
       });
     }
   };
   justDroppedAt = performance.now();
   cleanup(true);
-}
-
-/** 元素在所在状态块补间结束后的位置。松手当帧状态块刚解冻、开始从冻结时的位置补间到新位置（.tile 的 transform 过渡），
-    getBoundingClientRect 量到的还是补间的起点：加上块的位移（行内写的目标 translate − 现在的 transform）才是幽灵该落的地方 */
-export function settledRect(el: HTMLElement): DOMRect {
-  const r = el.getBoundingClientRect();
-  const tile = el.closest<HTMLElement>('[data-tile]');
-  const to = tile && /translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\s*\)/.exec(tile.style.transform);
-  if (!tile || !to) return r;
-  const m = /matrix\(([^)]*)\)/.exec(getComputedStyle(tile).transform);
-  const [x, y] = m ? m[1].split(',').slice(4).map(parseFloat) : [0, 0];
-  return new DOMRect(r.left + (parseFloat(to[1]) - (x || 0)), r.top + (parseFloat(to[2]) - (y || 0)), r.width, r.height);
 }
 
 /** 状态块里看到的顺序（BoardView 设置）：同一会话的卡挨着放（lib/sessionGroups）时，和优先级顺序不一样 */
