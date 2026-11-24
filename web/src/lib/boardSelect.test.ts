@@ -10,7 +10,7 @@ const toast = vi.fn();
 vi.mock('../store/data', () => ({
   labelCards: (ids: number[], l: number, add: boolean) => labelCards(ids, l, add),
   batchCards: (ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => batchCards(ids, op, patch),
-  movePatch: (id: number, to: string) => ({ move: [id, to] }),
+  batchMovePatch: (_ids: number[], to: string) => (id: number) => ({ move: [id, to] }),
   useData: { getState: () => ({ detailId: null }) },
 }));
 vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e), toast: (t: unknown) => toast(t) }));

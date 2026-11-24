@@ -14,7 +14,7 @@ vi.mock('../store/data', async orig => {
   return {
     ...actual,
     batchCards: (ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => m.batch(ids, op, patch),
-    movePatch: (id: number, column: string) => ({ move: [id, column] }),
+    batchMovePatch: (_ids: number[], column: string) => (id: number) => ({ move: [id, column] }),
     useData: { getState: () => ({ board: m.board }) },
   };
 });

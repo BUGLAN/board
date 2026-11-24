@@ -15,7 +15,7 @@ import { justDropped, vetoFor } from './drag';
 import { dispatchRoute } from './hosts';
 import { boardFlow, INBOX, INBOX_NAME } from './schema';
 import type { BoardSnapshot, Card, ColumnKey, Dispatch, Status } from './types';
-import { batchCards, labelCards, movePatch, useData, type LabelBatchResult } from '../store/data';
+import { batchCards, batchMovePatch, labelCards, useData, type LabelBatchResult } from '../store/data';
 import { overlayOpen, toast, toastError } from '../store/ui';
 
 interface SelState {
@@ -206,7 +206,7 @@ export async function bulkMove(t: MoveTarget) {
   if (!t.ids.length) return 0;
   let result;
   try {
-    result = await batchCards(t.ids, { op: 'move', column: t.key }, id => movePatch(id, t.key));
+    result = await batchCards(t.ids, { op: 'move', column: t.key }, batchMovePatch(t.ids, t.key));
   } catch (e) {
     toastError(e);
     return 0;

@@ -15,7 +15,7 @@ import { buildVersion } from '../lib/build';
 import { staleServer } from '../lib/stale';
 import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
-import { earlierKey } from '../lib/earlier';
+import { earlierKey, FINAL_RECENT, recentIds } from '../lib/earlier';
 import { clearLocalPrompts, localPrompts, removePrompt, updatePrompt, type Prompt } from '../lib/prompts';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardCronInput, type CardDetail, type Cmd, type ColumnKey, type Dispatch, type Profile, type ProjectInfo, type Workspace } from '../lib/types';
 
@@ -414,13 +414,17 @@ function leavesQueue(id: number, to: ColumnKey) {
 
 /** 把卡片放到 to 的第 index 位（按去掉它之后的列表算；省略时放最后）。order：排序状态下拖动时整块的新顺序（与服务端规则一致：没列出的补在后面）。
     extra：一起改的其他字段（例如释放时清空持有者）。
-    换了状态时移入时间记成发起的时刻（「保留顺序」按移入时间排时，确认之前就排到新移入的位置）；时刻在建补丁时取定，重复执行结果不变。
-    派发排队的卡片被移走时，排队的派发当帧一起去掉（服务端随之取消） */
-export function movePatch(id: number, to: ColumnKey, index?: number, order?: number[], extra: Partial<Card> = {}): Patch {
-  const at = serverNow();
+    换了状态时移入时间、更新时间记成新的（「保留顺序」按移入时间、最近更新排时，确认之前就排到新移入的位置），见 freshAt。
+    拖进只带了最近几张的终点状态时，最旧的那张当帧落进「更早的」，见 trimFinal。
+    派发排队的卡片被移走时，排队的派发当帧一起去掉（服务端随之取消）。
+    batch：同一批一起移动的卡片和发起的时刻（批量移动用 batchMovePatch） */
+export function movePatch(id: number, to: ColumnKey, index?: number, order?: number[], extra: Partial<Card> = {}, batch?: { ids: number[]; at: number }): Patch {
+  const at = batch?.at ?? serverNow();
+  const skip = new Set(batch?.ids);
   const unqueue = leavesQueue(id, to);
   if (unqueue) extra = { claimedFrom: null, ...extra };
-  const moved = <T extends Card>(c: T): T => ({ ...c, ...extra, movedAt: c.column === to ? c.movedAt : at, column: to });
+  const moved = <T extends Card>(c: T, t = { moved: at, updated: at }): T =>
+    c.column === to ? { ...c, ...extra, column: to } : { ...c, ...extra, column: to, movedAt: t.moved, updatedAt: Math.max(c.updatedAt, t.updated) };
   return {
     ws: unqueue ? unqueuePatch(get().path, id).ws : undefined,
     board: b => {
@@ -431,11 +435,49 @@ export function movePatch(id: number, to: ColumnKey, index?: number, order?: num
       const list = cols[to] ?? [];
       list.splice(Math.min(index ?? list.length, list.length), 0, id);
       cols[to] = order ? [...new Set([...order.filter(x => list.includes(x)), ...list])] : list;
-      return { ...b, cols, cards: { ...b.cards, [id]: moved(c) } };
+      const next = { ...b, cols, cards: { ...b.cards, [id]: moved(c, freshAt(b, at, skip)) } };
+      return c.column === to ? next : trimFinal(next, to);
     },
     detail: d => (d.id === id ? moved(d) : d),
     cards: [id],
   };
+}
+
+/** 批量移动（batchCards 的 patchOf）：每张卡片一份 movePatch，同一批的移入时间一样（见 freshAt） */
+export function batchMovePatch(ids: number[], to: ColumnKey): (id: number) => Patch {
+  const batch = { ids, at: serverNow() };
+  return id => movePatch(id, to, undefined, undefined, {}, batch);
+}
+
+/** 换状态时补丁里的移入时间、更新时间：发起的时刻，但至少比快照里所有卡片都新（同一快照重复执行结果不变）。
+    服务端在处理请求的那一刻写这两个时间（engine 的 place、track），比快照里已有的都晚；补丁的发起时刻在慢网下可能更早：
+    serverNow 按收到响应时校的时钟，少算了一段路上的时间，写请求还要在队列里等前面的确认。
+    连着拖两张进按移入时间排的块，第二张的发起时刻比第一张确认后的移入时间还早：第一张确认时两张换位，第二张确认时又换回来，
+    看上去像又有卡片拖了进来。取「比快照里最新的还新」后，没确认的卡片排在哪，确认后就还在哪。
+    同一批一起移动的（skip）不算：服务端在一个事务里写，时间一样（一样时按优先级顺序排），补丁里也要一样 */
+function freshAt(b: BoardSnapshot, at: number, skip: Set<number>): { moved: number; updated: number } {
+  let moved = 0;
+  let updated = 0;
+  for (const c of Object.values(b.cards)) {
+    if (skip.has(c.id)) continue;
+    moved = Math.max(moved, c.movedAt || c.createdAt);
+    updated = Math.max(updated, c.updatedAt);
+  }
+  return { moved: Math.max(at, moved + 1), updated: Math.max(at, updated + 1) };
+}
+
+/** 终点状态的快照只带最近移入的 FINAL_RECENT 张（omitted 记着省略的张数）：拖进一张后服务端的快照里最旧的那张落进「更早的」。
+    补丁当帧照做（按同一个规则 recentIds 选留下的），不然慢网下要等确认（松手几秒后）它才在块的末尾淡出。
+    快照没有省略（取过全量）时由界面按同一个规则截断（lib/earlier 的 collapseCols），这里不动 */
+function trimFinal(b: BoardSnapshot, col: ColumnKey): BoardSnapshot {
+  const omitted = b.omitted?.[col] ?? 0;
+  const ids = b.cols[col] ?? [];
+  if (!omitted || ids.length <= FINAL_RECENT) return b;
+  const keep = recentIds(b.cards, ids);
+  const out = ids.filter(x => !keep.has(x));
+  const cards = { ...b.cards };
+  for (const x of out) delete cards[x];
+  return { ...b, cols: { ...b.cols, [col]: ids.filter(x => keep.has(x)) }, cards, omitted: { ...b.omitted, [col]: omitted + out.length } };
 }
 
 /** 取消排队的派发：卡片还在它排队的锁定状态里（当前白板上、没有持有者）时，当帧回到原来的可领取状态最上面（和服务端一致）；

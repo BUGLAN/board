@@ -88,6 +88,50 @@ describe('movePatch', () => {
     expect(same.cards[3].movedAt).toBe(100);
     now.mockRestore();
   });
+
+  it('换状态时移入、更新时间至少比快照里最新的还新：连着拖两张，前一张确认后后一张仍是最新的（慢网下确认时不换位）', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5_000);
+    const first = D.movePatch(1, 'review');
+    now.mockReturnValue(6_000);
+    const second = D.movePatch(2, 'review');
+    now.mockRestore();
+    const base = snapshot('p/a', { todo: [1, 2, 3], doing: [4], review: [] });
+    const both = second.board!(first.board!(base));
+    expect(both.cards[2].movedAt!).toBeGreaterThan(both.cards[1].movedAt!);
+    // 第一张确认了：服务端处理它的时刻（7000）比第二张的发起时刻（6000）还晚，第二张仍排在它后面
+    const confirmed = snapshot('p/a', { todo: [2, 3], doing: [4], review: [1] }, [{ id: 1, movedAt: 7_000, updatedAt: 7_000 }]);
+    const b = twice(second.board!, first.board!(confirmed));
+    expect(b.cards[1]).toMatchObject({ movedAt: 7_000, updatedAt: 7_000 });
+    expect(b.cards[2]).toMatchObject({ movedAt: 7_001, updatedAt: 7_001 });
+  });
+
+  it('批量移动：同一批的移入时间一样（服务端一个事务写的也一样，按优先级顺序排），仍比快照里已有的新', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5_000);
+    const of = D.batchMovePatch([1, 2, 3], 'review');
+    now.mockReturnValue(6_000);
+    const ps = [1, 2, 3].map(of);
+    now.mockRestore();
+    const base = snapshot('p/a', { todo: [1, 2, 3], doing: [4], review: [5] }, [{ id: 5, column: 'review', movedAt: 8_000 }]);
+    const b = twice(D.joinPatch(...ps).board!, base);
+    expect(b.cols.review).toEqual([5, 1, 2, 3]);
+    expect([1, 2, 3].map(id => b.cards[id].movedAt)).toEqual([8_001, 8_001, 8_001]);
+  });
+
+  it('拖进只带了最近几张的终点状态：最旧的那张当帧落进「更早的」；没有省略时不动', () => {
+    const done = Array.from({ length: 50 }, (_, i) => 100 + i);
+    const cards = done.map(id => ({ id, movedAt: id }));
+    const part = { ...snapshot('p/a', { todo: [1], done }, cards), omitted: { done: 7 } };
+    const b = twice(D.movePatch(1, 'done').board!, part);
+    expect(b.cols.done).toHaveLength(50);
+    expect(b.cols.done).toContain(1);
+    expect(b.cols.done).not.toContain(100);
+    expect(b.cards[100]).toBeUndefined();
+    expect(b.omitted).toEqual({ done: 8 });
+    eachOnce(b);
+    // 取过全量：快照没有省略，界面自己截断
+    const full = snapshot('p/a', { todo: [1], done }, cards);
+    expect(D.movePatch(1, 'done').board!(full).cols.done).toHaveLength(51);
+  });
 });
 
 /** 派发：只填用到的字段 */

@@ -7,7 +7,7 @@ import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import { projectDirError } from './projectDir';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { batchCards, boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, isDraft, jumpDetail, jumpToCard, movePatch, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type BatchResult, type Patch } from '../store/data';
+import { batchCards, batchMovePatch, boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, isDraft, jumpDetail, jumpToCard, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type BatchResult, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -93,7 +93,7 @@ export async function triageMany(ids: number[]): Promise<BatchResult> {
   const start = boardFlow(useData.getState().board).home;
   const to = start?.key ?? 'todo';
   try {
-    return await batchCards(ok, { op: 'move', column: to }, id => movePatch(id, to));
+    return await batchCards(ok, { op: 'move', column: to }, batchMovePatch(ok, to));
   } catch (e) {
     return { ok: [], failed: ok.map(id => ({ id, error: e })) };
   }
@@ -102,7 +102,7 @@ export async function triageMany(ids: number[]): Promise<BatchResult> {
 /** 撤销整理：放回「未整理」最下面（只有人能移入，界面上就是人） */
 export async function untriage(ids: number[]) {
   try {
-    const result = await batchCards(ids, { op: 'move', column: INBOX }, id => movePatch(id, INBOX));
+    const result = await batchCards(ids, { op: 'move', column: INBOX }, batchMovePatch(ids, INBOX));
     if (result.failed[0]) toastError(result.failed[0].error);
   } catch (e) {
     toastError(e);
