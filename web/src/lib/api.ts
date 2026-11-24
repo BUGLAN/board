@@ -256,7 +256,7 @@ export const api = {
     req<HostInfo>('PATCH', `/api/hosts/${q(name)}`, patch),
   /** 请那台机器的 board host 把仓库克隆到这块白板所在项目的目录（`<工作空间>/<项目>`） */
   cloneHostDir: (name: string, board: string, url: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/dirs/clone`, { board, url }),
-  removeHost: (name: string, revoke = false) => req('DELETE', `/api/hosts/${q(name)}${revoke ? '?revoke=1' : ''}`),
+  removeHost: (name: string, revoke = false) => req<{ ok: boolean; revoked: number | null }>('DELETE', `/api/hosts/${q(name)}${revoke ? '?revoke=1' : ''}`),
   /** 远程管理：重新检查、重启 board host、升级（now：不等在跑的派发结束）、取消请求 */
   askHost: (name: string, kind: 'recheck' | 'restart' | 'upgrade' | 'cancel', now = false) =>
     req<HostInfo>('POST', `/api/hosts/${q(name)}/ask`, { kind, now }),

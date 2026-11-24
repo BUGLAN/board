@@ -15,7 +15,7 @@ import { OP_WORDS } from '../../lib/profiles';
 import type { ClaimRule, HostInfo, Label, Profile, Provider, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { deleteProfilePatch, editProfilePatch, optimistic, useBusy, profileKey, useData } from '../../store/data';
-import { toastError } from '../../store/ui';
+import { toast, toastError } from '../../store/ui';
 import { LabelChip, Select } from '../bits';
 import { AgentIcon } from '../hosts/bits';
 import { Icon } from '../Icon';
@@ -178,7 +178,8 @@ export function ProfileForm() {
     if (!d.id) return;
     close();
     try {
-      await optimistic(deleteProfilePatch(d.id), () => api.deleteProfile(d.id!));
+      const out = await optimistic(deleteProfilePatch(d.id), () => api.deleteProfile(d.id!));
+      toast({ type: 'success', title: `已删除角色「${d.name}」`, text: out.rules ? `同时删除 ${out.rules} 条规则` : undefined });
     } catch (e) {
       toastError(e);
     }

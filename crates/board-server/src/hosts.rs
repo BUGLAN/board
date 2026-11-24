@@ -231,6 +231,11 @@ pub(crate) struct BeginBody {
     id: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct PullBody {
+    instance: String,
+}
+
 pub(crate) async fn begin(
     State(s): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -258,7 +263,7 @@ pub(crate) async fn pull(
     Path(name): Path<String>,
     Json(v): Json<Value>,
 ) -> ApiResult<Option<Dispatch>> {
-    let b: BeginBody = parse(v)?;
+    let b: PullBody = parse(v)?;
     let token = token_of(&caller);
     let out = s
         .db(move |st| {
@@ -486,10 +491,7 @@ pub(crate) async fn update(
         }
     }
     let client = client_of(&h);
-    let by = match caller {
-        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
-        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
-    };
+    let by = human(&caller).map_err(ApiError)?;
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_update_as(&name, &p, &by))).await?;
     s.poke();
     Ok(Json(out))
@@ -511,10 +513,7 @@ pub(crate) async fn clone_dir(
 ) -> ApiResult<HostInfo> {
     let b: CloneDirBody = parse(v)?;
     let client = client_of(&h);
-    let by = match caller {
-        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
-        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
-    };
+    let by = human(&caller).map_err(ApiError)?;
     let out = s
         .db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_clone_request(&name, &b.board, &b.url, &by)))
         .await?;
@@ -576,10 +575,7 @@ pub(crate) async fn ask(
 ) -> ApiResult<HostInfo> {
     let b: AskBody = parse(v)?;
     let client = client_of(&h);
-    let by = match caller {
-        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
-        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
-    };
+    let by = human(&caller).map_err(ApiError)?;
     let out = s.db(move |st| {
         st.write(now_ms(), Origin::ui(client), |w| match (&*b.kind, b.agent.as_deref()) {
             ("agent-install" | "agent-update", Some(agent)) => w.host_agent_ask(&name, &b.kind, agent, b.to.as_deref(), &by),
@@ -609,10 +605,7 @@ pub(crate) async fn selftest(
 ) -> ApiResult<HostInfo> {
     let b: SelfTestBody = parse(v)?;
     let client = client_of(&h);
-    let by = match caller {
-        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
-        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
-    };
+    let by = human(&caller).map_err(ApiError)?;
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_selftest(&name, b.agent.as_deref(), &by))).await?;
     s.poke();
     Ok(Json(out))
@@ -658,10 +651,7 @@ pub(crate) async fn skills_import(
 ) -> ApiResult<HostInfo> {
     let b: SkillImportBody = parse(v)?;
     let client = client_of(&h);
-    let by = match caller {
-        Caller::Human { login, .. } => login.unwrap_or_else(|| "人".into()),
-        Caller::Agent { .. } => return Err(ApiError(BoardError::code(ErrorCode::NotLoggedIn))),
-    };
+    let by = human(&caller).map_err(ApiError)?;
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_skill_import(&name, b.picks, &by))).await?;
     s.poke();
     Ok(Json(out))

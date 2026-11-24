@@ -524,14 +524,14 @@ function Maintenance({ h, server, behind, running, close }: { h: HostInfo; serve
     // 当帧关闭弹窗、从列表里拿掉（连同它的派发），被拒绝时回来并提示
     close();
     try {
-      await optimistic(
+      const out = await optimistic(
         {
           ws: ws => ({ ...ws, hosts: ws.hosts?.filter(x => x.name !== h.name), dispatches: ws.dispatches?.filter(x => x.host !== h.name) }),
           keys: [hostKey(h.name)],
         },
         () => api.removeHost(h.name, revoke),
       );
-      toast({ type: 'success', title: `已移除 ${h.name}`, text: revoke && t ? `令牌「${t.name}」已吊销` : undefined });
+      toast({ type: 'success', title: `已移除 ${h.name}`, text: out.revoked != null ? `已吊销令牌 #${out.revoked}` : undefined });
     } catch (e) {
       toastError(e);
     }
