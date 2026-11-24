@@ -78,3 +78,39 @@ describe('左上角项目总览', () => {
     expect(groups()).toEqual(['P']);
   });
 });
+
+describe('打开切换下拉框时聚焦搜索框（default/main#651）', () => {
+  const viewport = (touch: boolean) =>
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: touch && (q.includes('max-width') || q.includes('coarse')),
+      media: q,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent: () => false,
+    }));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('桌面：打开就聚焦，能直接打字搜索', async () => {
+    viewport(false);
+    setup({});
+    vi.useFakeTimers();
+    const menu = await openMenu();
+    act(() => vi.advanceTimersByTime(50));
+    expect(document.activeElement).toBe(menu.querySelector('.pj-search input'));
+  });
+
+  it('触屏：不自动聚焦（iOS 主屏 PWA 里程序化聚焦后下拉框列表滑不动）', async () => {
+    viewport(true);
+    setup({});
+    vi.useFakeTimers();
+    const menu = await openMenu();
+    act(() => vi.advanceTimersByTime(50));
+    expect(document.activeElement).not.toBe(menu.querySelector('.pj-search input'));
+  });
+});

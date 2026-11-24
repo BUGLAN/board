@@ -8,7 +8,7 @@ import { startWindowDrag, toggleMaximize } from '../lib/platform';
 import { cardTotal, flowOf, timing } from '../lib/schema';
 import { agentIdFor, agentMarkOf } from '../lib/hosts';
 import type { Workspace } from '../lib/types';
-import { clock, cx, MOD, reduceMotion } from '../lib/util';
+import { clock, cx, MOD, reduceMotion, touchFirst } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
 import { AgentAvatar, BrandMark, ProjectAvatar, Tip, useNow } from './bits';
@@ -184,7 +184,9 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
     const r = anchor?.getBoundingClientRect();
     if (r) setPos({ left: Math.max(8, Math.min(r.left, innerWidth - 388)), top: r.bottom + 8 });
     requestAnimationFrame(() => setOn(true));
-    setTimeout(() => input.current?.focus(), 20);
+    // 桌面打开就能直接打字搜索；触屏设备不自动聚焦（default/main#651）：iOS 主屏 PWA 里这一下程序化聚焦
+    // 会让随后在下拉框列表上的滑动失效（列表滑不动，重新开关一次才好），手机上点开它也是为了选白板，不是打字
+    if (!touchFirst()) setTimeout(() => input.current?.focus(), 20);
   }, [anchor]);
 
   useEffect(() => {
