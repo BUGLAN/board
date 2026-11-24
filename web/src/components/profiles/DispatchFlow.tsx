@@ -1,14 +1,18 @@
 /* ==========================================================================
-   派发对话框（按角色，PRD §9.1「派发」）：和分工页同一种画法，只画这一张卡——
-   这张卡（标签、命中的规则）→ 角色 → 机器三栏连线。按规则会交给的角色预先选中；点一个角色换，悬停先看它会去哪。
+   派发对话框（按角色，PRD §9.1「派发」）：和分工页同一种画法——卡片（命中的规则）→ 角色 → 机器三栏连线。
+   一张：卡片详情、机器页、「接下来」的派发 / 改派 / 拆解；多张：白板批量条的「派送」，卡片栏按命中的规则分组，
+   每组虚线连到它按规则会交给的角色。按规则会交给的角色预先选中（多张时取按规则交给它的卡最多的那个）；
+   点一个角色换，悬停先看它会去哪。多张也只选一个角色，能派的卡都派给它。
    机器栏最上面是「随机」（默认）：在能跑这个角色的机器里挑空位最多的，都满就排队；点一台机器指定它，点「随机」换回去。
    手动派发不看接单时段。复制提示词在卡片上就有，这里不放。弹出框高度不随选择变
-   派发要服务端排进队列才有记录：按钮转圈、禁用直到返回；返回后当即在卡片和机器页上画出这条派发
+   派发要服务端排进队列才有记录：按钮转圈、禁用直到返回；返回后当即在卡片和机器页上画出这条派发。
+   多张时按单卡同一套规则跳过不能派的（lib/boardSelect dispatchPlan），其余逐张派，单张失败不影响后面的
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
+import { bulkDispatchToast, dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
 import { blockOf, dirFresh, hostsOf } from '../../lib/hosts';
-import { hostsFor, labelNames, OP_WORDS, pickHost, profilesOf, routeOf, short, soonest, type HostWhy } from '../../lib/profiles';
+import { groupPick, hostsFor, OP_WORDS, pickHost, profilesOf, ruleGroups, short, soonest, type HostWhy, type RuleGroup } from '../../lib/profiles';
 import { serverMinute } from '../../lib/sched';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
@@ -35,26 +39,55 @@ function failedClone(h: HostInfo, board: string): { board: string; url: string }
   return null;
 }
 
-export function DispatchFlow({ card, move, on }: { card: number; move?: number; on: boolean }) {
+export function DispatchFlow({ cards, move, on }: { cards: number[]; move?: number; on: boolean }) {
   const ws = useData(s => s.ws);
   const path = useData(s => s.path);
-  const entry = useData(s => s.board?.cards[card]);
+  const board = useData(s => s.board);
   const now = useNow(30_000);
   useProviders();
   const minute = serverMinute(ws, now);
   const profiles = profilesOf(ws);
   const hosts = hostsOf(ws);
-  const names = useMemo(() => labelNames(ws, path, entry?.labels ?? []), [ws, path, entry?.labels]);
+  const many = cards.length > 1;
+  const card = cards[0];
+  const entry = board?.cards[card];
   const rules = ws?.sched?.rules ?? [];
-  const route = routeOf(names, rules);
-  const rule = route ? rules[route.rule] : undefined;
-  const ruleTitle = route
-    ? `规则 ${route.rule + 1}${rule ? `：${OP_WORDS[rule.op]}${rule.labels.length ? ` ${rule.labels.join('、')}` : ''}` : ''}`
-    : '没有命中的规则：自己挑一个角色';
+  // 多张：能派的和跳过的（锁定、被持有、已有排队或在跑的……），按单卡同一套规则
+  const plan = useMemo(() => {
+    if (!many) return null;
+    const active = new Set((ws?.dispatches ?? []).filter(d => d.board === path && d.state !== 'done').map(d => d.card));
+    return dispatchPlan(board?.statuses ?? [], board?.cards ?? {}, cards, active);
+  }, [many, ws?.dispatches, path, board, cards]);
+  // 「卡片」栏：一张时就是它命中的规则；多张时是能派的卡按规则分组（跳过的不算）
+  const groups = useMemo(
+    () => ruleGroups(ws, path, (plan ? plan.ids : [card]).map(id => ({ id, labels: board?.cards[id]?.labels ?? [] }))),
+    [ws, path, board, plan, card],
+  );
+  const ruleWords = (i: number | null) => {
+    if (i == null) return '没有命中的规则：自己挑一个角色';
+    const r = rules[i];
+    return `规则 ${i + 1}${r ? `：${OP_WORDS[r.op]}${r.labels.length ? ` ${r.labels.join('、')}` : ''}` : ''}`;
+  };
+  // 按规则交给这个角色的卡有几张
+  const byRule = (id: string) => groups.reduce((n, g) => n + (g.profile === id ? g.ids.length : 0), 0);
   const moving = move != null ? (ws?.dispatches ?? []).find(d => d.id === move) : undefined;
-  const suggested = route ? profiles.find(p => p.id === route.profile) : undefined;
-  const split = entry?.column === 'inbox';
-  const [prof, setProf] = useState<string>(moving?.profile || suggested?.id || profiles[0]?.id || '');
+  const split = !many && entry?.column === 'inbox';
+
+  // 这块白板接不了的机器（没有工作空间、目录不对）也跑不了
+  const list = (p: string): HostWhy[] =>
+    hostsFor(ws, p, minute, false).map(x => {
+      const b = blockOf(ws, x.host.name, path);
+      return b && x.can ? { ...x, can: false, ok: false, why: b.why, tone: 'bad' } : x;
+    });
+  const [prof, setProf] = useState<string>(
+    () =>
+      moving?.profile ||
+      groupPick(groups) ||
+      // 多张都没命中规则：先选第一个有机器能跑的
+      (many ? profiles.find(x => list(x.id).some(h => h.can))?.id : undefined) ||
+      profiles[0]?.id ||
+      '',
+  );
   // 指定的机器（id）；0 = 随机
   const [host, setHost] = useState<number>(moving && !moving.any ? moving.hostId : 0);
   const [hover, setHover] = useState<string | null>(null);
@@ -65,12 +98,6 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
   const [paths, setPaths] = useState<(ZEdge & { d: string; k: string })[]>([]);
   const close = () => openDispatch(null);
 
-  // 这块白板接不了的机器（没有工作空间、目录不对）也跑不了
-  const list = (p: string): HostWhy[] =>
-    hostsFor(ws, p, minute, false).map(x => {
-      const b = blockOf(ws, x.host.name, path);
-      return b && x.can ? { ...x, can: false, ok: false, why: b.why, tone: 'bad' } : x;
-    });
   const focus = hover ?? prof;
   const fp = profiles.find(x => x.id === focus);
   const fhw = fp ? list(fp.id) : [];
@@ -92,14 +119,17 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
 
   const edges = useMemo(() => {
     const e: ZEdge[] = [];
-    if (suggested && suggested.id !== focus) e.push({ from: 'card', to: `p${suggested.id}`, dash: true, lit: false, color: colorOf(suggested) });
-    if (fp) e.push({ from: 'card', to: `p${fp.id}`, dash: false, lit: true, color: colorOf(fp) });
+    groups.forEach((g, i) => {
+      const sp = g.profile ? profiles.find(x => x.id === g.profile) : undefined;
+      if (sp && sp.id !== focus) e.push({ from: `g${i}`, to: `p${sp.id}`, dash: true, lit: false, color: colorOf(sp) });
+      if (fp) e.push({ from: `g${i}`, to: `p${fp.id}`, dash: false, lit: true, color: colorOf(fp) });
+    });
     if (fp && can) e.push({ from: `p${fp.id}`, to: 'hany', dash: false, lit: !pinnedHere, color: colorOf(fp) });
     for (const x of fhw) if (x.can) e.push({ from: `p${focus}`, to: `h${x.host.id}`, dash: !x.ok, lit: pinnedHere && x.host.id === host, color: colorOf(fp) });
     return e;
     // fhw 由 ws、focus 算出
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws, focus, suggested?.id, pinnedHere, host, minute]);
+  }, [ws, focus, groups, pinnedHere, host, minute]);
 
   useLayoutEffect(() => {
     const el = map.current;
@@ -136,11 +166,20 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
   const hw = p ? list(p.id) : [];
   const pinned = host ? hw.find(x => x.host.id === host) : undefined;
   const got = pinned ? (pinned.ok ? pinned : null) : pickHost(ws, hw);
+  // 多张时能派几张
+  const n = plan ? plan.ids.length : 1;
+  const where = p ? `派给「${p.name}」· ${pinned ? pinned.host.name : '随机'}` : '';
   const say = !p
     ? '先选一个角色'
-    : !hw.some(x => x.can)
-      ? '没有机器能跑这个角色'
-      : `派给「${p.name}」· ${pinned ? pinned.host.name : '随机'}：${got ? `${got.host.name} ${got.why}，马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `排队，${soonest(hw)}。`}`;
+    : !n
+      ? '没有可派发的卡片'
+      : !hw.some(x => x.can)
+        ? '没有机器能跑这个角色'
+        : many
+          ? `${n} 张${where}：逐张排进队列，${got ? `${got.host.name} ${got.why}，有空位的马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `都要排队，${soonest(hw)}。`}`
+          : `${where}：${got ? `${got.host.name} ${got.why}，马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `排队，${soonest(hw)}。`}`;
+  const verb = move != null ? '改派' : split ? '拆解' : '派发';
+  const heading = many ? `派发 ${cards.length} 张卡片` : `${verb} #${card}`;
 
   // 这台机器上这块白板的目录克隆失败了：就地点「重新克隆」，不用再翻到机器详情。请求发出后服务端会把它记成
   // 「正在克隆」，这一行的原因跟着变、按钮消失；克隆好以后这台机器就能选了
@@ -157,10 +196,22 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
   };
 
   const submit = async () => {
-    if (!p) return;
+    if (!p || !n) return;
     setSending(true);
     try {
       const to = pinned ? pinned.host.name : '';
+      if (plan) {
+        // 多张：按选中的顺序逐张发，都带这个角色；单张失败只记下来，后面的照常发。全部返回后才关对话框
+        const { ids, skipped } = plan;
+        const result = await optimistic(null, () => runBulkDispatch(ids, id => api.dispatch(path, id, to, undefined, p.id)));
+        if (result.ok.length) {
+          const made = new Set(result.ok.map(d => d.id));
+          void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => !made.has(x.id)), ...result.ok] }) }, refresh());
+        }
+        close();
+        toast(bulkDispatchToast(result, skipped, where));
+        return;
+      }
       const d = move != null ? await api.moveDispatch(move, to, undefined, p.id) : await api.dispatch(path, card, to, undefined, p.id);
       close();
       toast({
@@ -176,13 +227,32 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
     }
   };
 
+  const groupNode = (g: RuleGroup, i: number) => (
+    <div
+      key={g.rule ?? 'none'}
+      data-k={`g${i}`}
+      className="pfz-card"
+      title={many ? `${ruleWords(g.rule)}\n${g.ids.map(id => `#${id} ${board?.cards[id]?.title ?? ''}`).join('\n')}` : ruleWords(g.rule)}
+    >
+      <Icon name="filter" />
+      <b>{g.rule != null ? `规则 ${g.rule + 1}` : '没命中规则'}</b>
+      {many && <small>{g.ids.length} 张</small>}
+    </div>
+  );
+
   return (
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
-      <div className="dialog dp-dialog pfd flow" role="dialog" aria-modal="true" aria-label={`${move != null ? '改派' : split ? '拆解' : '派发'} #${card}`}>
+      <div className="dialog dp-dialog pfd flow" role="dialog" aria-modal="true" aria-label={heading}>
         <h3>
-          {move != null ? '改派' : split ? '拆解' : '派发'} #{card}
-          <small className="pfz-title">{entry?.title}</small>
+          {heading}
+          <small className="pfz-title">{many ? '逐张排队派发' : entry?.title}</small>
         </h3>
+        {plan && (
+          <p className={cx('dp-note', 'dp-plan', !plan.ids.length && 'bad')} role="status">
+            {plan.ids.length ? `可派发 ${plan.ids.length} 张` : '没有可派发的卡片'}
+            {plan.skipped.length ? `；跳过 ${plan.skipped.length} 张：${plan.skipped.map(x => `#${x.id} ${x.why}`).join('；')}` : ''}
+          </p>
+        )}
         {hosts.length === 0 ? (
           <p className="dp-note">还没有机器。在要干活的机器上运行 board host，它会出现在这里。</p>
         ) : (
@@ -193,14 +263,19 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
               ))}
             </svg>
             <div className="pfa-col pfz-col">
-              <div data-k="card" className="pfz-card" title={ruleTitle}>
-                <Icon name="filter" />
-                <b>{route ? `规则 ${route.rule + 1}` : '没命中规则'}</b>
-              </div>
+              {groups.length ? (
+                groups.map(groupNode)
+              ) : (
+                <div className="pfz-card">
+                  <Icon name="filter" />
+                  <b>没有可派发的卡片</b>
+                </div>
+              )}
             </div>
             <div className="pfa-col pfz-col">
               {profiles.map(x => {
                 const able = list(x.id).some(h => h.can);
+                const ruled = byRule(x.id);
                 return (
                   <button
                     key={x.id}
@@ -215,7 +290,7 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
                   >
                     <PMark p={x} />
                     <b>{x.name}</b>
-                    {suggested?.id === x.id && <span className="pfx-tag">按规则</span>}
+                    {ruled > 0 && <span className="pfx-tag">{many ? `按规则 ${ruled} 张` : '按规则'}</span>}
                     <small>{short(x)}</small>
                   </button>
                 );
@@ -283,13 +358,13 @@ export function DispatchFlow({ card, move, on }: { card: number; move?: number; 
           </div>
         )}
         <div className="pfz-foot">
-          <p className={cx('dp-note pfd-say', got ? 't-ok' : 't-wait')}>{say}</p>
+          <p className={cx('dp-note pfd-say', got && n ? 't-ok' : 't-wait')}>{say}</p>
           <button className="btn sm" type="button" onClick={close}>
             取消
           </button>
-          <button className={cx('btn sm brand', sending && 'is-busy')} type="button" disabled={sending || !p || !hw.some(x => x.can)} aria-busy={sending || undefined} onClick={submit}>
+          <button className={cx('btn sm brand', sending && 'is-busy')} type="button" disabled={sending || !p || !n || !hw.some(x => x.can)} aria-busy={sending || undefined} onClick={submit}>
             <Icon name="dispatch" />
-            {move != null ? '改派' : split ? '拆解' : '派发'}
+            {many ? `派送 ${n} 张` : verb}
           </button>
         </div>
       </div>

@@ -12,7 +12,10 @@ const { dispatchApi } = vi.hoisted(() => ({ dispatchApi: vi.fn() }));
 
 vi.mock('../../lib/api', async orig => {
   const real = await orig<typeof import('../../lib/api')>();
-  return { ...real, api: { ...real.api, dispatch: (...args: [string, number, string, string?]) => dispatchApi(...args) } };
+  return {
+    ...real,
+    api: { ...real.api, dispatch: (...args: [string, number, string, string?]) => dispatchApi(...args), providers: async () => ({ providers: [], meta: [] }) },
+  };
 });
 
 vi.mock('../../store/data', async orig => {
@@ -161,5 +164,23 @@ describe('批量派送对话框', () => {
     });
     expect(useUI.getState().toasts.at(-1)?.text).toContain('失败：#3 机器没有这块白板的目录');
     expect(useUI.getState().toasts.at(-1)?.text).toContain('跳过：#1 已有排队或在跑的派发；#2 在锁定状态「doing」');
+  });
+});
+
+describe('有角色时的批量派送', () => {
+  it('打开按角色派的面板（和单卡同一个），不是选机器、选 agent 的旧对话框', async () => {
+    useData.setState({
+      ws: workspace({
+        hosts: [{ ...machine, fits: [{ profile: 'p1', ok: true }] }],
+        sched: { minute: 0, rules: [], profiles: [{ id: 'p1', name: 'Codex', agent: 'codex', provider: '', model: 'gpt-5.4', effort: 'high', note: '', only: [] }] },
+      }),
+      path: 'p/a',
+      board: snapshot('p/a', { todo: [1, 2] }),
+    } as never);
+    useUI.setState({ dispatchOf: { cards: [1, 2] } });
+    await act(async () => root.render(<DispatchDialog />));
+    expect(host.querySelector('.pfd.flow h3')?.childNodes[0].textContent).toBe('派发 2 张卡片');
+    expect(host.querySelector('.pfz-prof.on b')?.textContent).toBe('Codex');
+    expect(host.querySelector('.dp-hosts')).toBeNull();
   });
 });

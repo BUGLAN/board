@@ -16,7 +16,7 @@ vi.mock('../store/data', () => ({
 vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e), toast: (t: unknown) => toast(t) }));
 
 const { FLOW, snapshot } = await import('../../test/fixtures');
-const { blockState, bulkLabel, bulkMove, clearSelect, dispatchPlan, moveTargets, rangeIds, runBulkDispatch, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
+const { blockState, bulkDispatchToast, bulkLabel, bulkMove, clearSelect, dispatchPlan, moveTargets, rangeIds, runBulkDispatch, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
   await import('./boardSelect');
 
 beforeEach(() => {
@@ -251,5 +251,15 @@ describe('runBulkDispatch（逐张派发）', () => {
     const send = vi.fn(async (id: number) => made(id));
     expect(await runBulkDispatch([], send)).toEqual({ ok: [], failed: [] });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it('收尾汇总：张数写在标题；去向、跳过、失败的原因写在正文；有失败时是错误提示', () => {
+    const t = bulkDispatchToast({ ok: [made(3)], failed: [{ id: 4, error: new Error('机器没有这块白板的目录') }] }, [{ id: 1, why: '已有排队或在跑的派发' }], '派给「Codex」· 随机');
+    expect(t).toEqual({
+      type: 'error',
+      title: '成功 1 张 · 跳过 1 张 · 失败 1 张',
+      text: '派给「Codex」· 随机\n跳过：#1 已有排队或在跑的派发\n失败：#4 机器没有这块白板的目录',
+    });
+    expect(bulkDispatchToast({ ok: [made(1)], failed: [] }, [], '')).toEqual({ type: 'success', title: '成功 1 张 · 跳过 0 张 · 失败 0 张', text: undefined });
   });
 });

@@ -146,6 +146,25 @@ export async function runBulkDispatch(
   return { ok, failed };
 }
 
+/** 批量派送收尾的提示：成功、跳过、失败各几张，正文写去向和每张跳过、失败的原因。
+    按机器 + agent 派（hosts/Dispatch）和按角色派（profiles/DispatchFlow）共用 */
+export function bulkDispatchToast(
+  result: { ok: Dispatch[]; failed: { id: number; error: unknown }[] },
+  skipped: { id: number; why: string }[],
+  where: string,
+): { type: 'success' | 'error'; title: string; text?: string } {
+  const lines = [
+    where,
+    skipped.length ? `跳过：${skipped.map(x => `#${x.id} ${x.why}`).join('；')}` : '',
+    result.failed.length ? `失败：${result.failed.map(x => `#${x.id} ${(x.error as Error)?.message || '派发失败'}`).join('；')}` : '',
+  ].filter(Boolean);
+  return {
+    type: result.failed.length ? 'error' : 'success',
+    title: `成功 ${result.ok.length} 张 · 跳过 ${skipped.length} 张 · 失败 ${result.failed.length} 张`,
+    text: lines.join('\n') || undefined,
+  };
+}
+
 /** 「移动到」菜单的一行：能移过去的卡片（按白板上的顺序）、跳过的，和整行不能选的原因 */
 export interface MoveTarget {
   key: ColumnKey;

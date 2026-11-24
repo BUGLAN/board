@@ -1,6 +1,6 @@
 /* 角色（lib/profiles.ts）：规则命中、机器现在能不能接、挑机器、推算一块白板上的卡会交给谁 */
 import { describe, expect, it } from 'vitest';
-import { forecast, hostsFor, pickHost, routeOf, ruleMatches, slotOf, soonest } from './profiles';
+import { forecast, groupPick, hostsFor, pickHost, routeOf, ruleGroups, ruleMatches, slotOf, soonest } from './profiles';
 import type { BoardSnapshot, ClaimRule, HostInfo, Workspace } from './types';
 
 const host = (name: string, id: number, x: Partial<HostInfo> = {}): HostInfo =>
@@ -95,5 +95,42 @@ describe('推算一块白板', () => {
     const none = ws();
     none.sched!.profiles = [];
     expect(forecast(none, board(), 0).size).toBe(0);
+  });
+});
+
+describe('批量派送：按规则分组、预选角色', () => {
+  const ws = {
+    rev: 1,
+    now: 0,
+    projects: [{ key: 'p', labels: [{ id: 1, name: 'bug' }, { id: 2, name: 'ui' }, { id: 3, name: 'docs' }], boards: [] }],
+    hosts: [],
+    dispatches: [],
+    sched: {
+      minute: 0,
+      rules: [
+        { op: 'in', labels: ['bug'], profile: 'fix' },
+        { op: 'in', labels: ['ui'], profile: 'ui' },
+        { op: 'in', labels: ['docs'], profile: 'gone' },
+        { op: 'in', labels: ['ui', 'docs'], profile: 'fix' },
+      ],
+      profiles: [{ id: 'fix' }, { id: 'ui' }],
+    },
+  } as unknown as Workspace;
+  const c = (id: number, labels: number[]) => ({ id, labels });
+
+  it('按第一条命中的规则分组：规则靠前的在前，没命中的一组放最后；规则交给的角色已经删了时角色为空', () => {
+    expect(ruleGroups(ws, 'p/a', [c(5, []), c(1, [2]), c(2, [1, 2]), c(3, [2]), c(4, [3])])).toEqual([
+      { rule: 0, profile: 'fix', ids: [2] },
+      { rule: 1, profile: 'ui', ids: [1, 3] },
+      { rule: 2, profile: null, ids: [4] },
+      { rule: null, profile: null, ids: [5] },
+    ]);
+  });
+
+  it('预选按规则交给它的卡最多的角色；一样多取规则靠前的；同一个角色的几组合起来算；都没命中时为空', () => {
+    expect(groupPick([{ rule: 0, profile: 'fix', ids: [1] }, { rule: 1, profile: 'ui', ids: [2, 3] }])).toBe('ui');
+    expect(groupPick([{ rule: 0, profile: 'fix', ids: [1] }, { rule: 1, profile: 'ui', ids: [2] }])).toBe('fix');
+    expect(groupPick([{ rule: 0, profile: 'fix', ids: [1] }, { rule: 1, profile: 'ui', ids: [2, 3] }, { rule: 3, profile: 'fix', ids: [4, 5] }])).toBe('fix');
+    expect(groupPick([{ rule: 2, profile: null, ids: [1] }, { rule: null, profile: null, ids: [2] }])).toBeNull();
   });
 });

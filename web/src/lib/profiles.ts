@@ -121,6 +121,53 @@ export function labelNames(ws: Workspace | null, board: string, ids: number[]): 
   return ids.map(id => labels.find(l => l.id === id)?.name).filter((x): x is string => !!x);
 }
 
+/** 派发对话框「卡片」栏的一组：命中同一条规则（第一条命中的）的卡片。rule 为空是没命中规则；
+    profile 是那条规则交给的角色，角色已经删掉时为空 */
+export interface RuleGroup {
+  rule: number | null;
+  profile: string | null;
+  ids: number[];
+}
+
+/** 卡片按命中的第一条规则分组（和自动领取同一套判定）：规则靠前的组在前，没命中规则的一组放最后，组里按传入的顺序 */
+export function ruleGroups(ws: Workspace | null, board: string, cards: { id: number; labels: number[] }[]): RuleGroup[] {
+  const rules = ws?.sched?.rules ?? [];
+  const profiles = profilesOf(ws);
+  const by = new Map<number, RuleGroup>();
+  for (const c of cards) {
+    const r = routeOf(labelNames(ws, board, c.labels), rules);
+    const k = r ? r.rule : -1;
+    let g = by.get(k);
+    if (!g) {
+      g = { rule: r ? r.rule : null, profile: r && profiles.some(p => p.id === r.profile) ? r.profile : null, ids: [] };
+      by.set(k, g);
+    }
+    g.ids.push(c.id);
+  }
+  return [...by.values()].sort((a, b) => (a.rule ?? Infinity) - (b.rule ?? Infinity));
+}
+
+/** 批量派送预先选中的角色：按规则交给它的卡最多的那个，一样多时取规则靠前的；都没命中规则时为空 */
+export function groupPick(groups: RuleGroup[]): string | null {
+  const n = new Map<string, { count: number; first: number }>();
+  for (const g of groups) {
+    if (!g.profile || g.rule == null) continue;
+    const x = n.get(g.profile) ?? { count: 0, first: g.rule };
+    x.count += g.ids.length;
+    x.first = Math.min(x.first, g.rule);
+    n.set(g.profile, x);
+  }
+  let best: string | null = null;
+  let top: { count: number; first: number } | null = null;
+  for (const [p, x] of n) {
+    if (!top || x.count > top.count || (x.count === top.count && x.first < top.first)) {
+      best = p;
+      top = x;
+    }
+  }
+  return best;
+}
+
 /** 一块白板上会被自动领取的卡片（可领取状态里、没人持有、没在派发），按领取的先后：带优先标签的在前，再按状态和状态里的顺序 */
 export function claimableCards(ws: Workspace | null, board: BoardSnapshot | null): { id: number; title: string; names: string[] }[] {
   if (!board?.path) return [];

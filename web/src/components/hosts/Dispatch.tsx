@@ -5,7 +5,7 @@ import { DispatchFlow } from '../profiles/DispatchFlow';
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
+import { bulkDispatchToast, dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
 import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, dispatchRoute, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
@@ -181,7 +181,7 @@ export function DispatchHistory({ board, card }: { board: string; card: number }
   );
 }
 
-/** 卡片详情底部「派发」对话框：有角色时选角色和机器（profiles/DispatchFlow.tsx），没有时选机器、选 agent */
+/** 「派发」对话框（卡片详情的单卡、白板批量条的多张）：有角色时选角色和机器（profiles/DispatchFlow.tsx），没有时选机器、选 agent */
 export function DispatchDialog() {
   const req = useUI(s => s.dispatchOf);
   const { mounted, on } = usePresence(req != null, 220);
@@ -189,10 +189,10 @@ export function DispatchDialog() {
   if (req != null) last.current = req;
   if (!mounted || last.current == null) return null;
   const { cards, move } = last.current;
-  const card = cards.length === 1 ? cards[0] : null;
-  // 单卡有角色时按角色派（分工页定的那一套）；批量派送和还没有角色时选机器和 agent
-  if (card != null && profilesOf(useData.getState().ws).length) return <DispatchFlow key={`${card}-${move ?? ''}`} card={card} move={move} on={on && req != null} />;
-  return <DispatchBody key={`${cards.join(',')}-${move ?? ''}`} cards={cards} move={move} on={on && req != null} />;
+  const key = `${cards.join(',')}-${move ?? ''}`;
+  // 有角色时单卡、批量都按角色派（分工页定的那一套）；还没有角色时选机器和 agent
+  if (profilesOf(useData.getState().ws).length) return <DispatchFlow key={key} cards={cards} move={move} on={on && req != null} />;
+  return <DispatchBody key={key} cards={cards} move={move} on={on && req != null} />;
 }
 
 function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on: boolean }) {
@@ -283,18 +283,8 @@ function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on:
         void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => !made.has(x.id)), ...result.ok] }) }, refresh());
       }
       close();
-      const detail = [
-        skipped.length ? `跳过：${skipped.map(x => `#${x.id} ${x.why}`).join('；')}` : '',
-        result.failed.length
-          ? `失败：${result.failed.map(x => `#${x.id} ${(x.error as Error)?.message || '派发失败'}`).join('；')}`
-          : '',
-      ].filter(Boolean);
       const where = !any && result.ok[0] ? `派给 ${hostWords(result.ok[0])} · ${result.ok[0].agentLabel}` : '';
-      toast({
-        type: result.failed.length ? 'error' : 'success',
-        title: `成功 ${result.ok.length} 张 · 跳过 ${skipped.length} 张 · 失败 ${result.failed.length} 张`,
-        text: [where, ...detail].filter(Boolean).join('\n') || undefined,
-      });
+      toast(bulkDispatchToast(result, skipped, where));
     } catch (e) {
       toastError(e);
     } finally {
