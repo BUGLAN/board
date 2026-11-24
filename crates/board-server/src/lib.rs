@@ -156,12 +156,14 @@ impl AppState {
         &self.0.auth
     }
 
-    /// 改实时推送检查登录态的间隔（默认 [`STREAM_CHECK`]；测试里缩短）。只影响之后打开的推送
+    /// 测试专用：改实时推送检查登录态的间隔（默认 [`STREAM_CHECK`]）。只影响之后打开的推送
+    #[cfg(feature = "test-hooks")]
     pub fn set_stream_check(&self, every: Duration) {
         self.0.stream_check.store(every.as_millis().max(1) as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 附件文件存储（测试里用它装落盘钩子）
+    /// 测试专用：附件文件存储，用来装落盘钩子
+    #[cfg(feature = "test-hooks")]
     pub fn file_store(&self) -> Option<Arc<FileStore>> {
         self.0.files.clone()
     }
@@ -455,7 +457,8 @@ pub fn bind(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(addr)
 }
 
-/// 在后台线程里运行服务（测试用）。返回后即可连接
+/// 测试专用：在后台线程里运行服务。返回后即可连接
+#[cfg(feature = "test-hooks")]
 pub fn serve_in_thread(state: AppState, cfg: Config, listener: std::net::TcpListener) {
     std::thread::Builder::new()
         .name("board-server".into())

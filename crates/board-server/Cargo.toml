@@ -28,8 +28,71 @@ serde_urlencoded = "0.7"
 ureq = { version = "3", features = ["json"] }
 
 [features]
-# 只给集成测试用：让 /api/dispatches/{id}/end 临时返回 502，验证 board host 的重试；附件落盘钩子（模拟慢盘）
+# 只给集成测试用：让 /api/dispatches/{id}/end 临时返回 502，验证 board host 的重试；附件落盘钩子（模拟慢盘）；
+# 以及只在测试里用的 AppState::set_stream_check / file_store 和 serve_in_thread。
+# 直接跑这些集成测试：cargo test -p board-server --features test-hooks
 test-hooks = ["board-core/test-hooks"]
+
+# 这些集成测试起真实服务端，依赖 test-hooks 才编译的测试入口。
+[[test]]
+name = "auth"
+path = "tests/auth.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "board_brief"
+path = "tests/board_brief.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "card_crons"
+path = "tests/card_crons.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "cards_batch"
+path = "tests/cards_batch.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "compression"
+path = "tests/compression.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "events"
+path = "tests/events.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "hosts_sync"
+path = "tests/hosts_sync.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "labels"
+path = "tests/labels.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "project_dir"
+path = "tests/project_dir.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "project_visibility"
+path = "tests/project_visibility.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "prompts"
+path = "tests/prompts.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "providers"
+path = "tests/providers.rs"
+required-features = ["test-hooks"]
 
 [dev-dependencies]
 # 测试里核对应用清单的类型：和 rust-embed 的 mime-guess 是同一个库

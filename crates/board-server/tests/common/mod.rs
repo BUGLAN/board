@@ -1,5 +1,8 @@
 //! 集成测试的公共部分：每个测试起一个真实的 board-server（后台线程、随机端口），用 HTTP 访问。
 //! 鉴权的用例（auth）自己带模拟的 GitHub，不在这里。
+//!
+//! 这里用了只在 `test-hooks` feature 下编译的 `serve_in_thread`，对应的测试目标都声明了
+//! `required-features`。直接跑：`cargo test -p board-server --features test-hooks`。
 #![allow(dead_code)]
 
 use board_server::auth::Auth;
