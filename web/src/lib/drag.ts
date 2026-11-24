@@ -13,7 +13,7 @@ import { boardFlow, INBOX, type FlowQ } from './schema';
 import type { Card, ColumnKey } from './types';
 import { reduceMotion } from './util';
 import { cardBusy, exec, hold, isDraft, movePatch, omittedIn, renderKey, useData } from '../store/data';
-import { rejectColumn, setDrag, toast, toastError, useUI, type DragUI } from '../store/ui';
+import { endDrop, rejectColumn, setDrag, startDrag, toast, toastError, useUI, type DragUI } from '../store/ui';
 
 interface Veto {
   code: string;
@@ -258,7 +258,8 @@ function start() {
   s.ghost = ghost;
   document.body.classList.add('is-dragging');
   s.target = { col: s.fromCol, index: s.fromIndex };
-  setDrag({ id: s.id, fromCol: s.fromCol, col: s.fromCol, index: s.fromIndex, over: s.fromCol, valid: true, veto: null });
+  // 上一张的幽灵还在飞时，它的预览挪进 landing，落下之前照旧在落点（store/ui 的 startDrag，default/main#657）
+  startDrag({ id: s.id, fromCol: s.fromCol, col: s.fromCol, index: s.fromIndex, over: s.fromCol, valid: true, veto: null });
   if (s.type !== 'mouse') navigator.vibrate?.(10);
   lift(ghost);
   frame();
@@ -536,8 +537,9 @@ function finish(cancelled: boolean) {
       hold(movePatch(id, target.col, plan), done);
     }
     // 保留顺序开着时在同一块里拖（settle）也走这里：清掉预览后这块按排序依据重排，
-    // BoardView 渲染后 play() 把卡片和让位的卡片从落点补间回排序位置，顺序不变
-    setDrag(null);
+    // BoardView 渲染后 play() 把卡片和让位的卡片从落点补间回排序位置，顺序不变。
+    // 只清这一张的预览：幽灵飞的时候可能已经开始拖下一张了，那一张的 drag 不能跟着清掉（default/main#657）
+    endDrop(id);
     ghost.remove();
     // 清掉预览的那次渲染在这之后、绘制之前（微任务）：去掉标记不会让占位闪回斜纹；留着的话下次拖这张卡，占位一开始就是显出的样子
     if (landing) {

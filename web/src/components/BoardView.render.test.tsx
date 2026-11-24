@@ -21,7 +21,7 @@ vi.mock('./FirstRun', () => ({ FirstRunHint: () => null }));
 vi.mock('./BoardSelect', () => ({ BoardBulkBar: () => null, ColSelect: () => null }));
 
 import { useData } from '../store/data';
-import { setDrag, useUI, type DragUI } from '../store/ui';
+import { endDrop, setDrag, startDrag, useUI, type DragUI } from '../store/ui';
 import { BoardView } from './BoardView';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -58,7 +58,7 @@ beforeEach(() => {
   for (const k of Object.keys(renders)) delete renders[Number(k)];
   globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
   useData.setState({ ws, board, path: 'p/b', detailId: null });
-  useUI.setState({ tab: 'board', drag: null, filter: '', labelSel: [] });
+  useUI.setState({ tab: 'board', drag: null, landing: [], filter: '', labelSel: [] });
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -66,7 +66,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
-  act(() => useUI.setState({ drag: null }));
+  act(() => useUI.setState({ drag: null, landing: [] }));
   globalThis.ResizeObserver = original;
 });
 
@@ -110,5 +110,28 @@ describe('拖动卡片时只重画受影响的状态块（default/main#631）', 
     act(() => setDrag(drag({ index: 0 })));
     act(() => setDrag(drag({ index: 1 })));
     for (const id of [1, 4, 5, 6]) expect(renders[id]).toBe(mid[id]);
+  });
+});
+
+describe('上一张还在落位时开始拖下一张（default/main#657）', () => {
+  it('上一张照旧画在落点，不回到原来的块；它落下时只清它自己，正在拖的那张不受影响', () => {
+    act(() => root.render(<BoardView />));
+    // #2 拖进「已完成」末尾松手，幽灵正在飞：落位的补丁还没叠，数据里它还在「待审核」
+    act(() => setDrag(drag({ col: 'done', index: 3, over: 'done', dropping: true })));
+    expect(ids('done')).toEqual([4, 5, 6, 2]);
+
+    // 幽灵还没落下就按下了 #3：#2 不能被画回「待审核」（以前在这里回去一下，落位时换块的动画再播一遍）
+    act(() => startDrag(drag({ id: 3 })));
+    expect(ids('done')).toEqual([4, 5, 6, 2]);
+    expect(ids('review')).toEqual([3]);
+    act(() => setDrag(drag({ id: 3, col: 'done', index: 4, over: 'done' })));
+    expect(ids('done')).toEqual([4, 5, 6, 2, 3]);
+    expect(ids('review')).toEqual([]);
+
+    // #2 的幽灵落下：只去掉它的预览（真实流程里同一次更新叠上它的落位补丁），#3 的占位还在
+    act(() => endDrop(2));
+    expect(useUI.getState().drag?.id).toBe(3);
+    expect(ids('done')).toEqual([4, 5, 6, 3]);
+    expect(ids('review')).toEqual([2]);
   });
 });

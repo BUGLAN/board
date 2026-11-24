@@ -30,15 +30,28 @@ import { Skeleton, SkeletonCard } from './Skeleton';
 import { BoardBulkBar, ColSelect } from './BoardSelect';
 import { clearSelect } from '../lib/boardSelect';
 
-/** 拖拽预览：被拖的卡片放到预览位置。
+/** 拖拽预览：被拖的卡片放到预览位置。landing：已经松手、还在落位的卡片（被下一次拖动顶出 drag 的，store/ui 的 startDrag），
+    先按它们各自的落点放好，再放正在拖的那张；不在这块白板上的（落位时换了白板）跳过。
     没受影响的状态（被拖的卡片原来不在、占位现在也不在）沿用原来的数组：状态块（memo）按引用比较，不用跟着重画（default/main#631） */
-export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null) {
-  if (!drag) return cols;
+export function previewCols(cols: BoardSnapshot['cols'], drag: DragUI | null, landing: DragUI[] = NO_LANDING) {
+  if (!drag && !landing.length) return cols;
   const out = { ...cols } as BoardSnapshot['cols'];
-  for (const [k, v] of Object.entries(cols)) if (v.includes(drag.id)) out[k] = v.filter(id => id !== drag.id);
-  const to = [...(out[drag.col] ?? [])];
-  to.splice(Math.min(drag.index, to.length), 0, drag.id);
-  out[drag.col] = to;
+  const place = (m: DragUI) => {
+    for (const [k, v] of Object.entries(out)) if (v.includes(m.id)) out[k] = v.filter(id => id !== m.id);
+    const to = [...(out[m.col] ?? [])];
+    to.splice(Math.min(m.index, to.length), 0, m.id);
+    out[m.col] = to;
+  };
+  for (const m of landing) if (m.id !== drag?.id && Object.values(out).some(v => v.includes(m.id))) place(m);
+  if (drag) place(drag);
+  return out;
+}
+const NO_LANDING: DragUI[] = [];
+
+/** 落位中的卡片按落点所在的状态分组（状态块据此把它们画成占位）；没有的状态不在里面，状态块拿到的是 undefined、不用重画 */
+export function landingByCol(landing: DragUI[]): Record<string, number[]> {
+  const out: Record<string, number[]> = {};
+  for (const m of landing) (out[m.col] ??= []).push(m.id);
   return out;
 }
 
@@ -93,6 +106,7 @@ export function BoardView() {
   const filter = useUI(s => s.filter.trim().toLowerCase());
   const flashes = useUI(s => s.flashes);
   const drag = useUI(s => s.drag);
+  const landing = useUI(s => s.landing);
   const reveal = useUI(s => s.reveal);
   const reject = useUI(s => s.reject);
   const boardRef = useRef<HTMLDivElement>(null);
@@ -132,7 +146,8 @@ export function BoardView() {
   }, [shown0, dispatches, boardPath]);
   const shown = grouped?.cols ?? null;
   useEffect(() => setShownCols(shown), [shown]);
-  const cols = useMemo(() => (shown ? previewCols(shown, drag) : null), [shown, drag]);
+  const cols = useMemo(() => (shown ? previewCols(shown, drag, landing) : null), [shown, drag, landing]);
+  const landed = useMemo(() => landingByCol(landing), [landing]);
   // 快照还没到（首次打开、切换白板）：工作区里已经有这块白板的工作流和计数，先按它摆好状态块，卡片位置放骨架
   const flowStatuses = board?.statuses ?? cur?.board.statuses;
   const f = useMemo(() => flowOf(flowStatuses), [flowStatuses]);
@@ -147,8 +162,9 @@ export function BoardView() {
   // 有排队派发的卡片不会被不带 ID 的 board claim 领走
   const queued = useData(s => s.ws?.dispatches);
   const urgentLabels = (cur?.project.labels ?? []).filter(l => l.priority).map(l => l.id);
+  const moving = new Set([...(drag ? [drag.id] : []), ...landing.map(l => l.id)]);
   const nextId = f.nextCard(
-    prio && drag ? Object.fromEntries(Object.entries(prio).map(([k, v]) => [k, v.filter(id => id !== drag.id)])) : prio,
+    prio && moving.size ? Object.fromEntries(Object.entries(prio).map(([k, v]) => [k, v.filter(id => !moving.has(id))])) : prio,
     id => !!queued?.some(d => d.state === 'queued' && d.board === path && d.card === id),
     id => urgentLabels.length > 0 && !!board?.cards[id]?.labels.some(l => urgentLabels.includes(l)),
   );
@@ -159,7 +175,7 @@ export function BoardView() {
   });
   useLayoutEffect(() => {
     flip.play();
-  }, [board, drag]);
+  }, [board, drag, landing]);
 
   // 定位到卡片
   useEffect(() => {
@@ -295,6 +311,7 @@ export function BoardView() {
                   filter={filter}
                   detailId={detailId}
                   drag={dragFor(drag, s.key)}
+                  landing={landed[s.key]}
                   flashes={flashes}
                   entering={entering}
                   fresh={fresh}
@@ -420,6 +437,8 @@ interface ColumnProps {
   filter: string;
   detailId: number | null;
   drag: DragUI | null;
+  /** 落点在这一块、还在落位的卡片（被下一次拖动顶出 drag 的）：和正在拖的卡片一样画成占位 */
+  landing?: number[];
   flashes: ReturnType<typeof useUI.getState>['flashes'];
   entering: Set<number>;
   fresh: boolean;
@@ -475,7 +494,7 @@ function emptyText(s: Status, f: FlowQ) {
 
 /** memo：磁吸布局自己重排（量到块高度变化、拖动 / 调宽状态块）时 props 都没变，不重画块里的卡片。
     卡片拖动松手时块要补测尺寸再排一次，以前这一遍把所有卡片又画了一次，落位那一帧明显卡（default/main#419） */
-const Column = memo(function Column({ col, index, f, ids, board, labels, filter, detailId, drag, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, more, role }: ColumnProps) {
+const Column = memo(function Column({ col, index, f, ids, board, labels, filter, detailId, drag, landing, flashes, entering, fresh, onHead, resizer, next, sorted, groups, path, more, role }: ColumnProps) {
   const count = colCount(board, col.key);
   const badge = useRef<HTMLSpanElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -502,7 +521,7 @@ const Column = memo(function Column({ col, index, f, ids, board, labels, filter,
     <section
       className={cx(
         'col',
-        count === 0 && !(drag && drag.col === col.key && drag.valid) && 'is-empty',
+        count === 0 && !(drag && drag.col === col.key && drag.valid) && !landing?.length && 'is-empty',
         col.final && 'is-final',
         drag && over && drag.valid && !same && 'drop-ok',
         drag && over && !drag.valid && 'drop-bad',
@@ -545,14 +564,15 @@ const Column = memo(function Column({ col, index, f, ids, board, labels, filter,
             const run = runAt.get(idx);
             const end = runs.find(r => r.start + r.n - 1 === idx);
             const grouped = runs.some(r => idx >= r.start && idx < r.start + r.n);
+            const ph = drag?.id === id || !!landing?.includes(id);
             const card = (
               <CardView
                 key={renderKey(id)}
-                card={drag?.id === id ? { ...c, column: col.key } : c}
+                card={ph ? { ...c, column: col.key } : c}
                 labels={labels}
                 filter={filter}
                 open={detailId === id}
-                placeholder={drag?.id === id}
+                placeholder={ph}
                 flash={flashes[id]}
                 entering={entering.has(id)}
                 delay={fresh ? 180 + index * 70 + idx * 45 : undefined}

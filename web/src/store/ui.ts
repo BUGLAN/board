@@ -145,6 +145,8 @@ interface UIState {
   toasts: Toast[];
   flashes: Record<number, Flash>;
   drag: DragUI | null;
+  /** 已经松手、幽灵还在飞，又被下一次拖动顶出 drag 的卡片：落位之前照旧画在落点（占位），见 startDrag */
+  landing: DragUI[];
   /** 定位到卡片；pulse 为 false 时只滚过去，不放光环（刚在本窗口新建的卡片） */
   reveal: { id: number; key: number; pulse: boolean } | null;
   reject: { col: ColumnKey; key: number } | null;
@@ -207,6 +209,7 @@ export const useUI = create<UIState>(() => ({
   toasts: [],
   flashes: {},
   drag: null,
+  landing: [],
   reveal: null,
   reject: null,
   image: null,
@@ -418,3 +421,21 @@ export const reveal = (id: number, pulse = true) => set({ reveal: { id, key: ++r
 export const rejectColumn = (col: ColumnKey) => set({ reject: { col, key: ++revealSeq } });
 
 export const setDrag = (drag: DragUI | null) => set({ drag });
+
+/** 开始拖一张卡片。上一张已经松手、幽灵还在飞（drag.dropping）时，它挪进 landing，和新的 drag 同一次更新：
+    落位的补丁要等幽灵落下才叠（lib/drag 的 hold），这期间它在数据里还在原来的块；如果预览跟着被新的 drag 顶掉，
+    它会被画回原来的块一下、落位时再换块，换块的落位动画又播一遍（default/main#657） */
+export const startDrag = (drag: DragUI) =>
+  set(s => {
+    const prev = s.drag;
+    if (!prev?.dropping || prev.id === drag.id) return { drag };
+    return { drag, landing: [...s.landing.filter(l => l.id !== prev.id && l.id !== drag.id), prev] };
+  });
+
+/** 这张卡片的幽灵落下了：去掉它的预览。它还是当前的 drag 时清空 drag；已经被下一次拖动顶进 landing 时只从 landing 去掉，
+    不碰正在拖的那一张 */
+export const endDrop = (id: number) =>
+  set(s => {
+    if (s.drag?.id === id) return { drag: null };
+    return s.landing.some(l => l.id === id) ? { landing: s.landing.filter(l => l.id !== id) } : s;
+  });

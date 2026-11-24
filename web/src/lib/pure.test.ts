@@ -1,6 +1,6 @@
 /* 不碰 DOM 的纯函数：拖拽落点（placeAt）、拖拽预览（previewCols）、工作流条排版（mainPath / layoutFlow） */
 import { describe, expect, it } from 'vitest';
-import { dragFor, pack, previewCols, withDefaults } from '../components/BoardView';
+import { dragFor, landingByCol, pack, previewCols, withDefaults } from '../components/BoardView';
 import type { DragUI } from '../store/ui';
 import { FLOW, status } from '../../test/fixtures';
 import { placeAt } from './drag';
@@ -90,6 +90,29 @@ describe('previewCols（拖拽预览）', () => {
   it('index 超出放最后；目标状态还没有卡片时新建', () => {
     expect(previewCols(cols, drag({ col: 'doing', index: 9 })).doing).toEqual([4, 1]);
     expect(previewCols(cols, drag({ col: 'review', index: 0 })).review).toEqual([1]);
+  });
+
+  it('落位中的卡片（被下一次拖动顶出 drag 的）留在各自的落点，再放正在拖的那张（default/main#657）', () => {
+    const all = { todo: [1, 2, 3], doing: [4], done: [5, 6] };
+    const landing = [drag({ id: 1, col: 'done', index: 2, dropping: true })];
+    // 没有在拖的卡片时也照样放
+    expect(previewCols(all, null, landing)).toEqual({ todo: [2, 3], doing: [4], done: [5, 6, 1] });
+    // 正在拖的那张按落位卡片已经放好之后的列表算位置（和 locate 量到的画面一致）
+    const both = previewCols(all, drag({ id: 2, col: 'done', index: 3 }), landing);
+    expect(both).toEqual({ todo: [3], doing: [4], done: [5, 6, 1, 2] });
+    expect(both.doing).toBe(all.doing);
+    expect(all).toEqual({ todo: [1, 2, 3], doing: [4], done: [5, 6] });
+  });
+
+  it('落位中的卡片不在这块白板上（落位时换了白板）跳过；和正在拖的是同一张时按正在拖的放', () => {
+    const all = { todo: [1, 2], done: [5] };
+    expect(previewCols(all, null, [drag({ id: 99, col: 'done', index: 0 })])).toEqual(all);
+    expect(previewCols(all, drag({ id: 1, col: 'todo', index: 1 }), [drag({ id: 1, col: 'done', index: 0 })])).toEqual({ todo: [2, 1], done: [5] });
+  });
+
+  it('landingByCol：落位中的卡片按落点所在的状态分组', () => {
+    expect(landingByCol([])).toEqual({});
+    expect(landingByCol([drag({ id: 1, col: 'done' }), drag({ id: 2, col: 'doing' }), drag({ id: 3, col: 'done' })])).toEqual({ done: [1, 3], doing: [2] });
   });
 });
 
