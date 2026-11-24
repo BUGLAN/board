@@ -304,7 +304,7 @@ impl Backend {
 
 /// 卡片命令的 JSON（与界面发给服务端的格式相同）。
 ///
-/// CLI 只构造这里列出的命令；回复并移动、改评论、删评论、释放、删除、恢复、永久删除、合并、标为已读
+/// CLI 只构造这里列出的命令；回复并移动、改评论、删评论、释放、删除、恢复、永久删除、合并、标为已读、复制为新卡片
 /// 只有界面会发，CLI 不构造，所以在这里是 `unreachable!`（漏一个会在编译时报出来，不会漏发请求）
 fn cmd_json(cmd: &Cmd) -> Value {
     match cmd {
@@ -333,7 +333,8 @@ fn cmd_json(cmd: &Cmd) -> Value {
         | Cmd::Purge { .. }
         | Cmd::Merge { .. }
         | Cmd::Seen { .. }
-        | Cmd::Later { .. } => unreachable!("CLI 不构造这条命令"),
+        | Cmd::Later { .. }
+        | Cmd::Copy { .. } => unreachable!("CLI 不构造这条命令"),
     }
 }
 

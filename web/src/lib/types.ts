@@ -967,6 +967,8 @@ export interface Card {
   laterAt?: number | null;
   /** 拆自：同一块白板上另一张卡的编号（board new --from）；原卡删除后照样留着编号。旧服务端没有 */
   splitFrom?: number | null;
+  /** 复制自：同一块白板上另一张卡的编号（「复制为新卡片」，PRD §10.8）。原卡删除后照样留着编号；旧服务端没有 */
+  copiedFrom?: number | null;
 }
 
 /** 「未整理」里的条目是不是「新」：agent 记下、人还没看过 */
@@ -1004,6 +1006,8 @@ export interface CardDetail extends Card {
   attachments?: Attachment[];
   /** 拆出：「拆自」是这张的卡片（不含回收站里的），按编号。旧服务端没有 */
   splitInto?: number[];
+  /** 复制为：「复制自」是这张的卡片（不含回收站里的），按编号。旧服务端没有 */
+  copiedInto?: number[];
 }
 
 /**
@@ -1147,7 +1151,10 @@ export type Cmd =
   /** 人看过「未整理」里的条目（仅人）：不给 id 时是这块白板「未整理」里的全部（「全部标为已读」） */
   | { op: 'seen'; id?: number }
   /** 「稍后再做」（default/main#303）：收起（on）/ 放回「未整理」里的一条，仅人 */
-  | { op: 'later'; id: number; on: boolean };
+  | { op: 'later'; id: number; on: boolean }
+  /** 复制为新卡片（仅人，PRD §10.8）：按给的标题、描述、标签新建一张，不带原卡的动态、领取、耗时；
+      files 把新描述里引用的原卡附件复制一份；move_to（移到一个状态）/ trash（移进回收站）在同一个写事务里处理原卡 */
+  | { op: 'copy'; id: number; title: string; body?: string; column?: 'inbox'; labels?: number[]; files?: boolean; move_to?: ColumnKey; trash?: boolean };
 
 /* ------------------------------ 大盘（GET /api/stats） ------------------------------ */
 

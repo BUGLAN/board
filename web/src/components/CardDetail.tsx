@@ -15,7 +15,7 @@ import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
 import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, commentPlaceholder, copyText, cx, dateTime, FWD_KEY, hhmm, isMobile, replay, since } from '../lib/util';
 import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
-import { closeCtx, confirm, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
+import { closeCtx, confirm, openCopy, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { isTextFile } from '../lib/textFile';
 import { ActorAvatar, AgentAvatar, Avatar, DescTabs, LabelChip, Markdown, Tip, useNow } from './bits';
 import { RunPill } from './Card';
@@ -29,7 +29,7 @@ const NO_IDS: number[] = [];
 
 const ACT_ICON: Record<string, IconName> = {
   create: 'sparkle', edit: 'edit', move: 'move', reorder: 'reorder', claim: 'claim', renew: 'renew', timeout: 'timer', release: 'unlock', label: 'tag',
-  beat: 'timer', lost: 'alert', dispatch: 'dispatch', merge: 'merge',
+  beat: 'timer', lost: 'alert', dispatch: 'dispatch', merge: 'merge', copy: 'copy',
 };
 
 export function CardDetail() {
@@ -393,6 +393,11 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             >
               <Icon name="trash" />
               删除卡片
+            </button>
+            {/* 复制为新卡片（PRD §10.8）：换个做法从头来，新卡不带这张的动态、领取、wip */}
+            <button className="btn sm d-copy" type="button" aria-label="复制为新卡片" disabled={saving} onClick={() => openCopy(c.id)}>
+              <Icon name="copy" />
+              <span className="d-copy-t">复制为新卡片</span>
             </button>
             {/* 「未整理」里的条目：拆解（派给 agent，不领取、不移动它，拆出的卡记回未整理） */}
             <Tip
@@ -775,11 +780,15 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
   );
 }
 
-/** 拆自 #5 / 拆出 #6 #7：拆出的按编号，白板上的（实时）和详情里服务端给的（含快照省略的）合在一起 */
+/** 拆自 #5 / 拆出 #6 #7、复制自 #8 / 复制为 #9：拆出、复制为的按编号，白板上的（实时）和详情里服务端给的（含快照省略的）合在一起 */
 function SplitLinks({ card: c }: { card: Detail }) {
   const kids = useData(s => s.board?.cards);
   const into = [...new Set([...(c.splitInto ?? []), ...Object.values(kids ?? {}).filter(x => x.splitFrom === c.id).map(x => x.id)])].sort((a, b) => a - b);
-  if (c.splitFrom == null && !into.length) return null;
+  // 复制自 / 复制为（PRD §10.8）：同一行，规则同拆自 / 拆出
+  const copies = [...new Set([...(c.copiedInto ?? []), ...Object.values(kids ?? {}).filter(x => x.copiedFrom === c.id).map(x => x.id)])].sort(
+    (a, b) => a - b,
+  );
+  if (c.splitFrom == null && !into.length && c.copiedFrom == null && !copies.length) return null;
   return (
     <div className="d-splits">
       {c.splitFrom != null && (
@@ -791,6 +800,19 @@ function SplitLinks({ card: c }: { card: Detail }) {
         <span>
           拆出
           {into.map(id => (
+            <SplitRef key={id} id={id} />
+          ))}
+        </span>
+      )}
+      {c.copiedFrom != null && (
+        <span>
+          复制自 <SplitRef id={c.copiedFrom} />
+        </span>
+      )}
+      {copies.length > 0 && (
+        <span>
+          复制为
+          {copies.map(id => (
             <SplitRef key={id} id={id} />
           ))}
         </span>

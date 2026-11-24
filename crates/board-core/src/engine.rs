@@ -142,6 +142,28 @@ pub enum Cmd {
         #[serde(default)]
         body: Option<String>,
     },
+    /// 复制为新卡片（仅人，卡片详情的「复制为新卡片」，PRD §10.8）：按给的标题、描述、标签新建一张，放到哪、标签的规则同 New；
+    /// 不带原卡的动态、领取、耗时，记下复制自哪张（copied_from）。files：新描述里引用的、原卡的附件各复制一份
+    /// （同一个文件，新的附件记录，上传者和时间不变），引用换成新的；不复制时引用原样留着。
+    /// 原卡可以一起处理：move_to 移到一个状态（同 Move 的规则），或 trash 移进回收站（同 Delete），两个只能选一个。
+    /// 都在一个写事务里，任何一步被拒绝都不留下；两张卡各记一条动态
+    Copy {
+        id: i64,
+        title: String,
+        #[serde(default)]
+        body: Option<String>,
+        /// 同 New：可以传 "inbox"；默认首个可领取状态
+        #[serde(default)]
+        column: Option<String>,
+        #[serde(default)]
+        labels: Vec<i64>,
+        #[serde(default)]
+        files: bool,
+        #[serde(default)]
+        move_to: Option<String>,
+        #[serde(default)]
+        trash: bool,
+    },
     /// 人看过「未整理」里的条目（PRD §10.5）：展开一条、点「全部标为已读」。已经是看过的跳过；
     /// 没给 id 时是这块白板「未整理」里的全部条目。这是界面上的读操作，不新增动态
     Seen {
@@ -230,7 +252,7 @@ struct TrashMeta {
 impl TrashCard {
     /// 永久删除时返回给界面、CLI 的卡片（不含动态和附件）
     fn into_detail(self) -> CardDetail {
-        CardDetail { card: self.card, activity: vec![], attachments: vec![], split_into: vec![] }
+        CardDetail { card: self.card, activity: vec![], attachments: vec![], split_into: vec![], copied_into: vec![] }
     }
 }
 
@@ -248,6 +270,7 @@ impl<'a> W<'a> {
         let cmd = match cmd {
             Cmd::Submit { id, text } => return self.hand_over(board, actor, id, text, false),
             Cmd::GiveUp { id, text } => return self.hand_over(board, actor, id, text, true),
+            c @ Cmd::Copy { .. } => return self.copy_card(board, actor, c),
             c => c,
         };
         // 评论并移动：拆成评论、移动两步，都在调用方的这一个写事务里（任何一步出错整个写回滚）
@@ -600,7 +623,7 @@ impl<'a> W<'a> {
             }
 
             // 上面已经拆成评论和移动
-            Cmd::Reply { .. } | Cmd::Submit { .. } | Cmd::GiveUp { .. } => unreachable!(),
+            Cmd::Reply { .. } | Cmd::Submit { .. } | Cmd::GiveUp { .. } | Cmd::Copy { .. } => unreachable!(),
 
             /* ---------------- 评论 ---------------- */
             Cmd::Comment { id, text } => {
@@ -960,11 +983,82 @@ impl<'a> W<'a> {
                 return match id {
                     Some(id) => self.read().card(board, id),
                     // 全部标为已读：不是对某一张卡片的操作，返回一块空白
-                    None => Ok(CardDetail { card: blank_card(), activity: vec![], attachments: vec![], split_into: vec![] }),
+                    None => Ok(CardDetail { card: blank_card(), activity: vec![], attachments: vec![], split_into: vec![], copied_into: vec![] }),
                 };
             }
         };
         self.read().card(board, id)
+    }
+
+    /// 复制为新卡片（[`Cmd::Copy`]）：新建、复制附件、两边记动态、处理原卡，都在调用方的这一个写事务里
+    fn copy_card(&mut self, board: &BoardRef, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
+        let Cmd::Copy { id, title, body, column, labels, files, move_to, trash } = cmd else {
+            return Err(BoardError::usage("不是复制命令"));
+        };
+        if !actor.is_human() {
+            return Err(BoardError::usage("复制为新卡片只能在界面上做"));
+        }
+        if move_to.is_some() && trash {
+            return Err(BoardError::usage("原卡只能二选一：移到一个状态，或移进回收站"));
+        }
+        self.sweep_board(board.id)?;
+        self.ensure_not_in_trash(board, id)?;
+        let b = board.id;
+        self.row(b, id)?;
+        let body = body.unwrap_or_default();
+        let body = if files { self.copy_card_files(b, id, &body)? } else { body };
+        let d = self.exec(board, actor, Cmd::New { title, body: Some(body), column, top: false, labels, from: None })?;
+        let new = d.card.id;
+        self.tx.execute("UPDATE cards SET copied_from = ?3 WHERE board = ?1 AND id = ?2", params![b, new, id])?;
+        // 新卡动态的第一条写明从哪张复制来（同定时建卡）；原卡记一条复制成了哪张
+        let text = format!("从 #{id} 复制过来");
+        self.tx.execute("UPDATE activity SET text = ?3 WHERE board = ?1 AND card = ?2 AND action = 'create'", params![b, new, text])?;
+        self.tx.execute("UPDATE events SET text = ?3 WHERE board = ?1 AND card = ?2 AND op = 'create'", params![b, new, text])?;
+        self.track(b, id, actor, "copy", &format!("复制为 #{new}"))?;
+        if let Some(column) = move_to {
+            self.exec(board, actor, Cmd::Move { id, column, top: false, index: None, order: None, before: None, after: None })?;
+        } else if trash {
+            self.exec(board, actor, Cmd::Delete { id })?;
+        }
+        self.read().card(board, new)
+    }
+
+    /// 复制为新卡片时新描述里引用的、原卡的附件：每个复制一份（同一个文件，新的附件记录、还没归属，上传者和时间不变），
+    /// 描述里的引用换成新的，建卡时归到新卡。同一个附件引用几次只复制一份；引用的是别的卡的、已经不在的，原样留着
+    fn copy_card_files(&mut self, board: i64, src: i64, body: &str) -> Result<String> {
+        const KEY: &str = "/api/files/";
+        let mut done: Vec<(i64, i64)> = vec![];
+        let mut out = String::with_capacity(body.len());
+        let mut rest = body;
+        while let Some(i) = rest.find(KEY) {
+            let after = &rest[i + KEY.len()..];
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            out.push_str(&rest[..i + KEY.len()]);
+            rest = &after[digits.len()..];
+            let Ok(old) = digits.parse::<i64>() else {
+                out.push_str(&digits);
+                continue;
+            };
+            let new = match done.iter().find(|(o, _)| *o == old) {
+                Some((_, n)) => Some(*n),
+                None => {
+                    let n = self.tx.execute(
+                        "INSERT INTO attachments (board, card, name, mime, size, sha256, created_at, created_by_kind, created_by_name)
+                         SELECT board, NULL, name, mime, size, sha256, created_at, created_by_kind, created_by_name
+                         FROM attachments WHERE id = ?1 AND board = ?2 AND card = ?3",
+                        params![old, board, src],
+                    )?;
+                    (n == 1).then(|| {
+                        let n = self.tx.last_insert_rowid();
+                        done.push((old, n));
+                        n
+                    })
+                }
+            };
+            out.push_str(&new.map(|n| n.to_string()).unwrap_or(digits));
+        }
+        out.push_str(rest);
+        Ok(out)
     }
 
     /// 批量加、去标签（仅人，界面批量条；default/main#531）：在调用方的一个写事务里逐张执行和 [`Cmd::Label`] 同一套规则，
@@ -1505,6 +1599,7 @@ fn blank_card() -> Card {
         seen_at: None,
         later_at: None,
         split_from: None,
+        copied_from: None,
     }
 }
 

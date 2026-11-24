@@ -167,6 +167,8 @@ interface UIState {
   /** 卡片详情里的「派发」对话框，或白板批量条的「派送」：卡片编号 */
   /** move：改派这条还在排队的派发（派发 ID），不是新派 */
   dispatchOf: { cards: number[]; move?: number } | null;
+  /** 卡片详情里的「复制为新卡片」面板：原卡编号（PRD §10.8） */
+  copyOf: number | null;
   /** 打开的「会话」弹窗：会话里任一次派发的 ID；card 是要定位到的那张卡 */
   session: SessionReq | null;
   /** 打开的复盘台（PRD §10.14）：当前白板上哪几个状态；mode 是复盘（交审）还是处理（需要人处理） */
@@ -216,6 +218,7 @@ export const useUI = create<UIState>(() => ({
   hostTab: null,
   hostsView: initialHostsView(),
   dispatchOf: null,
+  copyOf: null,
   session: null,
   review: null,
   boardSheet: false,
@@ -348,12 +351,15 @@ export const openProjectSettings = (project: string | null) => set({ projectSett
 export const openCardCrons = (path: string | null) => set({ cardCrons: path });
 
 
+/** 打开 / 关掉（null）「复制为新卡片」面板 */
+export const openCopy = (card: number | null) => set({ copyOf: card });
+
 /** 有弹窗或浮层打开时，全局快捷键不生效 */
 export function overlayOpen() {
   const s = get();
   return !!(
     s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.textFile || s.host ||
-    s.dispatchOf != null || s.boardSettings || s.projectSettings || s.cardCrons || s.session
+    s.dispatchOf != null || s.copyOf != null || s.boardSettings || s.projectSettings || s.cardCrons || s.session
   );
 }
 

@@ -323,6 +323,10 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 
 .d-actions { display: flex; align-items: center; gap: 10px; padding: 14px 0 0; margin: 22px 22px 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--text-3); }
 .d-actions .d-move { margin-left: auto; flex: none; }
+/* 窄屏手机：「复制为新卡片」只留图标，四个按钮一行放得下 */
+@media (max-width: 520px) {
+  .d-actions .d-copy-t { display: none; }
+}
 
 /* ---------------- 命令面板 ---------------- */
 .palette-wrap {
@@ -402,6 +406,42 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .dialog-icon.info { color: var(--brand); background: var(--brand-soft); }
 .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 20px; }
 .dialog-actions .btn { height: 38px; }
+
+/* ---------------- 复制为新卡片（PRD §10.8） ---------------- */
+.cpy-dialog.dialog.wide { width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow-y: auto; scrollbar-width: thin; }
+.cpy-past { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 14px; padding: 9px 10px; border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); font-size: 11.5px; color: var(--text-2); }
+.cpy-past > span:not(.cpy-past-k) { padding: 1px 7px; border-radius: 999px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.cpy-past b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cpy-past .bad b { color: var(--danger-text); }
+.cpy-past-k { margin-right: 2px; font-weight: 600; }
+.cpy-sec { margin-top: 16px; }
+.cpy-k { margin-bottom: 6px; font-size: 11.5px; font-weight: 600; color: var(--text-3); letter-spacing: .02em; }
+.cpy-rows { display: flex; flex-direction: column; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.cpy-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-top: 1px solid var(--line); cursor: pointer; }
+.cpy-row:first-child { border-top: 0; }
+.cpy-row:hover:not(.locked, .cpy-labels) { background: var(--surface-2); }
+.cpy-row.locked, .cpy-labels { cursor: default; }
+.cpy-row input { flex: none; width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--brand); }
+.cpy-row > span { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; font-size: 13px; }
+.cpy-row b { font-weight: 500; color: var(--text); }
+.cpy-row:not(.on) b { color: var(--text-3); }
+.cpy-row em { flex-basis: 100%; font-style: normal; font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 标签那一行：只有图标 + 和卡片详情一样的胶囊（悬停出 ×）+「添加标签」 */
+.cpy-labels { align-items: center; }
+.cpy-ic { flex: none; display: grid; place-items: center; width: 15px; height: 15px; color: var(--text-3); }
+.cpy-ic svg { width: 13px; height: 13px; }
+.cpy-labels .d-labels { margin-top: 0; gap: 5px; }
+.cpy-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cpy-seg.three { grid-template-columns: 1fr 1fr 1fr; }
+.cpy-seg button { min-width: 0; height: 36px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12.5px; font-weight: 600; color: var(--text); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: inset 0 0 0 1px var(--line); transition: background-color var(--dur-1), box-shadow var(--dur-1); }
+.cpy-seg button:hover:not(:disabled) { background: var(--surface-2); }
+.cpy-seg button.on { background: var(--brand-soft); box-shadow: inset 0 0 0 1.5px var(--brand); }
+.cpy-seg button:disabled { opacity: .45; cursor: not-allowed; }
+.cpy-dialog .dialog-actions .btn svg { width: 14px; height: 14px; }
+/* 窄屏手机：原卡的三个选项一行放不下「移到「<终点>」」，竖着排 */
+@media (max-width: 420px) {
+  .cpy-seg.three { grid-template-columns: 1fr; }
+}
 
 /* ---------------- Toast ---------------- */
 .toasts {

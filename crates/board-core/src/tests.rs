@@ -2043,6 +2043,82 @@ fn inbox_merge() {
     assert_eq!(snapshot(&s, B, T0).cols["inbox"], vec![1, 6]);
 }
 
+/* ------------------------------ 复制为新卡片（PRD §10.8） ------------------------------ */
+
+/// 复制为新卡片：新卡干净（不带动态、领取、耗时），描述里引用的附件复制一份、只在评论里的不复制，两边互相记下；
+/// 原卡可以一起移走或进回收站，任何一步被拒绝都不留下；只有人能复制
+#[test]
+fn copy_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::open(&dir.path().join("b.db")).unwrap();
+    s.ensure_default(T0).unwrap();
+    let b = s.read(|r| r.resolve(B)).unwrap();
+    let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None, false)).unwrap().id;
+    exec(&mut s, B, &human(), T0, new("修安装脚本")).unwrap();
+    let shot = s.attach(T0, &b, Some(1), &human(), "shot.png", PNG).unwrap();
+    let log = s.attach(T0, &b, Some(1), &alpha(), "run.log", b"boom\n").unwrap();
+    let body = format!("要做的\n\n![图]({0})\n\n再看一次 ![图]({0})", shot.url);
+    exec(&mut s, B, &human(), T0, Cmd::Edit { id: 1, title: None, body: Some(body.clone()) }).unwrap();
+    exec(&mut s, B, &alpha(), T0, claim(Some(1))).unwrap();
+    exec(&mut s, B, &alpha(), T0, Cmd::Comment { id: 1, text: format!("报错了 [日志]({})", log.url) }).unwrap();
+    let copy = |body: &str, files: bool, move_to: Option<&str>, trash: bool| Cmd::Copy {
+        id: 1,
+        title: " 修安装脚本（重来） ".into(),
+        body: Some(body.into()),
+        column: Some("inbox".into()),
+        labels: vec![bug],
+        files,
+        move_to: move_to.map(Into::into),
+        trash,
+    };
+
+    // 只有人能复制；原卡只能二选一；原卡还被持有时不能一起移走，整个复制不留下
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, copy(&body, true, None, false))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, copy(&body, true, Some("done"), true))), ErrorCode::Usage);
+    assert_eq!(code(exec(&mut s, B, &human(), T0, copy(&body, true, Some("done"), false))), ErrorCode::NotHolder);
+    assert!(snapshot(&s, B, T0).cols["inbox"].is_empty(), "被拒绝时不建卡");
+    assert_eq!(card(&s, B, 1).attachments.len(), 2);
+
+    // 被持有的卡也能复制（原卡不动）：新卡干净，描述里的附件复制一份（引用两次也只复制一份），评论里的日志不复制
+    let d = exec(&mut s, B, &human(), T0, copy(&body, true, None, false)).unwrap();
+    let id = d.card.id;
+    assert_eq!((d.card.title.as_str(), d.card.column.as_str(), d.card.labels.clone()), ("修安装脚本（重来）", "inbox", vec![bug]));
+    assert_eq!((d.card.holder.as_deref(), d.card.runs, d.card.copied_from), (None, 0, Some(1)));
+    assert_eq!(d.activity.iter().map(|a| a.text.as_str()).collect::<Vec<_>>(), ["从 #1 复制过来"], "不带原卡的动态");
+    assert_eq!(d.attachments.len(), 1);
+    let a = &d.attachments[0];
+    assert_ne!(a.id, shot.id);
+    assert_eq!((a.name.as_str(), a.created_by.name.as_str()), ("shot.png", shot.created_by.name.as_str()), "上传者不变");
+    assert_eq!(d.card.body, format!("要做的\n\n![图]({0})\n\n再看一次 ![图]({0})", a.url), "引用换成新的");
+    let src = card(&s, B, 1);
+    assert_eq!((src.card.holder.as_deref(), src.copied_into.clone()), (Some("alpha"), vec![id]));
+    assert!(src.activity.iter().any(|x| x.action == "copy" && x.text == format!("复制为 #{id}")));
+    assert_eq!(snapshot(&s, B, T0).cards[&id].copied_from, Some(1));
+
+    // 不复制附件：引用原样留着
+    let d = exec(&mut s, B, &human(), T0, copy(&body, false, None, false)).unwrap();
+    assert!(d.attachments.is_empty());
+    assert_eq!(d.card.body, body);
+
+    // 原卡一起移到终点 / 移进回收站（领取已经因为没有心跳释放了）
+    let d = exec(&mut s, B, &human(), T0 + 3 * MIN, copy(&body, true, Some("done"), false)).unwrap();
+    assert_eq!(card(&s, B, 1).card.column, "done");
+    assert_eq!(d.card.column, "inbox");
+    let mut c = copy(&body, true, None, true);
+    if let Cmd::Copy { column, .. } = &mut c {
+        *column = None;
+    }
+    let d = exec(&mut s, B, &human(), T0 + 4 * MIN, c).unwrap();
+    assert_eq!(d.card.column, "todo", "不选「未整理」时放进首个可领取状态");
+    assert!(s.read(|r| r.in_trash(&b, 1)).unwrap());
+    assert_eq!(code(exec(&mut s, B, &human(), T0 + 5 * MIN, copy(&body, true, None, false))), ErrorCode::InTrash);
+    let mut c = copy(&body, true, None, false);
+    if let Cmd::Copy { id, .. } = &mut c {
+        *id = 99;
+    }
+    assert_eq!(code(exec(&mut s, B, &human(), T0, c)), ErrorCode::NotFound);
+}
+
 /* ------------------------------ 未整理：新条目（PRD §10.5） ------------------------------ */
 
 fn inbox_new(title: &str) -> Cmd {
