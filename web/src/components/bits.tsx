@@ -139,7 +139,6 @@ export function AgentAvatar({
   name,
   agentId,
   className,
-  title,
   enter,
   loop,
   loopIndex = 0,
@@ -148,13 +147,12 @@ export function AgentAvatar({
   /** 服务端带的 agent 标识；不传时按名字的旧格式解析 */
   agentId?: string | null;
   className?: string;
-  title?: string;
   enter?: boolean;
   loop?: boolean;
   loopIndex?: number;
 }) {
   const id = agentIdFor(name, agentId);
-  const tip = title ?? name ?? '';
+  const tip = name ?? '';
   const m = id ? agentMark(id) : null;
   const ref = useRef<HTMLSpanElement>(null);
   const art = () => ref.current?.querySelector('.logo-art');
@@ -439,15 +437,13 @@ export interface SelectOption {
     这里按钮是 .input 的样子加项目自己的箭头图标，点开的列表是项目的弹出菜单（overlays/CtxMenu 的 select，和「移动到」「排序」同一套）。
     键盘：回车 / 空格 / 上下键打开；列表里上下键、Home / End、按字符跳转，回车选中，Esc 关闭 */
 export function Select({
-  value, options, onChange, className, disabled, placeholder, ...rest
+  value, options, onChange, className, disabled, ...rest
 }: {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
   className?: string;
   disabled?: boolean;
-  /** 当前值不在选项里时显示 */
-  placeholder?: string;
   /** 没有可见的标签文字时必须给（外面包着 <label> 时可以不给） */
   'aria-label'?: string;
   'data-tip'?: string;
@@ -494,7 +490,7 @@ export function Select({
         }
       }}
     >
-      <span className="sel-v">{options.find(o => o.value === value)?.label ?? placeholder ?? ''}</span>
+      <span className="sel-v">{options.find(o => o.value === value)?.label ?? ''}</span>
       <Icon name="chevDown" />
     </button>
   );

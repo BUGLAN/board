@@ -162,21 +162,17 @@ export function TrendBars({
   bucket,
   label,
   fmt,
-  height = 200,
-  onAxisNote,
 }: {
   data: { t: number; v: number }[];
   bucket: 'hour' | 'day';
   label: string;
   fmt: (v: number) => string;
-  height?: number;
-  /** 横轴日期撤到悬停提示里时，把一句说明交出去（写在图例旁边） */
-  onAxisNote?: (note: string) => void;
 }) {
   const [ref, W] = useWidth<HTMLDivElement>();
   const [hi, setHi] = useState<number | null>(null);
   const tip = useTip();
   const L = 34, B = 22, T = 8;
+  const height = 200;
   const max = nice(Math.max(1, ...data.map(d => d.v)));
   const n = data.length || 1;
   const step = Math.max(0, W - L) / n;
@@ -188,10 +184,6 @@ export function TrendBars({
   const short = bucket === 'day';
   const isEdge = (i: number) => bucket === 'hour' && new Date(data[i].t).getHours() === 0;
   const ax = axisLayout(n, W, L, !short, data.map(d => d.t), isEdge);
-  const note = onAxisNote ? axisNote(data.map(d => d.t), W, L) : '';
-  useLayoutEffect(() => {
-    onAxisNote?.(note);
-  });
   return (
     <div className="sp-trend" ref={ref}>
       <svg width={W} height={height} role="img" aria-label={`${label}趋势`}>
@@ -378,14 +370,10 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 export function CalHeat({
   days,
-  onPick,
-  big,
   maxWeeks = 26,
   cell,
 }: {
   days: { t: number; v: number; future: boolean }[];
-  onPick?: (t: number) => void;
-  big?: boolean;
   /** 宽度放得下几周：放不下时从最早的一周开始少显示 */
   maxWeeks?: number;
   /** 格子边长（px）：放在宽处时放大到和别处一致，默认用 CSS 里的 14px */
@@ -397,7 +385,7 @@ export function CalHeat({
   const weeks = all.slice(Math.max(0, all.length - maxWeeks));
   const max = Math.max(1, ...weeks.flat().map(d => d.v));
   return (
-    <div className={cx('sp-cal', big && 'big')} style={cell ? ({ ['--c' as string]: `${cell}px` } as CSSProperties) : undefined}>
+    <div className="sp-cal" style={cell ? ({ ['--c' as string]: `${cell}px` } as CSSProperties) : undefined}>
       <div className="sp-cal-y">
         {ROWS.map((r, i) => (
           <span key={r}>{i % 2 === 0 ? r : ''}</span>
@@ -414,8 +402,7 @@ export function CalHeat({
                 return (
                   <i
                     key={d.t}
-                    className={cx('sp-cell', d.future ? 'future' : `l${level(d.v, max)}`, onPick && !d.future && 'pick')}
-                    onClick={() => !d.future && onPick?.(d.t)}
+                    className={cx('sp-cell', d.future ? 'future' : `l${level(d.v, max)}`)}
                     onPointerMove={e =>
                       !d.future &&
                       tip.show(
@@ -425,7 +412,6 @@ export function CalHeat({
                             {fmtDay(d.t)} {fmtWeekday(d.t)}
                           </b>
                           <span>{d.v ? `${d.v} 条动态` : '没有动态'}</span>
-                          {onPick && <em>点一下只看这一天</em>}
                         </>,
                       )
                     }

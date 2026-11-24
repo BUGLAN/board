@@ -111,15 +111,11 @@
 .sp-cal-y::before { content: ""; }
 .sp-cal-y span { display: flex; align-items: center; }
 .sp-cal { --c: 14px; }
-.sp-cal.big { --c: 18px; }
 .sp-cal-y { grid-template-rows: 16px repeat(7, var(--c)) !important; }
 .sp-cal-weeks { display: grid; grid-auto-flow: column; grid-auto-columns: var(--c); gap: 3px; }
 .sp-cal-col { display: grid; grid-template-rows: 16px repeat(7, var(--c)); gap: 3px; }
 .sp-cal-col .sp-cell { width: var(--c); height: var(--c); }
 .sp-cal-m { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
-.sp-cal .sp-cell.pick { cursor: pointer; }
-.sp-cal .sp-cell.pick:hover { box-shadow: 0 0 0 1.5px var(--text-2); }
-.sp-cal.big .sp-cal-weeks, .sp-cal.big .sp-cal-col, .sp-cal.big .sp-cal-y { gap: 4px; }
 
 /* ---------- 表 ---------- */
 .sp-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
