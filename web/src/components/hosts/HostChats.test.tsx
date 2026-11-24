@@ -77,7 +77,7 @@ const host = (x: Partial<HostInfo> = {}): HostInfo =>
     ...x,
   } as unknown as HostInfo);
 const chat = (id: number, x: Partial<Chat> = {}): Chat => ({ id, hostId: 1, host: 'mbp', agent: 'claude', agentLabel: 'Claude Code', profileName: '写代码', title: `第 ${id} 个`, by: 'lan', createdAt: 1, lastAt: id, turn: 'idle', ...x });
-const view = (c: Chat, events: ChatView['events']): ChatView => ({ chat: c, log: [], events, eventsFrom: 1, eventsDropped: 0, runs: 1 });
+const view = (c: Chat, events: ChatView['events'], x: Partial<ChatView> = {}): ChatView => ({ chat: c, log: [], fmt: 'acp', events, eventsFrom: 1, eventsDropped: 0, runs: 1, ...x });
 const profiles: Profile[] = [
   { id: 'code', name: '写代码', agent: 'claude', provider: '', model: 'model-a', effort: 'high', note: '', only: [] },
   { id: 'doc', name: '写文档', agent: 'dsh', provider: '', model: '', effort: '', note: '', only: [] },
@@ -107,6 +107,36 @@ const enter = async () => {
 };
 
 describe('对话页签', () => {
+  it('顶部没有「过程 / 原始输出」切换，始终画过程，有事件时不画原始日志', async () => {
+    const c = chat(1);
+    calls.views.set(1, view(c, [{ id: 1, kind: 'prompt', text: '看看主目录', at: 1 }, { id: 2, kind: 'message', text: '我先看看' }], { log: ['原始输出不该出现'] }));
+    await render(host(), [c]);
+    expect(el.querySelector('.ss-modes')).toBeNull();
+    expect(el.querySelector('.hc-sub')).toBeNull();
+    expect(el.querySelector('.hc-head')?.textContent).not.toContain('原始输出');
+    expect(el.querySelector('.ev-msg')?.textContent).toContain('我先看看');
+    expect(el.querySelector('pre.hp-log.ss-log')).toBeNull();
+  });
+
+  it('没有结构化输出：在对话里直接兜底显示原始日志', async () => {
+    const c = chat(1);
+    calls.views.set(1, view(c, [], { fmt: '', log: ['第一行', '第二行'] }));
+    await render(host(), [c]);
+    expect(el.querySelector('.ss-modes')).toBeNull();
+    expect(el.querySelector('.ss-why')?.textContent).toContain('没有结构化输出');
+    expect(el.querySelector('pre.hp-log.ss-log')?.textContent).toBe('第一行\n第二行');
+  });
+
+  it('旧版 board host 且没有输出：写明原因，不再给切换入口', async () => {
+    const c = chat(1);
+    calls.views.set(1, view(c, [], { fmt: null }));
+    await render(host(), [c]);
+    expect(el.querySelector('.ss-modes')).toBeNull();
+    expect(el.querySelector('.ss-why')?.textContent).toContain('board host 版本较旧');
+    expect(el.querySelector('pre.hp-log.ss-log')?.textContent).toBe('没有输出');
+    expect(el.querySelector('.hc-head')?.textContent).not.toContain('原始输出');
+  });
+
   it('列表按最近动静排，回答中的写「回答中」；默认打开最近的那个，画出人发的消息和 agent 的回答', async () => {
     const a = chat(1, { lastAt: 100 });
     const b = chat(2, { lastAt: 200, turn: 'busy', title: '看看主目录下哪些文件夹最大' });

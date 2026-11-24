@@ -2,8 +2,9 @@
    机器详情「对话」页签（PRD §9.1「机器对话」）：左栏对话列表，右栏选中的对话或新对话
    - 左栏：最上面「新对话」（机器离线时禁用），下面是这台机器上的对话（一直留着，最近有动静的在前）：
      第一条消息、角色或 agent、回答中 / 多久前
-   - 右栏：选中的对话直接在这里聊（不弹窗）。头部角色、模型、启动环境、开始时间、回答中 / 空闲，过程 / 原始输出；
+   - 右栏：选中的对话直接在这里聊（不弹窗）。头部角色、模型、启动环境、开始时间、回答中 / 空闲；
      输出在底部时跟着新内容，往上翻时不动；底部输入框（Enter 发送、Shift+Enter 换行）
+   - 输出始终是过程（结构化事件）；没有结构化事件时在输出里直接兜底显示原始日志，不再提供过程 / 原始输出切换
    - 发消息走乐观更新（AGENTS.md「界面写操作」）：消息当帧画在输出里、标「发送中」，这一轮当帧变成「回答中」；
      失败时撤回、消息退回输入框并提示原因。这一轮在跑时不能发，旁边「停止这一轮」（要等服务端返回，按钮转圈）
    - 机器离线：输入框禁用，写「<机器> 离线，上线后才能接着发」；对话不结束
@@ -21,7 +22,7 @@ import type { Chat, ChatView, HostInfo, Workspace } from '../../lib/types';
 import { cx, hhmm } from '../../lib/util';
 import { chatPromptPatch, onChatRuns, optimistic, useData } from '../../store/data';
 import { toastError, useUI } from '../../store/ui';
-import { Segmented, Tip } from '../bits';
+import { Tip } from '../bits';
 import { Icon } from '../Icon';
 import { Mark } from './bits';
 import { NewChatForm } from './NewChat';
@@ -134,7 +135,7 @@ export function HostChats({ h, chats, sel, setSel, now }: { h: HostInfo; chats: 
   const nav = { back, full, toggle };
   const pane =
     view === 'chat' && cur ? (
-      <ChatPane key={cur.id} c={cur} mobile={mobile} nav={nav} />
+      <ChatPane key={cur.id} c={cur} nav={nav} />
     ) : view === 'new' ? (
       <>
         <div className="hc-head">
@@ -276,12 +277,38 @@ interface Sent {
   before: number;
 }
 
+/** 没有结构化事件时，直接在输出里兜底显示原始日志 */
+function ChatRawLog({ v, busy }: { v: ChatView; busy: boolean }) {
+  if (v.fmt !== '' && v.fmt != null && !v.log.length) {
+    return <p className="hp-note ss-why">{busy ? '还没有事件（board host 每 2 秒上传一次）' : '没有事件。'}</p>;
+  }
+  const why =
+    v.fmt === ''
+      ? `${v.chat.agentLabel || v.chat.agent} 没有结构化输出（配置文件里的命令没带事件流参数，或者是配置文件里加的 agent）。下面是原始输出。`
+      : v.fmt == null
+        ? '这次对话没有记录过程（board host 版本较旧，或者没开始）。下面是原始输出。'
+        : '还没有结构化事件（board host 每 2 秒上传一次）。下面是原始输出。';
+  return (
+    <>
+      <p className="hp-note ss-why">{why}</p>
+      <pre className="hp-log ss-log">
+        {v.log.length ? v.log.join('\n') : busy ? '还没有输出' : '没有输出'}
+        {busy && (
+          <>
+            {'\n'}
+            <span className="hp-caret">▍</span>
+          </>
+        )}
+      </pre>
+    </>
+  );
+}
+
 /** 右栏的一个对话：头部、输出、输入框 */
-function ChatPane({ c, mobile, nav }: { c: Chat; mobile: boolean; nav: Nav }) {
+function ChatPane({ c, nav }: { c: Chat; nav: Nav }) {
   const busy = c.turn === 'busy';
   const [more, setMore] = useState(false);
   const { view, error, kick } = useChatView(c.id, busy, `${c.turn}${c.lastAt}`);
-  const [mode, setMode] = useState<'events' | 'raw'>('events');
   const [sent, setSent] = useState<Sent[]>([]);
   const events = view?.events ?? [];
   const prompts = events.filter(e => e.kind === 'prompt').length;
@@ -298,7 +325,7 @@ function ChatPane({ c, mobile, nav }: { c: Chat; mobile: boolean; nav: Nav }) {
   useLayoutEffect(() => {
     const el = out.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [size, mode, !!view]);
+  }, [size, !!view]);
   // 键盘弹起、放大还原时输出区变矮：在底部时仍贴着底部
   useEffect(() => {
     const el = out.current;
@@ -313,18 +340,6 @@ function ChatPane({ c, mobile, nav }: { c: Chat; mobile: boolean; nav: Nav }) {
   }, []);
   const rows = groupEvents(events);
   const now = runningTool(events, busy);
-  const modes = (
-    <span className="ss-modes">
-      <Segmented
-        value={mode}
-        options={[
-          ['events', '过程'],
-          ['raw', '原始输出'],
-        ]}
-        onChange={setMode}
-      />
-    </span>
-  );
   return (
     <>
       <div className={cx('hc-head', more && 'more')}>
@@ -343,10 +358,8 @@ function ChatPane({ c, mobile, nav }: { c: Chat; mobile: boolean; nav: Nav }) {
             <span>{c.host}</span>
           </small>
         </button>
-        {!mobile && modes}
         <PaneNav nav={nav} side="zoom" />
       </div>
-      {mobile && <div className="hc-sub">{modes}</div>}
       <div
         className="hc-out"
         ref={out}
@@ -358,23 +371,15 @@ function ChatPane({ c, mobile, nav }: { c: Chat; mobile: boolean; nav: Nav }) {
         }}
       >
         {error && <p className="hp-note ss-err">{error}</p>}
-        {!view && !error ? (
-          <SegBodySkeleton i={0} />
-        ) : mode === 'raw' ? (
-          <pre className="hp-log ss-log">
-            {view?.log.length ? view.log.join('\n') : '还没有输出'}
-            {busy && (
-              <>
-                {'\n'}
-                <span className="hp-caret">▍</span>
-              </>
-            )}
-          </pre>
+        {!view ? (
+          !error && <SegBodySkeleton i={0} />
         ) : (
           <div className="ev-list ss-chat">
-            {rows.map(r => (
-              <EventRow key={rowKey(r)} r={r} events={events} running={busy} now={now} chat />
-            ))}
+            {events.length ? (
+              rows.map(r => <EventRow key={rowKey(r)} r={r} events={events} running={busy} now={now} chat />)
+            ) : (
+              <ChatRawLog v={view} busy={busy} />
+            )}
             {sent.map(x => (
               <PromptRow key={`sent${x.key}`} text={x.text} at={x.at} sending />
             ))}

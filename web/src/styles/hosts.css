@@ -940,8 +940,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 
 /* ---------- 会话「过程」：agent 说的话、工具调用、出错、结束（#184） ---------- */
 .ss-usage { font-family: var(--f-mono); font-size: 11.5px; color: var(--text-2); }
-.ss-modes { margin-left: auto; }
-.ss-modes .segmented { font-size: 12px; }
 .ss-why { margin: 4px 0 0; }
 .ev-list { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .ev-msg { padding: 2px 0; }
@@ -991,7 +989,6 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .md details > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
 .md details[open] > summary { margin-bottom: 6px; }
 @media (max-width: 760px) {
-  .ss-modes { margin-left: 0; }
   .ev-tool-out { padding-left: 10px; }
 }
 
@@ -1220,9 +1217,7 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hc-path::before { font-family: var(--f-sans, inherit); }
 .hc-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; vertical-align: 1px; background: var(--c); }
 .hc-dot + span::before { content: none !important; }
-.hc-head .ss-modes { margin-left: 0; flex: none; }
 .hc-back, .hc-zoom { flex: none; }
-.hc-sub { flex: none; display: flex; justify-content: flex-end; padding: 6px 12px 0; }
 .hc-item > svg:last-child { display: none; }
 
 /* 放大：桌面上盖住整个机器详情弹窗；手机上盖住整个屏幕（挂在 body 上，高度跟 visualViewport） */
