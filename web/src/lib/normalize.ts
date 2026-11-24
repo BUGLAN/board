@@ -87,7 +87,6 @@ export function normHost(h: HostInfo): HostInfo {
     dirs: list(h.dirs),
     rules: maybe(h.rules)?.map(normRule),
     fits: maybe(h.fits),
-    cron: list(h.cron),
     windows: maybe(h.windows),
     ops: maybe(h.ops),
     token: token ? { ...token, shared: maybe(token.shared) } : token,

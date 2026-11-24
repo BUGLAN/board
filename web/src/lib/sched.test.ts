@@ -4,7 +4,7 @@ import type { BoardInfo, HostAgent, HostInfo } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
 const host = (x: Partial<HostInfo> = {}): HostInfo =>
-  ({ id: 1, name: 'mac', os: 'macOS', version: '1', agents: [agent('claude')], envs: [], dirs: [], max: 2, paused: false, agent: null, cronOn: false, cron: [], round: false, online: true, firstAt: 0, beatAt: 0, offAt: null, auto: true, windows: [[0, 1440]], ...x }) as HostInfo;
+  ({ id: 1, name: 'mac', os: 'macOS', version: '1', agents: [agent('claude')], envs: [], dirs: [], max: 2, paused: false, agent: null, round: false, online: true, beatAt: 0, offAt: null, auto: true, windows: [[0, 1440]], ...x }) as HostInfo;
 
 describe('接单时段', () => {
   it('写成一句：全天、不接单、跨零点的两段并成一句', () => {

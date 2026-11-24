@@ -101,8 +101,6 @@ export interface CardCron {
   id: number;
   /** 白板内唯一，最长 24 个字；也是建卡标题（建卡时后面加日期） */
   name: string;
-  /** 和 `name` 相同：旧版客户端的「卡片标题」，服务端只为兼容旧版返回，新建、修改都不用传 */
-  title: string;
   body: string;
   labels: number[];
   /** home 首个可领取状态 | inbox 未整理 */
@@ -113,8 +111,6 @@ export interface CardCron {
   on: boolean;
   /** 建出卡后派给哪台机器（机器名）；不派发、随机派发时为空。修改时发空字符串表示不派发 */
   host?: string | null;
-  /** 旧版：用哪个 agent。升级后换成了 profile，总是空的 */
-  agent?: string | null;
   /** 派发用哪个角色（标识）；空表示按规则会交给的角色（规则没命中、也没有角色时用机器的默认 agent） */
   profile?: string | null;
   /** 选哪台机器：host 派给 `host`，random 每次在能接这块白板、在线、没暂停接单的机器里随机挑一台；不派发时也留着（host） */
@@ -131,13 +127,12 @@ export interface CardCron {
   ranTo?: string | null;
   /** 那一次建的卡没派发出去的原因（卡留在首个可领取状态） */
   ranErr?: string | null;
-  lastCard?: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
 /** 新建、修改定时建卡时发的内容（修改时没给的项不变） */
-export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'agent' | 'profile' | 'pick'>>;
+export type CardCronInput = Partial<Pick<CardCron, 'name' | 'body' | 'labels' | 'place' | 'cron' | 'tz' | 'on' | 'host' | 'profile' | 'pick'>>;
 
 export interface ProjectInfo {
   key: string;
@@ -218,8 +213,6 @@ export interface HostBlock {
 export interface HostAgent {
   /** 标识：claude、dsh、codex … */
   id: string;
-  /** 配置文件里新加的 agent（不是内置的）；旧版 board host 不报 */
-  custom?: boolean;
   /** 名称：Claude Code … */
   name: string;
   /** `<命令> --version` 的第一行（在实际用的启动环境里） */
@@ -351,9 +344,6 @@ export interface HostInfo {
   dirs: HostDir[];
   /** 服务端工作空间设置的版本 */
   dirsRev?: number;
-  /** 最近一次改目录设置的时间、是谁改的 */
-  dirsChangedAt?: number | null;
-  dirsChangedBy?: string | null;
   /** 最多几个会话：同一时间最多开几个 agent 进程（1–8） */
   max: number;
   /** 自动领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
@@ -375,9 +365,6 @@ export interface HostInfo {
   agent: string | null;
   /** 设置的默认 agent 在这台机器上找不到时是它（例如从别的机器复制来的）：不生效 */
   agentSet?: string | null;
-  /** 旧的定时领取：现在一直是关、空的（换成了 auto、windows） */
-  cronOn: boolean;
-  cron: string[];
   /** 现在在自动接单：开了自动接单、没暂停、有领取规则、现在在接单时段里 */
   round: boolean;
   /** 参与自动接单；旧服务端没有这一项 */
@@ -385,7 +372,6 @@ export interface HostInfo {
   /** 接单时段：一天里的几段 [起, 止)，分钟，每天一样，按服务器时间；旧服务端没有这一项 */
   windows?: [number, number][];
   online: boolean;
-  firstAt: number;
   beatAt: number;
   offAt: number | null;
   /** 等 board host 处理的远程管理请求（重新检查、重启、升级）；旧版服务端没有 */
@@ -651,8 +637,6 @@ export interface SkillImport {
   able: boolean;
   /** 会按请求重扫本机的 skill；旧版 board host 不会，只能看上次上报的缓存 */
   rescan: boolean;
-  /** 最近一次请求重扫的时间 */
-  rescannedAt?: number | null;
   local: LocalSkill[];
   /** 等 board host 做（或正在做）的导入 */
   ask?: { id: number; picks: SkillImportPick[]; by: string; at: number } | null;
@@ -821,7 +805,6 @@ export interface Dispatch {
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;
-  exitCode: number | null;
   /** 有人请求停止（还在跑时）：谁 */
   stopBy: string | null;
   /** 持有者最近一次心跳 */
@@ -1035,12 +1018,8 @@ export interface SearchHit {
   column: string;
   /** 状态名称 */
   status: string;
-  /** 匹配到哪里：title | body | comment | any | ref | label */
-  matched: string;
   labels: string[];
   updatedAt: number;
-  /** 相关度：越大越相关 */
-  score: number;
 }
 
 export interface BoardEvent {
@@ -1280,7 +1259,6 @@ export interface Stats {
   now: number;
   tz: string;
   bucket: 'hour' | 'day';
-  boardsInScope: string[];
   activity: number;
   cur: StatsPeriod;
   prev: StatsPeriod;

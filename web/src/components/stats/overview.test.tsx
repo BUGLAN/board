@@ -54,7 +54,6 @@ const stats: Stats = {
   now,
   tz: 'UTC',
   bucket: 'day',
-  boardsInScope: ['default/main'],
   activity: 12,
   cur: {} as Stats['cur'],
   prev: {} as Stats['prev'],

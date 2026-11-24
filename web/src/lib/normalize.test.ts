@@ -20,12 +20,9 @@ const full = (): HostInfo =>
     rules: [{ op: 'in', labels: ['bug'], profile: 'p1', agent: 'claude', missing: ['bug'] }],
     paused: false,
     agent: 'claude',
-    cronOn: false,
-    cron: [],
     round: false,
     windows: [[0, 480]],
     online: true,
-    firstAt: 0,
     beatAt: 1000,
     offAt: null,
     ops: [{ at: 1, by: '人', text: '改了' }],
@@ -59,12 +56,9 @@ const skewed = (): HostInfo =>
     rules: [{ op: 'in', labels: null, agent: 'claude' }],
     paused: false,
     agent: 'claude',
-    cronOn: false,
-    cron: null,
     round: false,
     windows: null,
     online: true,
-    firstAt: 0,
     beatAt: 1000,
     offAt: null,
     token: { id: 1, name: 't', hint: 'abcd', lastUsedAt: null, shared: null },
@@ -87,7 +81,6 @@ describe('机器：必填的数组补齐', () => {
 
   it('缺了、是 null 的必填数组补成空数组；同步结果里缺的 skills、mcp 补成空的', () => {
     const h = normHost(skewed());
-    expect(h.cron).toEqual([]);
     expect(h.rules?.[0].labels).toEqual([]);
     expect(h.selftest?.items).toEqual([]);
     expect(h.selftest?.asks).toEqual([]);
@@ -104,7 +97,6 @@ describe('机器：必填的数组补齐', () => {
     const b = normHost(bare());
     expect(b.agents).toEqual([]);
     expect(b.dirs).toEqual([]);
-    expect(b.cron).toEqual([]);
   });
 
   it('可选的数组是 null 时当作没有，不补成空数组（没有另有含义：windows 没有 = 全天接单）', () => {

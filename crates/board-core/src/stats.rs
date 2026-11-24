@@ -90,8 +90,6 @@ pub struct Stats {
     pub tz: String,
     /// hour | day
     pub bucket: &'static str,
-    /// 范围内的白板（项目/白板）
-    pub boards_in_scope: Vec<String>,
     /// 区间内的动态条数；为 0 时界面显示「这段时间没有动态」
     pub activity: i64,
     pub cur: Period,
@@ -1071,7 +1069,6 @@ impl R<'_> {
             now,
             tz: q.tz.trim().to_string(),
             bucket: if hourly { "hour" } else { "day" },
-            boards_in_scope: scope.iter().map(|b| d.boards[*b].path.clone()).collect(),
             activity,
             cur,
             prev,

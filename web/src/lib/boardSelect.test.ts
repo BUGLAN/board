@@ -231,7 +231,6 @@ describe('runBulkDispatch（逐张派发）', () => {
       createdAt: 0,
       startedAt: null,
       endedAt: null,
-      exitCode: null,
       stopBy: null,
       beatAt: null,
     }) as Dispatch;

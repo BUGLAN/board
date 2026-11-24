@@ -68,7 +68,6 @@ const stats: Stats = {
   now,
   tz: 'Asia/Shanghai',
   bucket: 'day',
-  boardsInScope: ['default/main', 'docs/main'],
   activity: 8,
   cur: {} as Stats['cur'],
   prev: {} as Stats['prev'],

@@ -10,10 +10,8 @@ const hit = (board: string, id: number, title = '标题'): SearchHit => ({
   title,
   column: 'todo',
   status: '待办',
-  matched: 'title',
   labels: [],
   updatedAt: 0,
-  score: 100,
 });
 
 describe('highlightQuery（高亮的文字）', () => {

@@ -571,11 +571,6 @@ pub struct HostInfo {
     /// 服务端工作空间设置的版本
     #[serde(default)]
     pub dirs_rev: i64,
-    /// 最近一次改工作空间的时间、是谁改的
-    #[serde(default)]
-    pub dirs_changed_at: Option<i64>,
-    #[serde(default)]
-    pub dirs_changed_by: Option<String>,
     /// 最多几个会话：同一时间最多开几个 agent 进程（1–8）
     pub max: i64,
     /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项

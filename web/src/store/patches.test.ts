@@ -93,7 +93,7 @@ describe('movePatch', () => {
 /** 派发：只填用到的字段 */
 const disp = (over: Partial<Dispatch>): Dispatch =>
   ({ id: 1, board: 'p/a', card: 4, title: '', hostId: 1, host: 'mbp', agent: 'claude', agentLabel: 'Claude Code', name: null, source: 'manual',
-     by: { kind: 'human', name: '' }, state: 'queued', result: null, createdAt: 0, startedAt: null, endedAt: null, exitCode: null, stopBy: null, beatAt: null,
+     by: { kind: 'human', name: '' }, state: 'queued', result: null, createdAt: 0, startedAt: null, endedAt: null, stopBy: null, beatAt: null,
      ...over }) as Dispatch;
 
 describe('派发排队的卡片（在「进行中」里等，没有持有者）', () => {

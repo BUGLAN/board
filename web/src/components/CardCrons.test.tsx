@@ -43,7 +43,7 @@ afterEach(() => {
 
 const status = (key: string, name: string, claim = false) => ({ key, name, color: 'todo', claim, lock: false, final: false }) as Status;
 const cron = (id: number, x: Partial<CardCron> = {}): CardCron =>
-  ({ id, name: `定时 ${id}`, title: `定时 ${id}`, body: '', labels: [], place: 'home', cron: '0 9 * * 1', tz: 'Asia/Shanghai', on: true, nextAt: null, createdAt: 0, updatedAt: 0, ...x }) as CardCron;
+  ({ id, name: `定时 ${id}`, body: '', labels: [], place: 'home', cron: '0 9 * * 1', tz: 'Asia/Shanghai', on: true, nextAt: null, createdAt: 0, updatedAt: 0, ...x }) as CardCron;
 
 /** 项目 p 的两块白板 a、b 各有定时建卡；a 的首个可领取状态叫「排队中」（排在「需求池」之前的那个不可领取） */
 function data(): Workspace {

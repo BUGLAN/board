@@ -46,7 +46,6 @@ const dispatch = (agent: string, agentLabel: string): Dispatch => ({
   createdAt: NOW,
   startedAt: null,
   endedAt: null,
-  exitCode: null,
   stopBy: null,
   beatAt: null,
 });
@@ -61,11 +60,8 @@ const machine: HostInfo = {
   max: 2,
   paused: false,
   agent: 'codex',
-  cronOn: false,
-  cron: [],
   round: false,
   online: true,
-  firstAt: 0,
   beatAt: 0,
   offAt: null,
 };

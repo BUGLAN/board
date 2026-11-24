@@ -327,7 +327,7 @@ fn project_and_all_add_up() {
     let now = BASE + DAY;
     let p = stats(&s, Scope::Project, Some("default"), BASE, BASE + HOUR, "UTC", now);
     assert_eq!(p.cur.done, 3);
-    assert_eq!(p.boards_in_scope, vec!["default/main", "default/second"]);
+    assert_eq!(p.cur.created, 3);
     let all = stats(&s, Scope::All, None, BASE, BASE + HOUR, "UTC", now);
     assert_eq!(all.cur.done, 6);
     let by: std::collections::HashMap<&str, i64> = all.boards.iter().map(|b| (b.key.as_str(), b.done)).collect();

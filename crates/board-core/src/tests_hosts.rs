@@ -163,7 +163,7 @@ fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     let h = s
         .write(T0 + S, Origin::ui(None), |w| w.host_update_as("mbp", &HostPatch { workspace: Some(HostWorkspace { path: "/tmp/new".into(), ..Default::default() }), ..Default::default() }, "buglan"))
         .unwrap();
-    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str(), h.dirs_changed_by.as_deref()), (2, "/tmp/new/default", Some("buglan")));
+    assert_eq!((h.dirs_rev, h.dirs[0].path.as_str()), (2, "/tmp/new/default"));
 
     // 旧版本（还是版本 1 的本机配置）上报的检查结果不挂在新的目录上
     let mut stale = report("mbp", "i1", vec![]);
@@ -197,8 +197,8 @@ fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     local.dirs[0].path = "/tmp/local/default".into();
     let w = beat(&mut s, T0 + 4 * S, &local).unwrap();
     assert_eq!(
-        (w.host.dirs_rev, w.host.workspace.as_ref().map(|x| x.path.as_str()), w.host.dirs[0].path.as_str(), w.host.dirs_changed_by.as_deref()),
-        (3, Some("/tmp/local"), "/tmp/local/default", Some("本机"))
+        (w.host.dirs_rev, w.host.workspace.as_ref().map(|x| x.path.as_str()), w.host.dirs[0].path.as_str()),
+        (3, Some("/tmp/local"), "/tmp/local/default")
     );
 }
 
@@ -317,8 +317,6 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
         (B, "/tmp/new/default"),
         ("default/other", "/elsewhere/repo")
     ]);
-    assert_eq!(h.dirs_changed_by.as_deref(), Some("人"));
-
     // 不配工作空间：清掉，派发时按「还没有配工作空间」拒绝
     let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { workspace: Some(HostWorkspace::default()), ..Default::default() })).unwrap();
     assert!(h.workspace.is_none() && h.dirs.is_empty());

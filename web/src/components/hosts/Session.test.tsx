@@ -33,7 +33,6 @@ const part = (x: Partial<Part> = {}): Part =>
     createdAt: 1,
     startedAt: 1,
     endedAt: 2,
-    exitCode: 0,
     stopBy: null,
     beatAt: null,
     log: [],

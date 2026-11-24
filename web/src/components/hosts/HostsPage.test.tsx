@@ -56,12 +56,9 @@ const machine = (agents: HostAgent[], x: Partial<HostInfo> = {}): HostInfo => ({
   paused: false,
   agent: 'dsh',
   rules: [],
-  cronOn: false,
-  cron: [],
   round: false,
   unmatched: 0,
   online: true,
-  firstAt: 0,
   beatAt: Date.now(),
   offAt: null,
   ...x,
@@ -124,7 +121,7 @@ describe('磁贴上的「还差 N 项」', () => {
 
 describe('机位卡片：机器 → 会话 → 会话里的卡', () => {
   const ready = { workspace: { path: '~' }, dirs: [{ board: 'default/main', path: '~/default/main', status: 'ok' as const }] };
-  const base = { board: 'default/main', hostId: 1, host: 'win2', agent: 'dsh', agentLabel: 'dsh', source: 'cron', by: { kind: 'system', name: '系统' }, result: null, createdAt: 0, endedAt: null, exitCode: null, stopBy: null, beatAt: null };
+  const base = { board: 'default/main', hostId: 1, host: 'win2', agent: 'dsh', agentLabel: 'dsh', source: 'cron', by: { kind: 'system', name: '系统' }, result: null, createdAt: 0, endedAt: null, stopBy: null, beatAt: null };
 
   it('一栏一个会话：做完几张、正在做的、后面排着的；排队列表里不列会话里的', () => {
     const h = machine([agent('dsh')], { ...ready, perSession: 4 });
@@ -230,21 +227,19 @@ describe('全部暂停 / 全部停止', () => {
    这里用假的服务端返回缺字段的响应，走真实的 api（进门时补齐，lib/normalize.ts），把机器页、Agent tab 的各节和机器详情都画一遍 */
 describe('接口少了字段时机器页不整页崩', () => {
   const META = [{ id: 'claude', name: 'Claude Code', protocols: ['anthropic'], efforts: ['low', 'high'] }];
-  // 一台机器：agents、dirs、cron 都没有，同步结果、自检、导入里的数组也没有
+  // 一台机器：agents、dirs 都没有，同步结果、自检、导入里的数组也没有
   const RAW = {
     id: 2,
     name: 'old',
     os: 'Windows 11',
     version: '0.1.20',
     online: true,
-    firstAt: 0,
     beatAt: Date.now(),
     offAt: null,
     max: 2,
     paused: false,
     agent: 'claude',
     round: false,
-    cronOn: false,
     auto: true,
     rules: [{ op: 'in', agent: 'claude' }],
     workspace: { path: '~/ws' },

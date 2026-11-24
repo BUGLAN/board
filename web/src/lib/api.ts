@@ -233,8 +233,6 @@ export const api = {
       rules?: ClaimRule[];
       paused?: boolean;
       agent?: string;
-      cronOn?: boolean;
-      cron?: string[];
       env?: { agent: string; env: string };
       /** skills、MCP 用服务器的（true）还是不改（false） */
       syncSkills?: boolean;

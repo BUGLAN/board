@@ -59,11 +59,8 @@ const machine = (rescan = false, online = true): HostInfo =>
     max: 1,
     paused: false,
     agent: null,
-    cronOn: false,
-    cron: [],
     round: false,
     online,
-    firstAt: 0,
     beatAt: 0,
     offAt: null,
     skillImport: {

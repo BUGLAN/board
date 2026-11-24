@@ -254,8 +254,6 @@ impl HostRow {
             dirs: derived_dirs(&self.dirs, workspace.as_ref(), &self.os),
             workspace,
             dirs_rev: self.dirs_rev,
-            dirs_changed_at: self.dirs_at,
-            dirs_changed_by: self.dirs_by.clone(),
             max: self.max,
             per_session: self.per_session,
             max_run: self.max_run,
