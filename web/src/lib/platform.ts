@@ -139,12 +139,22 @@ export interface ServerInfo {
   url: string;
   /** 服务端版本（旧服务端没有时为空） */
   version: string;
-  /** 地址来自哪里：env（BOARD_URL）/ config（配置文件的 url）/ default / saved */
+  /** 地址来自哪里：env（BOARD_URL）/ config（配置文件的 url）/ default / none */
   from: string;
   /** 写进配置文件的目标（给人看的） */
   target: string;
   /** 是本机地址 */
   local: boolean;
+}
+
+/** 校验服务端时外壳返回的信息（不保存、不切换） */
+export interface ServerCheck {
+  /** 收拾过的地址（origin） */
+  url: string;
+  /** 服务端版本（旧服务端没有时为空） */
+  version: string;
+  /** 写进配置文件的目标（给人看的） */
+  target: string;
 }
 
 export interface ServerConnected {
@@ -166,9 +176,9 @@ export async function currentServer(): Promise<ServerInfo | null> {
 }
 
 /** 校验一个地址是不是 Board 服务端（只校验，不保存）：返回它的信息；不是时抛出原因文字 */
-export async function checkServer(raw: string): Promise<ServerInfo> {
+export async function checkServer(raw: string): Promise<ServerCheck> {
   try {
-    return await invoke<ServerInfo>('server_check', { raw });
+    return await invoke<ServerCheck>('server_check', { raw });
   } catch (e) {
     throw String(e);
   }

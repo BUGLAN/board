@@ -133,18 +133,29 @@ pub fn health(url: &Url) -> Result<String, String> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Checked {
+pub struct ServerCurrent {
     /// 收拾过的地址（origin）
     pub url: String,
     /// 服务端版本（旧服务端没有时为空）
     pub version: String,
-    /// 地址来自哪里：env / config / saved / default（`env` 是环境变量 BOARD_URL；`config` 是配置文件里的 url；
-    /// `saved` 是这次启动时选过、写进本地记录但配置文件里还没有的地址；`default` 是构建时注入的默认地址）
+    /// 地址来自哪里：env / config / default / none（`env` 是环境变量 BOARD_URL；`config` 是配置文件里的 url；
+    /// `default` 是构建时注入的默认地址；`none` 是没有可用的地址）
     pub from: String,
     /// 写进配置文件的位置，给人看的
     pub target: String,
     /// 这是本机地址
     pub local: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerCheck {
+    /// 收拾过的地址（origin）
+    pub url: String,
+    /// 服务端版本（旧服务端没有时为空）
+    pub version: String,
+    /// 写进配置文件的位置，给人看的
+    pub target: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,8 +166,21 @@ pub struct Connected {
     pub restart: bool,
 }
 
-fn checked(url: &Url, from: &str, version: String) -> Checked {
-    Checked {
+/// 地址来源：按启动时取地址的顺序判断（`env` → `config` → `default` → `none`），不看当前内存里的地址
+fn source_of(env: bool, config: bool, default: bool) -> &'static str {
+    if env {
+        "env"
+    } else if config {
+        "config"
+    } else if default {
+        "default"
+    } else {
+        "none"
+    }
+}
+
+fn current_info(url: &Url, from: &str, version: String) -> ServerCurrent {
+    ServerCurrent {
         url: origin(url),
         version,
         from: from.to_string(),
@@ -165,26 +189,22 @@ fn checked(url: &Url, from: &str, version: String) -> Checked {
     }
 }
 
+fn check_info(url: &Url, version: String) -> ServerCheck {
+    ServerCheck { url: origin(url), version, target: config::shown() }
+}
+
 /// 「设置 → 账号 · 切换服务端」显示当前连的是哪个地址
 #[tauri::command]
-pub async fn server_current<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>) -> Result<Checked, String> {
+pub async fn server_current<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>) -> Result<ServerCurrent, String> {
     crate::ensure_caller(&app, &window, false)?;
     let (url, from) = {
         let st = app.state::<Current>();
         let cur = st.0.lock().ok().and_then(|g| g.clone());
-        let from = if env_url().is_some() {
-            "env"
-        } else if config_url().is_some() {
-            "config"
-        } else if cur.is_some() {
-            "saved"
-        } else {
-            "default"
-        };
+        let from = source_of(env_url().is_some(), config_url().is_some(), !DEFAULT_URL.trim().is_empty());
         (cur, from)
     };
     let Some(url) = url else {
-        return Ok(Checked { url: String::new(), version: String::new(), from: from.into(), target: config::shown(), local: false });
+        return Ok(ServerCurrent { url: String::new(), version: String::new(), from: from.into(), target: config::shown(), local: false });
     };
     // 版本号拿不到不影响显示：只显示地址
     let version = tauri::async_runtime::spawn_blocking({
@@ -193,7 +213,7 @@ pub async fn server_current<R: Runtime>(app: AppHandle<R>, window: WebviewWindow
     })
     .await
     .unwrap_or_default();
-    Ok(checked(&url, from, version))
+    Ok(current_info(&url, from, version))
 }
 
 /// 启动页探测当前服务端连不连得上（见 [`crate::splash`]）。由外壳请求：启动页（`boardsplash`）请求服务端是跨源请求，
@@ -207,17 +227,16 @@ pub async fn server_probe<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R
 
 /// 校验一个地址是不是 Board 服务端（只校验，不保存、不切换）：返回它的版本号
 #[tauri::command]
-pub async fn server_check<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>, raw: String) -> Result<Checked, String> {
+pub async fn server_check<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>, raw: String) -> Result<ServerCheck, String> {
     crate::ensure_caller(&app, &window, true)?;
     let url = normalize(&raw)?;
-    let from = if env_url().is_some() { "env" } else { "input" };
     let version = tauri::async_runtime::spawn_blocking({
         let url = url.clone();
         move || health(&url)
     })
     .await
     .map_err(|e| e.to_string())??;
-    Ok(checked(&url, from, version))
+    Ok(check_info(&url, version))
 }
 
 /// 把地址写进 `~/.board/config.toml` 的 `url`（保留其他配置项和注释，和 `board login` 同一个入口）
@@ -324,6 +343,27 @@ mod tests {
         assert!(is_local_host(&normalize("http://[::1]:7420").unwrap()));
         assert!(!is_local_host(&normalize("http://192.168.1.5:7420").unwrap()));
         assert!(!is_local_host(&normalize("https://board.example.com").unwrap()));
+    }
+
+    #[test]
+    fn source_of_prefers_env_then_config_then_default() {
+        assert_eq!(source_of(true, true, true), "env");
+        assert_eq!(source_of(false, true, true), "config");
+        assert_eq!(source_of(false, false, true), "default");
+        assert_eq!(source_of(false, false, false), "none");
+    }
+
+    /// server_check 只给调用方校验要用的字段；来源和目标位置只在 server_current 里出现
+    #[test]
+    fn check_result_has_only_url_version_target() {
+        let url = normalize("http://127.0.0.1:7420").unwrap();
+        let v = serde_json::to_value(check_info(&url, "0.1.54".into())).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 3);
+        assert_eq!(v["url"], "http://127.0.0.1:7420");
+        assert_eq!(v["version"], "0.1.54");
+        assert_eq!(v["target"], config::shown());
+        assert!(v.get("from").is_none());
+        assert!(v.get("local").is_none());
     }
 
     /// 启动页的探测：有 HTTP 回应就算连得上（服务端出错的 502 也算，由网页端显示），连不上才报错
