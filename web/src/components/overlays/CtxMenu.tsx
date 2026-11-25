@@ -7,6 +7,7 @@ import { moveTo, vetoFor } from '../../lib/drag';
 import { quickPrompts } from '../../lib/prompt';
 import { promptLabels } from '../../lib/sidebarLabels';
 import { boardFlow, INBOX, INBOX_NAME } from '../../lib/schema';
+import { visibleInbox } from '../../lib/split';
 import { cx } from '../../lib/util';
 import { allBoards, boardMeta, colCount, useData } from '../../store/data';
 import { closeCtx, manageLabels, openProjectSettings, useUI } from '../../store/ui';
@@ -239,7 +240,7 @@ function MoveMenu({ id, go }: { id: number; go: (fn: () => void) => () => void }
                 <Icon name="lock" />
               </span>
             ) : (
-              <span className="mv-count mono">{colCount(board, INBOX)}</span>
+              <span className="mv-count mono">{visibleInbox(board).length}</span>
             )}
           </button>
         </>
