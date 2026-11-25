@@ -272,7 +272,7 @@ function TrashBulk({ n, busy, onRestore, onPurge, onClear }: { n: number; busy: 
         <Icon name="trash" />
         <span className="ib-bl">永久删除</span>
       </button>
-      <button type="button" className="btn sm brand" disabled={busy} onClick={onRestore}>
+      <button type="button" className="btn sm ghost" disabled={busy} onClick={onRestore}>
         <Icon name="replay" />
         恢复
       </button>
