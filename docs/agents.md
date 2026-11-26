@@ -129,10 +129,16 @@ board host 每次派发按角色给**这一个 agent 进程**带上供应商、�
 
 **身份和官方订阅**（#667）：本机配置不保证走订阅——机器上有别的凭据时会悄悄盖过订阅（Claude Code 的[凭据优先级](https://code.claude.com/docs/en/authentication)里 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_API_KEY`、`apiKeyHelper` 都排在 `/login` 的订阅前面，`~/.claude/settings.json` 的 `env` 里的也算；Codex 的 `config.toml` 里 `model_provider` 指向中转、`auth.json` 里是 API key 时不走 ChatGPT 订阅）。所以要确认走订阅的用「官方订阅」：
 
-- **问身份**：`board acp --auth only` 只握手、不开会话：agent 公布了 `auth.status`（ACP [Authentication State Query RFD](https://agentclientprotocol.com/rfds/get-auth-state)，claude-agent-acp）就发 `auth/status`，从账号的 `_meta.claudeCode.kind` 取种类；只公布了 `_meta.authStatus`（扩展，codex-acp）就等它推 `_auth/status_update`（`{authStatus: {kind, label, detail?, account?}}`），最多 30 秒。种类：`account` 订阅、`api_key`、`gateway` 网关 / 中转、`external` 云服务商、`none` 没登录；问不出来记 `unknown`。写一行 JSON 到标准输出（不带邮箱）。
+- **问身份**：`board acp --auth only` 只握手、不开会话（board host 用的 `--auth probe` 问完身份再列模型，见下面「本机账号能用的模型」）：agent 公布了 `auth.status`（ACP [Authentication State Query RFD](https://agentclientprotocol.com/rfds/get-auth-state)，claude-agent-acp）就发 `auth/status`，从账号的 `_meta.claudeCode.kind` 取种类；只公布了 `_meta.authStatus`（扩展，codex-acp）就等它推 `_auth/status_update`（`{authStatus: {kind, label, detail?, account?}}`），最多 30 秒。种类：`account` 订阅、`api_key`、`gateway` 网关 / 中转、`external` 云服务商、`none` 没登录；问不出来记 `unknown`。写一行 JSON 到标准输出（不带邮箱）。
 - **上报**：board host 启动时、agent 版本变了、点「自检」时在后台问 Claude Code、Codex 一次，随上报带上（`HostAgent.auth`），机器详情 agent 页写「用的身份：Claude Max · 订阅」。报的是没登录时，本机配置、官方订阅的角色都不派到这台。
 - **派发**：官方订阅的角色只派给报的身份是订阅的机器（没报过、不知道的也不派）；派发时 board host 给 `board acp` 带 `--auth subscription`，它在 `initialize` 之后、`session/new` 之前再问一次，不是订阅就出错结束（「按「官方订阅」派发，agent 用的不是订阅：…，没有开会话」），不开会话。
 - 只判断、不改机器上的配置：发现 key 盖过了订阅时只写明，不去删 settings.json 或环境变量。实测结果见 [acp.md](acp.md) 开头的补记。
+
+**本机账号能用的模型**（#666）：board host 问身份时用的其实是 `board acp --auth probe`：问完身份再 `session/options`（ACP [Session options RFD](https://agentclientprotocol.com/rfds/session-options)）取模型下拉和默认值，开一个不发提示词的会话逐个切模型读出每个模型的强度，读完关掉，输出一行 `{"auth": …, "models": …}`，随上报带上（`HostAgent.local_models`）。不发提示词，不耗额度（Claude Code 列 13 个模型约 12 秒，Codex 约 4 秒）。
+
+- 角色表单：本机配置、官方订阅时，模型下拉和强度来自选中的机器报的表；fit、保存角色按表校验（见 PRD §9.1「分工」）。
+- 派发：v2 的 agent 公布了 `session.options` 时，模型、强度在 `session/new` 的 `configOptions` 里当初始值带上（先模型后强度），回应里的实际值对不上就出错结束（「账号里没有模型 X」「模型 X 不支持强度 Y」），不再静默按默认跑。
+- 名字和派发记录：本机配置、没填模型时用报的默认模型和默认强度。
 - 每个角色只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，dsh 三种都认（路由的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；强度只能选这个 agent 能设、模型也标了的档位。
 - 派发名字的第二段和派发记录里的模型、强度是角色的；本机配置、没填模型时用 board host 从 agent 配置文件里读出来的。
 - 以前在机器详情里「指定」过供应商的 agent：Board 之前写进它配置文件的那组留着（按「本机配置」跑、角色没填模型时用的就是它）；board host 不再按机器上的设置写 agent 的配置文件（#576），要换就在 agent 自己的配置里改，或者建一个用供应商的角色。升级时规则里用到的每个 agent 建一个同名的「本机配置」角色，行为和以前一样。
@@ -175,7 +181,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 |---|---|---|---|---|---|---|---|---|
 | 1 | `dsh` | DeepSeek Harness | `dsh` | `{bin} --profile acp --patch {patch}`（自带，0.2.2 起） | `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`（`~/Applications` 下同样） | `~/.agents/skills` | `pwsh` → `powershell` → `cmd` | 在 DeepSeek Harness 的 acp profile 里配好模型（或在 Board 的角色里选供应商） |
 | 2 | `claude` | Claude Code | `claude` | `npx -y @agentclientprotocol/claude-agent-acp@0.107.3` | `~/.local/bin/claude`、`~/.claude/local/claude` | `~/.claude/skills` | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 在终端里运行一次 `claude` 并 `/login`；装了 Node.js（`npx`） |
-| 3 | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.7.0` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login`；装了 Node.js（`npx`） |
+| 3 | `codex` | Codex | `codex` | `npx -y @agentclientprotocol/codex-acp@2.12.0` | — | `$CODEX_HOME/skills`（默认 `~/.codex/skills`） | `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` | 运行一次 `codex login`；装了 Node.js（`npx`） |
 
 「agent 命令」是在每个启动环境里找的命令：取版本号、判断安装方式、安装和更新都按它。「ACP 入口」是 `board acp` 执行的命令：`{bin}` 换成找到的 agent 命令，`{patch}` 换成这次派发的 profile 补丁。agent 自己不讲 ACP 的用 ACP 组织维护的适配器，`npx -y` 固定版本运行：不用另外安装，升级跟着 Board 发版；npm 缓存放在 `~/.board/host/npm-cache`（WSL 里用它自己的），启动环境里还要找得到 `npx`：board host 找 agent 命令时顺带找它，找不到就把这个环境里的 agent 当成不可用、显示「缺 Node.js（npx）」；第一次派发要下载适配器；npm 的更新、fund、audit 提示关掉（`npm_config_update_notifier` 等设成 `false`），不混进派发日志。适配器用机器上找到的 agent（Claude Code 经 `CLAUDE_CODE_EXECUTABLE`、Codex 经 `CODEX_PATH` 告诉它），所以机器详情里的版本就是实际在跑的版本；Windows 上找到的是 npm 给全局命令生成的垫片（无扩展名的 sh 脚本、`.cmd`、`.ps1`，适配器执行不了）时，改传 npm 包里真正的程序：Claude Code 是 `<npm 前缀>\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，Codex 是平台包 `@openai/codex-win32-<架构>` 里的 `vendor\<目标>\bin\codex.exe`；找不到时不传，适配器用它自带的那份（版本可能和机器详情里写的不一样）。
 

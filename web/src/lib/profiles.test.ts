@@ -1,6 +1,6 @@
 /* 角色（lib/profiles.ts）：规则命中、机器现在能不能接、挑机器、推算一块白板上的卡会交给谁 */
 import { describe, expect, it } from 'vitest';
-import { forecast, groupPick, hostsFor, pickHost, recipe, routeOf, ruleGroups, ruleMatches, short, slotOf, soonest, SUBSCRIPTION, subscribable } from './profiles';
+import { forecast, groupPick, hostsFor, localChoices, pickHost, recipe, routeOf, ruleGroups, ruleMatches, short, slotOf, soonest, SUBSCRIPTION, subscribable } from './profiles';
 import type { BoardSnapshot, ClaimRule, HostInfo, Workspace } from './types';
 
 const host = (name: string, id: number, x: Partial<HostInfo> = {}): HostInfo =>
@@ -146,5 +146,27 @@ describe('模型来源的叫法（#667）', () => {
   });
   it('只有 Claude Code、Codex 能选官方订阅', () => {
     expect([subscribable('claude'), subscribable('codex'), subscribable('dsh')]).toEqual([true, true, false]);
+  });
+});
+
+describe('本机账号的模型表（#666）', () => {
+  const h = (id: number, models?: { id: string; efforts: string[] }[], def = '') =>
+    ({ id, name: `h${id}`, agents: [{ id: 'claude', name: 'Claude Code', version: '1', found: true, local_models: models ? { models, model: def } : null }] }) as unknown as HostInfo;
+  const mbp = h(1, [{ id: 'opus', efforts: ['low', 'high', 'max'] }, { id: 'haiku', efforts: [] }], 'opus');
+  const desk = h(2, [{ id: 'opus', efforts: ['low', 'high'] }, { id: 'sonnet', efforts: ['low', 'medium'] }], 'opus');
+  const old = h(3);
+  it('选中的机器报的模型并起来；强度按选的模型（没选时按各台的默认模型）', () => {
+    const c = localChoices([mbp, desk, old], 'claude', [], '', '');
+    expect(c.known).toBe(true);
+    expect(c.models.map(m => m.id)).toEqual(['opus', 'haiku', 'sonnet']);
+    expect(c.efforts).toEqual(['low', 'high', 'max']);
+    expect(localChoices([mbp, desk], 'claude', [2], 'sonnet', '').efforts).toEqual(['low', 'medium']);
+    expect(localChoices([old], 'claude', [], '', '').known).toBe(false);
+  });
+  it('账号里没有这个模型、模型不支持这个强度的机器写明原因；没报过的不管', () => {
+    const c = localChoices([mbp, desk, old], 'claude', [], 'sonnet', '');
+    expect([...c.why]).toEqual([[1, '账号里没有 sonnet']]);
+    expect([...localChoices([mbp, desk], 'claude', [], 'opus', 'max').why]).toEqual([[2, 'opus 不支持强度 max']]);
+    expect([...localChoices([mbp], 'claude', [], 'haiku', 'high').why]).toEqual([[1, 'haiku 不能设强度']]);
   });
 });

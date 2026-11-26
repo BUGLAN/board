@@ -140,7 +140,7 @@ pub static AGENT_DEFS: [AgentDef; 3] = [
         install: "npm install -g @openai/codex@latest",
         bin: "codex",
         // ACP 组织维护的适配器（Codex App Server）；CODEX_PATH 指向机器上的 codex
-        acp: &["npx", "-y", "@agentclientprotocol/codex-acp@2.7.0"],
+        acp: &["npx", "-y", "@agentclientprotocol/codex-acp@2.12.0"],
         acp_bin_env: "CODEX_PATH",
         // npm 包的 bin 是 bin/codex.js（node 再启动原生程序）；原生程序在平台包 @openai/codex-win32-<架构> 的 vendor/<目标>/bin 里，
         // 平台包装在 @openai/codex 自己的 node_modules 里，或者被 npm 提到上一层

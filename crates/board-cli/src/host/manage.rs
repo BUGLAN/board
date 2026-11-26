@@ -270,18 +270,27 @@ impl Host<'_> {
         }
     }
 
-    /// 身份（#667）：收下问完的；会报身份的 agent（[`board_core::agentdef::SUBSCRIPTION_AGENTS`]）找到了命令、版本和上次问的
-    /// 时候不一样（启动时、更新了、自检清掉了）就在后台再问一次（`board acp --auth only`，不开会话、不花 token）。
+    /// 身份（#667）和本机账号能用的模型（#666）：收下问完的；会报身份的 agent（[`board_core::agentdef::SUBSCRIPTION_AGENTS`]）找到了命令、版本和上次问的
+    /// 时候不一样（启动时、更新了、自检清掉了）就在后台再问一次（`board acp --auth probe`：身份和账号能用的模型，不发提示词、不花 token）。
     /// 返回身份有没有变（变了马上上报）
     pub(super) fn poll_auth(&mut self) -> bool {
         let mut changed = false;
         let done: Vec<String> = self.auth_jobs.iter().filter(|(_, h)| h.is_finished()).map(|(id, _)| id.clone()).collect();
         for id in done {
             let Some(h) = self.auth_jobs.remove(&id) else { continue };
-            if let Ok(a) = h.join() {
+            if let Ok((a, m)) = h.join() {
                 if self.auth.get(&id) != Some(&a) {
                     self.say(format!("{} {} 用的身份：{}", self.p.dim("·"), id, a.words()));
-                    self.auth.insert(id, a);
+                    self.auth.insert(id.clone(), a);
+                    changed = true;
+                }
+                // 模型表（#666）：取的时间每次都不一样，比的是内容
+                let same = self.local_models.get(&id).is_some_and(|old| board_core::hosts::LocalModels { at: 0, ..old.clone() } == board_core::hosts::LocalModels { at: 0, ..m.clone() });
+                if !same {
+                    if m.known() {
+                        self.say(format!("{} {} 的账号能用 {} 个模型", self.p.dim("·"), id, m.models.len()));
+                    }
+                    self.local_models.insert(id, m);
                     changed = true;
                 }
             }
@@ -299,7 +308,7 @@ impl Host<'_> {
             let Some(env) = self.envs.iter().find(|e| e.id == check.env).cloned() else { continue };
             let tmp = std::env::temp_dir().join(format!("board-auth-{}", self.name));
             let _ = std::fs::create_dir_all(&tmp);
-            match self.acp_command(spec, check, &env, &tmp, Path::new(""), 0, None, &["--auth".to_string(), "only".to_string()]) {
+            match self.acp_command(spec, check, &env, &tmp, Path::new(""), 0, None, &["--auth".to_string(), "probe".to_string()]) {
                 Ok(c) => start.push((spec.id.clone(), check.version.clone(), c, tmp.join(format!("{}.log", spec.id)))),
                 Err(_) => {
                     self.auth_ver.insert(spec.id.clone(), check.version.clone());
@@ -309,8 +318,8 @@ impl Host<'_> {
         for (id, ver, cmd, log) in start {
             self.auth_ver.insert(id.clone(), ver);
             let pids = self.selftest_pids.clone();
-            let limit = crate::acp::AUTH_WAIT + Duration::from_secs(180);
-            self.auth_jobs.insert(id, std::thread::spawn(move || selftest::probe_auth(cmd, &log, limit, &pids)));
+            let limit = crate::acp::AUTH_WAIT + crate::acp::PROBE_LIMIT + Duration::from_secs(180);
+            self.auth_jobs.insert(id, std::thread::spawn(move || selftest::probe_agent(cmd, &log, limit, &pids)));
         }
         changed
     }

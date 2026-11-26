@@ -178,12 +178,10 @@ impl HostRow {
     pub(super) fn model_for(&self, agent: &str) -> (String, bool) {
         model_of(&self.agents, agent)
     }
-    /// 开始派发时记进派发记录的模型、强度：board host 上报的、这个 agent 配置文件里现在的
+    /// 开始派发时记进派发记录的模型、强度：board host 上报的本机默认（[`local_defaults`]）
     pub(super) fn run_opts(&self, agent: &str) -> (Option<String>, Option<String>) {
-        let a = self.agents.iter().find(|a| a.id == agent);
-        let model = a.map(|a| a.model.trim().to_string()).filter(|m| !m.is_empty());
-        let effort = a.map(|a| a.effort.trim().to_string()).filter(|e| !e.is_empty());
-        (model, effort)
+        let (model, effort) = self.agents.iter().find(|a| a.id == agent).map(local_defaults).unwrap_or_default();
+        (Some(model).filter(|m| !m.is_empty()), Some(effort).filter(|e| !e.is_empty()))
     }
 
     /// 启动环境的名称
@@ -395,8 +393,17 @@ pub(super) fn card_label_names(conn: &rusqlite::Connection, b: i64, card: i64) -
 /// 生成 agent 名字时第二段（模型名）用什么，以及有没有：board host 上报的这个 agent 现在用的模型
 /// （内置 agent 读它自己的配置文件，写进去的或人配的；配置文件里新加的 agent 是 `[agents.<标识>] model`）。
 /// 没有时为空，名字只写 `<机器名>/<agent 标识>`
+/// 本机配置、没填模型时实际用的模型和强度（#666）：board host 列过模型表时是会话的默认模型和它的默认强度（ACP
+/// `session/options`），没列过时是它从 agent 配置文件里读出来的
+pub(super) fn local_defaults(a: &HostAgent) -> (String, String) {
+    match a.local_models.as_ref().filter(|m| m.known() && !m.model.is_empty()) {
+        Some(m) => (m.model.clone(), m.effort.clone()),
+        None => (a.model.trim().to_string(), a.effort.trim().to_string()),
+    }
+}
+
 pub(super) fn model_of(agents: &[HostAgent], agent: &str) -> (String, bool) {
-    let reported = agents.iter().find(|a| a.id == agent).map(|a| a.model.trim().to_string()).unwrap_or_default();
+    let reported = agents.iter().find(|a| a.id == agent).map(|a| local_defaults(a).0).unwrap_or_default();
     if !reported.is_empty() && check_model(&reported).is_ok() {
         return (reported, true);
     }
@@ -405,7 +412,7 @@ pub(super) fn model_of(agents: &[HostAgent], agent: &str) -> (String, bool) {
 
 /// 生成 agent 名字时的思考强度：board host 上报的这个 agent 配置文件里现在的强度，没有时为空
 pub(super) fn effort_of(agents: &[HostAgent], agent: &str) -> String {
-    agents.iter().find(|a| a.id == agent).map(|a| a.effort.trim().to_string()).filter(|e| !e.is_empty()).unwrap_or_default()
+    agents.iter().find(|a| a.id == agent).map(|a| local_defaults(a).1).filter(|e| !e.is_empty()).unwrap_or_default()
 }
 
 /// `board check --agent <标识>` 用：按写事务里的机器记录（[`W::agent_check_generated`] 已经按机器名或令牌找到的那台）

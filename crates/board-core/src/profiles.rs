@@ -162,6 +162,18 @@ pub(crate) fn fit(p: &Profile, h: &HostRow, now: i64) -> std::result::Result<(),
         if let Some(until) = h.run.get(&p.agent).and_then(|r| r.quota_until).filter(|t| *t > now) {
             return Err(format!("额度用完，{} 恢复", crate::store::when_words(until, now)));
         }
+        // 账号能用的模型（#666）：这台机器报过模型表时，角色的模型要在里面、强度要是这个模型能设的；没报过时当能跑
+        if let Some(m) = a.local_models.as_ref().filter(|m| m.known()) {
+            if !p.model.is_empty() && m.find(&p.model).is_none() {
+                return Err(format!("{name} 账号里没有 {}", p.model));
+            }
+            let model = if p.model.is_empty() { m.model.clone() } else { p.model.clone() };
+            if let Some(x) = m.find(&model).filter(|_| !p.effort.is_empty()) {
+                if !x.efforts.iter().any(|e| e.eq_ignore_ascii_case(&p.effort)) {
+                    return Err(if x.efforts.is_empty() { format!("{model} 不能设强度") } else { format!("{model} 不支持强度 {}", p.effort) });
+                }
+            }
+        }
         if p.provider == SUBSCRIPTION {
             return match a.auth.as_ref() {
                 Some(x) if x.kind == crate::hosts::AUTH_ACCOUNT => Ok(()),
@@ -283,10 +295,46 @@ impl W<'_> {
                 return Err(BoardError::usage(format!("供应商「{provider}」没有模型「{model}」")));
             }
         }
-        if !model.is_empty() {
+        // 本机配置、官方订阅（#666）：选中的机器（「只在这些机器上跑」，没选就是全部）报过的模型表
+        let picked: Vec<i64> = p.only.iter().copied().filter(|id| hosts.iter().any(|h| h.id == *id)).collect();
+        let tables: Vec<crate::hosts::LocalModels> = if provider.is_empty() || provider == SUBSCRIPTION {
+            hosts
+                .iter()
+                .filter(|h| picked.is_empty() || picked.contains(&h.id))
+                .filter_map(|h| h.resolved().into_iter().find(|a| a.id == agent).and_then(|a| a.local_models))
+                .filter(|m| m.known())
+                .collect()
+        } else {
+            vec![]
+        };
+        let listed = !model.is_empty() && tables.iter().any(|t| t.find(&model).is_some());
+        if !model.is_empty() && !listed {
             crate::hosts::check_model(&model).map_err(BoardError::usage)?;
         }
-        if !effort.is_empty() {
+        if !effort.is_empty() && !tables.is_empty() {
+            // 强度要是这个模型（没填时是各台的默认模型）在这些机器上报的强度
+            let mut can: Vec<String> = vec![];
+            let mut seen = false;
+            for t in &tables {
+                let m = if model.is_empty() { t.model.clone() } else { model.clone() };
+                if let Some(x) = t.find(&m) {
+                    seen = true;
+                    for e in &x.efforts {
+                        if !can.iter().any(|c| c.eq_ignore_ascii_case(e)) {
+                            can.push(e.clone());
+                        }
+                    }
+                }
+            }
+            if seen && !can.iter().any(|c| c.eq_ignore_ascii_case(&effort)) {
+                let which = if model.is_empty() { "默认模型".to_string() } else { model.clone() };
+                return Err(BoardError::usage(if can.is_empty() {
+                    format!("{which}在选中的机器上不能设强度")
+                } else {
+                    format!("{which}在选中的机器上不支持强度 {effort}，能选：{}", can.join("、"))
+                }));
+            }
+        } else if !effort.is_empty() {
             let can = crate::providers::efforts_of(&agent);
             if crate::agentdef::is_builtin(&agent) && !can.contains(&effort.as_str()) {
                 return Err(BoardError::usage(format!("{aname} 的强度只能是 {}", can.join("、"))));

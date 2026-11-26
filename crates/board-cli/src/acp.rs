@@ -32,7 +32,14 @@
 //! 开会话之前先问 agent 自己用的身份：agent 公布了 `auth.status`（ACP Authentication State Query RFD，Claude Code）就发
 //! `auth/status`；只公布了 `_meta.authStatus`（扩展：Codex）就等它推 `_auth/status_update`，最多等 [`AUTH_WAIT`]。
 //! `subscription`：身份不是订阅（`kind: account`）就出错结束、写明身份，不开会话。`only`：不开会话，把身份写成一行 JSON
-//! 到标准输出就退出（帧不写日志），退出码 0。
+//! 到标准输出就退出（帧不写日志），退出码 0。`probe`（board host 上报用）：问完身份再列本机账号能用的模型（#666）：
+//! `session/options`（ACP Session options RFD）给模型下拉、默认模型和默认模型的强度，再开一个不发提示词的会话，逐个
+//! `session/set_config_option` 切到别的模型、读出它的强度，关掉会话；输出一行 `{"auth": …, "models": …}`。不发提示词，不耗额度。
+//!
+//! 模型、强度（#666）：v2 的 agent 公布了 `session.options` 时，`--set @model=…`、`--set @thought_level=…` 不再开会话后切：
+//! 先 `session/options` 认出这两项的 configId，再在 `session/new` 的 `configOptions` 里带上初始值（先模型后强度）；回应里实际的值
+//! 和要的不一样（账号里没有这个模型、这个模型不支持这个强度）就出错结束、写明原因，不再静默按默认跑。没公布的（v1 的 dsh、
+//! 旧版适配器）照旧开会话后 `session/set_config_option`。
 //!
 //! 期间 agent 发来的请求：`session/request_permission` 自动允许（和以前跳过审批的参数同一个口径，Board 没有人工审批）；
 //! 别的（`fs/*`、`terminal/*` 这些没声明的能力）回 `-32601`。收到 SIGTERM、SIGINT（人点停止、board host 退出）时发
@@ -56,7 +63,7 @@
 //! 重置时间）写进去，board host 随派发结束上报。
 
 use crate::envs::Env;
-use board_core::hosts::{AgentAuth, Quota, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN};
+use board_core::hosts::{AgentAuth, LocalModel, LocalModels, Quota, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -105,8 +112,10 @@ pub(crate) enum AuthMode {
     Skip,
     /// 「官方订阅」的派发：不是订阅就不开会话
     Subscription,
-    /// 只问身份，写到标准输出就退出（board host 上报用）
+    /// 只问身份，写到标准输出就退出
     Only,
+    /// 问身份、再列本机账号能用的模型和强度，写到标准输出就退出（board host 上报用，#666）
+    Probe,
 }
 
 /// 对话模式（`--chat`）：多久没有新消息就收尾退出（board host 下一条消息来时再启动、接回会话）
@@ -171,7 +180,8 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         None => AuthMode::Skip,
         Some("subscription") => AuthMode::Subscription,
         Some("only") => AuthMode::Only,
-        Some(x) => return Err(format!("--auth 只能是 subscription 或 only：{x}")),
+        Some("probe") => AuthMode::Probe,
+        Some(x) => return Err(format!("--auth 只能是 subscription、only 或 probe：{x}")),
     };
     let idle_exit = match m.get("--idle-exit") {
         Some(v) => v.trim().parse::<u64>().map_err(|_| format!("--idle-exit 要写秒数：{v}"))?,
@@ -181,7 +191,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         env: need("--env")?,
         env_prog: m.get("--env-prog").cloned().unwrap_or_default(),
         cwd: PathBuf::from(need("--cwd")?),
-        prompt_file: if chat.is_some() || auth == AuthMode::Only { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
+        prompt_file: if chat.is_some() || matches!(auth, AuthMode::Only | AuthMode::Probe) { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
         mode: m.get("--mode").cloned().filter(|x| !x.trim().is_empty()),
         sets,
         provider_file: m.get("--provider-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
@@ -212,6 +222,12 @@ enum Pending {
     Close,
     /// `auth/status`（#667）
     Auth,
+    /// `session/options`（#666）：派发时认 configId，列模型时取模型下拉
+    Options,
+    /// 列模型：不发提示词的会话
+    ProbeNew,
+    /// 列模型：切到一个模型读它的强度
+    ProbeModel,
 }
 
 /// 协商到的协议版本
@@ -259,8 +275,22 @@ pub(crate) struct Client {
     auth_mode: AuthMode,
     /// agent 自己用的身份：`auth/status` 的回应或推来的 `_auth/status_update`
     pub auth: Option<AgentAuth>,
-    /// 在等 agent 推身份（只公布了 `_meta.authStatus` 的）
+    /// 在等 agent 推身份（只公布了 `_meta.authStatus` 的，或者 `auth/status` 的回应里看不出种类的）
     pub waiting_auth: bool,
+    /// agent 会推 `_auth/status_update`（公布了 `_meta.authStatus`）
+    auth_push: bool,
+    /// agent 公布了 `session.options`（Session options RFD）：认 `session/options`、开会话时认 `configOptions` 初始值（#666）
+    can_options: bool,
+    /// 开会话时带上的初始值：（configId、类别、值），回应里核对
+    initial: Vec<(String, String, String)>,
+    /// 列模型（`--auth probe`）：结果
+    pub models: Option<LocalModels>,
+    /// 列模型：模型那一项的 configId、还没切的模型、正在切的模型
+    probe_model_id: String,
+    probe_queue: Vec<String>,
+    probe_current: String,
+    /// 列模型做完了（或做不了）
+    pub probe_done: bool,
     /// 对话模式：配置切完后不发提示词，等 [`Client::ask`]
     chat: bool,
     /// 对话：要接回的会话
@@ -298,6 +328,14 @@ impl Client {
             auth_mode: AuthMode::Skip,
             auth: None,
             waiting_auth: false,
+            auth_push: false,
+            can_options: false,
+            initial: vec![],
+            models: None,
+            probe_model_id: String::new(),
+            probe_queue: vec![],
+            probe_current: String::new(),
+            probe_done: false,
             chat: false,
             resume: None,
             pending_resume: None,
@@ -365,6 +403,7 @@ impl Client {
     fn after_auth(&mut self) -> Vec<Value> {
         match self.auth_mode {
             AuthMode::Only => vec![],
+            AuthMode::Probe => self.probe_options(),
             AuthMode::Subscription => {
                 let a = self.auth.clone().unwrap_or_else(|| AgentAuth { kind: AUTH_UNKNOWN.into(), ..Default::default() });
                 if a.kind == AUTH_ACCOUNT {
@@ -402,8 +441,42 @@ impl Client {
             }
             self.note = Some("agent 不支持接回会话（session/resume、session/load）：开了新会话，之前的对话它不记得了".into());
         }
-        let params = json!({ "cwd": self.cwd, "mcpServers": [] });
+        // 模型、强度当开会话的初始值带上（#666）：先 session/options 认出 configId
+        if self.can_options && self.proto == Proto::V2 && self.sets.iter().any(|(k, _)| k.starts_with('@')) && self.initial.is_empty() {
+            return vec![self.request("session/options", json!({ "cwd": self.cwd }), Pending::Options)];
+        }
+        let mut params = json!({ "cwd": self.cwd, "mcpServers": [] });
+        let initial: Vec<Value> = self.initial.iter().filter(|(id, _, _)| !id.is_empty()).map(|(id, _, v)| json!({ "configId": id, "type": "id", "value": v })).collect();
+        if !initial.is_empty() {
+            params["configOptions"] = Value::Array(initial);
+        }
         vec![self.request("session/new", params, Pending::New)]
+    }
+
+    /// 列模型（#666）：先 `session/options`；agent 没公布时列不出来
+    fn probe_options(&mut self) -> Vec<Value> {
+        if !self.can_options {
+            self.models = Some(LocalModels { error: "这个版本的 agent 不支持 session/options，列不出模型".into(), ..Default::default() });
+            self.probe_done = true;
+            return vec![];
+        }
+        vec![self.request("session/options", json!({ "cwd": self.cwd }), Pending::Options)]
+    }
+
+    /// 列模型：切下一个模型；都切完了就结束
+    fn probe_next(&mut self) -> Vec<Value> {
+        let Some(s) = self.session.clone() else {
+            self.probe_done = true;
+            return vec![];
+        };
+        if self.probe_queue.is_empty() {
+            self.probe_done = true;
+            return vec![];
+        }
+        let m = self.probe_queue.remove(0);
+        self.probe_current = m.clone();
+        let params = set_option(&s, &self.probe_model_id.clone(), &m, self.proto);
+        vec![self.request("session/set_config_option", params, Pending::ProbeModel)]
     }
 
     /// 发下一个配置请求；都发完了发 prompt
@@ -542,7 +615,31 @@ impl Client {
                     return self.new_session();
                 }
                 Pending::Prompt => self.outcome = Some(self.turn_error(e, format!("session/prompt 失败：{msg}"))),
+                // 列模型时出错：记下原因，有多少算多少
+                Pending::Options if self.auth_mode == AuthMode::Probe => {
+                    self.models = Some(LocalModels { error: format!("session/options 失败：{msg}"), ..Default::default() });
+                    self.probe_done = true;
+                }
+                // 派发时认不了 configId：照旧开会话、开完再切
+                Pending::Options => {
+                    self.initial.push((String::new(), String::new(), String::new()));
+                    return self.new_session();
+                }
+                Pending::ProbeNew => {
+                    if let Some(m) = self.models.as_mut() {
+                        m.error = format!("开会话失败（{msg}），只列出了默认模型的强度");
+                    }
+                    self.probe_done = true;
+                }
+                Pending::ProbeModel => return self.probe_next(),
                 Pending::Auth => {
+                    if self.auth.as_ref().is_some_and(|x| x.kind != AUTH_UNKNOWN) {
+                        return self.after_auth();
+                    }
+                    if self.auth_push {
+                        self.waiting_auth = true;
+                        return vec![];
+                    }
                     self.auth = Some(AgentAuth { kind: AUTH_UNKNOWN.into(), label: format!("auth/status 失败：{msg}"), ..Default::default() });
                     return self.after_auth();
                 }
@@ -557,14 +654,17 @@ impl Client {
                 let caps = if r["agentCapabilities"].is_object() { &r["agentCapabilities"] } else { &r["capabilities"] };
                 self.can_load = caps["loadSession"].as_bool().unwrap_or(false);
                 self.can_resume = ["sessionCapabilities", "session", "sessions"].iter().any(|k| caps[*k]["resume"].is_object() || caps[*k]["resume"].as_bool() == Some(true));
+                self.can_options = caps["session"]["options"].is_object() || caps["sessionCapabilities"]["options"].is_object();
                 if self.auth_mode == AuthMode::Skip {
                     return self.after_init();
                 }
-                // 身份（#667）：公布了 `auth.status` 就问；只公布了 `_meta.authStatus` 的等它推；都没有的问不出来
+                // 身份（#667）：公布了 `auth.status` 就问；只公布了 `_meta.authStatus` 的等它推；都没有的问不出来。
+                // codex-acp 2.12 两种都公布，但 `auth/status` 的回应里没有种类，种类只在推送里：回应看不出种类时接着等推送
+                self.auth_push = caps["_meta"]["authStatus"].is_object() || caps["auth"]["_meta"]["authStatus"].is_object();
                 if caps["auth"]["status"].is_object() {
                     return vec![self.request("auth/status", json!({}), Pending::Auth)];
                 }
-                if caps["_meta"]["authStatus"].is_object() || caps["auth"]["_meta"]["authStatus"].is_object() {
+                if self.auth_push {
                     if self.auth.is_none() {
                         self.waiting_auth = true;
                         return vec![];
@@ -574,8 +674,72 @@ impl Client {
                 self.auth = Some(AgentAuth { kind: AUTH_UNKNOWN.into(), label: "这个版本的 agent 不报身份".into(), ..Default::default() });
                 self.after_auth()
             }
+            Pending::Options if self.auth_mode == AuthMode::Probe => {
+                let mut m = models_of(r);
+                // 默认模型的强度已经在这里了；别的模型开个不发提示词的会话逐个切
+                self.probe_queue = m.models.iter().map(|x| x.id.clone()).filter(|id| *id != m.model).collect();
+                self.probe_model_id = model_option(r).and_then(|o| option_id(o).map(str::to_string)).unwrap_or_default();
+                if self.probe_queue.is_empty() || self.probe_model_id.is_empty() {
+                    self.models = Some(m);
+                    self.probe_done = true;
+                    return vec![];
+                }
+                m.error = String::new();
+                self.models = Some(m);
+                vec![self.request("session/new", json!({ "cwd": self.cwd, "mcpServers": [] }), Pending::ProbeNew)]
+            }
+            Pending::Options => {
+                // 派发：`@model`、`@thought_level` 按类别找到 configId，当初始值带上（先模型后强度）；找不到的留到开会话后再切
+                let mut cats: Vec<&(String, String)> = self.sets.iter().filter(|(k, _)| k.starts_with('@')).collect();
+                cats.sort_by_key(|(k, _)| if k == "@model" { 0 } else { 1 });
+                for (k, v) in cats {
+                    let cat = &k[1..];
+                    if let Some(id) = r["configOptions"].as_array().into_iter().flatten().find(|o| o["category"].as_str() == Some(cat)).and_then(option_id) {
+                        self.initial.push((id.to_string(), cat.to_string(), v.clone()));
+                    }
+                }
+                let sent: Vec<String> = self.initial.iter().map(|(_, c, _)| format!("@{c}")).collect();
+                self.sets.retain(|(k, _)| !sent.contains(k));
+                // 一项都对不上：开会话时不带初始值（下面核对时照样会发现设不上）
+                if self.initial.is_empty() {
+                    self.initial.push((String::new(), String::new(), String::new()));
+                }
+                self.new_session()
+            }
+            Pending::ProbeNew => {
+                let Some(id) = r["sessionId"].as_str().filter(|s| !s.is_empty()) else {
+                    if let Some(m) = self.models.as_mut() {
+                        m.error = "开会话没拿到 sessionId，只列出了默认模型的强度".into();
+                    }
+                    self.probe_done = true;
+                    return vec![];
+                };
+                self.session = Some(id.to_string());
+                self.probe_next()
+            }
+            Pending::ProbeModel => {
+                let efforts = efforts_of(r);
+                let cur = self.probe_current.clone();
+                if let Some(x) = self.models.as_mut().and_then(|m| m.models.iter_mut().find(|x| x.id == cur)) {
+                    x.efforts = efforts;
+                }
+                self.probe_next()
+            }
             Pending::Auth => {
-                self.auth = Some(auth_of_status(r));
+                let a = auth_of_status(r);
+                if a.kind != AUTH_UNKNOWN {
+                    self.auth = Some(a);
+                    return self.after_auth();
+                }
+                // 回应里看不出种类：已经推来了就用推的，否则等推送（最多 AUTH_WAIT）
+                if self.auth.as_ref().is_some_and(|x| x.kind != AUTH_UNKNOWN) {
+                    return self.after_auth();
+                }
+                if self.auth_push {
+                    self.waiting_auth = true;
+                    return vec![];
+                }
+                self.auth = Some(a);
                 self.after_auth()
             }
             Pending::Provider => self.new_session(),
@@ -596,7 +760,19 @@ impl Client {
                     return vec![];
                 };
                 self.session = Some(s.to_string());
+                // 开会话时带的初始值（#666）：回应里是实际用的值，和要的不一样就是设不上，出错结束、不按默认跑
+                if let Some(why) = initial_mismatch(r, &self.initial) {
+                    self.outcome = Some(Outcome::Failed(why));
+                    return vec![];
+                }
                 let proto = self.proto;
+                // 认出了 session/options 的 v2 agent：剩下按类别的（初始值里没对上的）也不能静默跳过
+                if self.can_options && proto == Proto::V2 {
+                    if let Some((k, v)) = self.sets.iter().find(|(k, v)| k.starts_with('@') && config_set(r, s, k, v, proto).is_none()) {
+                        self.outcome = Some(Outcome::Failed(format!("设不上{}：agent 没有「{v}」这一项", if k == "@model" { "模型" } else { "强度" })));
+                        return vec![];
+                    }
+                }
                 let mut queue: Vec<(&'static str, Value)> = self.sets.iter().filter_map(|(id, v)| config_set(r, s, id, v, proto)).collect();
                 queue.extend(self.mode.clone().and_then(|m| mode_switch(r, s, &m, proto)));
                 self.queue = queue;
@@ -740,6 +916,84 @@ fn try_again_at(text: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64>
     let d = NaiveDate::parse_from_str(&date, "%b %d %Y").ok()?;
     let t = NaiveTime::parse_from_str(&time, "%I:%M %p").ok()?;
     local(d.and_time(t))
+}
+
+/* ------------------------------ 模型和强度（#666） ------------------------------ */
+
+/// 配置项里类别是 model 的那一项
+fn model_option(r: &Value) -> Option<&Value> {
+    r["configOptions"].as_array()?.iter().find(|o| o["category"].as_str() == Some("model"))
+}
+
+/// 选项的（值、显示名），分组的也展开
+fn option_pairs(v: &Value) -> Vec<(String, String)> {
+    let mut out = vec![];
+    for o in v.as_array().into_iter().flatten() {
+        if let Some(x) = o["value"].as_str() {
+            out.push((x.to_string(), o["name"].as_str().unwrap_or_default().to_string()));
+        }
+        out.extend(option_pairs(&o["options"]));
+    }
+    out
+}
+
+/// 「agent 自己的默认」这种选项：不算一个模型、一档强度
+fn is_default(v: &str) -> bool {
+    v.eq_ignore_ascii_case("default")
+}
+
+/// 会话配置里现在这个模型能设的强度（类别 thought_level 的选项，去掉 default）；没有这一项时为空
+fn efforts_of(r: &Value) -> Vec<String> {
+    r["configOptions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|o| o["category"].as_str() == Some("thought_level"))
+        .map(|o| option_pairs(&o["options"]).into_iter().map(|(v, _)| v).filter(|v| !is_default(v)).collect())
+        .unwrap_or_default()
+}
+
+/// `session/options` 的回应 → 模型表：模型下拉（去掉 default）、默认模型、默认模型的强度和默认强度
+fn models_of(r: &Value) -> LocalModels {
+    let at = board_core::now_ms();
+    let Some(o) = model_option(r) else {
+        return LocalModels { at, error: "agent 没有给模型下拉".into(), ..Default::default() };
+    };
+    let cur = o["currentValue"].as_str().unwrap_or_default().to_string();
+    let efforts = efforts_of(r);
+    let effort = r["configOptions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|x| x["category"].as_str() == Some("thought_level"))
+        .and_then(|x| x["currentValue"].as_str())
+        .filter(|v| !is_default(v))
+        .unwrap_or_default()
+        .to_string();
+    let models = option_pairs(&o["options"])
+        .into_iter()
+        .filter(|(v, _)| !is_default(v))
+        .map(|(id, name)| LocalModel { efforts: if id == cur { efforts.clone() } else { vec![] }, id, name })
+        .collect();
+    LocalModels { models, model: if is_default(&cur) { String::new() } else { cur }, effort, at, error: String::new() }
+}
+
+/// 开会话时带的初始值和回应里实际的值对不上时的原因：「账号里没有模型 X」「模型 X 不支持强度 Y」
+fn initial_mismatch(r: &Value, initial: &[(String, String, String)]) -> Option<String> {
+    let list = r["configOptions"].as_array().cloned().unwrap_or_default();
+    let cur = |cat: &str| list.iter().find(|o| o["category"].as_str() == Some(cat)).and_then(|o| o["currentValue"].as_str()).map(str::to_string);
+    for (id, cat, want) in initial.iter().filter(|(id, _, _)| !id.is_empty()) {
+        let got = list.iter().find(|o| option_id(o) == Some(id.as_str())).and_then(|o| o["currentValue"].as_str());
+        if got == Some(want.as_str()) {
+            continue;
+        }
+        return Some(match cat.as_str() {
+            "model" => format!("账号里没有模型 {want}（会话用的是 {}）：没有按默认模型跑", got.unwrap_or("默认")),
+            "thought_level" => format!("模型 {} 不支持强度 {want}：没有按默认强度跑", cur("model").unwrap_or_else(|| "默认".into())),
+            _ => format!("设不上 {id} = {want}"),
+        });
+    }
+    None
 }
 
 /* ------------------------------ 身份（#667） ------------------------------ */
@@ -982,7 +1236,7 @@ pub fn main(args: &[String]) -> i32 {
     on_signals();
     let code = match o.chat.clone() {
         Some(state) => run_chat(&o, &state),
-        None if o.auth == AuthMode::Only => run_auth(&o),
+        None if matches!(o.auth, AuthMode::Only | AuthMode::Probe) => run_auth(&o),
         None => run(&o),
     };
     let _ = std::io::stdout().flush();
@@ -1076,15 +1330,23 @@ fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Option<ChildStdin>, mpsc
     Ok((child, stdin, rx))
 }
 
+/// 列模型（`--auth probe`）最多用多久（问完身份之后算）：Claude Code 每切一个模型要等它重读配置
+pub const PROBE_LIMIT: Duration = Duration::from_secs(150);
+
 /// `--auth only`（#667）：握手、问身份，不开会话；身份写成一行 JSON（[`AgentAuth`]）到标准输出，退出码 0。
+/// `--auth probe`（#666）：问完身份再列模型，写一行 `{"auth": …, "models": …}`。
 /// 帧不写日志（标准输出只有这一行）。agent 起不来、握手失败时也写一行，种类是 `unknown`、label 写原因
 fn run_auth(o: &Opts) -> i32 {
-    let say = |a: &AgentAuth| log(&serde_json::to_string(a).unwrap_or_default());
+    let probe = o.auth == AuthMode::Probe;
+    let say = |a: &AgentAuth, m: Option<&LocalModels>| {
+        let line = if probe { json!({ "auth": a, "models": m }).to_string() } else { serde_json::to_string(a).unwrap_or_default() };
+        log(&line);
+    };
     let unknown = |why: String| AgentAuth { kind: AUTH_UNKNOWN.into(), label: why, ..Default::default() };
     let (mut child, mut stdin, rx) = match spawn_agent(o) {
         Ok(x) => x,
         Err(code) => {
-            say(&unknown(format!("启动 {} 失败", o.prog)));
+            say(&unknown(format!("启动 {} 失败", o.prog)), None);
             return code;
         }
     };
@@ -1098,13 +1360,22 @@ fn run_auth(o: &Opts) -> i32 {
         }
     };
     let cwd = o.cwd.display().to_string();
-    let mut client = Client::new(&cwd, "", None).with_auth(AuthMode::Only);
+    let mut client = Client::new(&cwd, "", None).with_auth(o.auth);
     quiet(&mut stdin, client.start());
     let started = Instant::now();
     let mut wait_from: Option<Instant> = None;
+    let mut probe_from: Option<Instant> = None;
     let got = loop {
         if let Some(a) = client.auth.clone().filter(|_| !client.waiting_auth) {
-            break a;
+            if !probe || client.probe_done {
+                break a;
+            }
+            // 列模型做太久：有多少算多少
+            if probe_from.get_or_insert_with(Instant::now).elapsed() >= PROBE_LIMIT {
+                let m = client.models.get_or_insert_with(LocalModels::default);
+                m.error = format!("{} 秒内没列完", PROBE_LIMIT.as_secs());
+                break a;
+            }
         }
         if let Some(Outcome::Failed(why)) = &client.outcome {
             break unknown(why.clone());
@@ -1129,11 +1400,16 @@ fn run_auth(o: &Opts) -> i32 {
                     quiet(&mut stdin, reply);
                 }
             }
-            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break unknown("agent 还没报身份就退出了".into()),
+            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break client.auth.clone().filter(|_| !client.waiting_auth).unwrap_or_else(|| unknown("agent 还没报身份就退出了".into()));
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
-    say(&got);
+    let models = probe.then(|| client.models.clone().unwrap_or_else(|| LocalModels { error: "没列出模型".into(), ..Default::default() }));
+    say(&got, models.as_ref());
+    // 列模型时开的会话关掉（v2 的 session/close），再关标准输入
+    quiet(&mut stdin, client.close());
     drop(stdin);
     wait(&mut child, GRACE);
     EXIT_OK
@@ -2234,6 +2510,108 @@ mod tests {
         let mut c = Client::new("/w", "p", None);
         c.start();
         assert_eq!(c.on_frame(&reply(0, json!({ "protocolVersion": 2, "capabilities": { "auth": { "status": {} } } })))[0]["method"], "session/new");
+    }
+
+    /// codex-acp 2.12：公布了 auth.status，但回应里没有种类（只有 label），种类在推送里：不能按「不知道」算，要用推送的
+    #[test]
+    fn auth_status_without_kind_waits_for_the_push() {
+        let init = json!({ "protocolVersion": 2, "capabilities": { "auth": { "status": {}, "_meta": { "authStatus": {} } } } });
+        let push = json!({ "jsonrpc": "2.0", "method": "_auth/status_update", "params": { "authStatus": { "kind": "account", "label": "ChatGPT Pro", "account": { "plan": "pro" } } } });
+        let answer = json!({ "state": "authenticated", "accounts": [{ "label": "ChatGPT Pro", "active": true }] });
+        // 回应先到：接着等推送
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        c.on_frame(&reply(0, init.clone()));
+        assert!(c.on_frame(&reply(1, answer.clone())).is_empty() && c.waiting_auth);
+        assert_eq!(c.on_frame(&push)[0]["method"], "session/new");
+        // 推送先到：回应来了直接用推送的
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        c.on_frame(&reply(0, init));
+        assert!(c.on_frame(&push).is_empty(), "还在等 auth/status 的回应");
+        assert_eq!(c.on_frame(&reply(1, answer))[0]["method"], "session/new");
+        assert_eq!(c.auth.map(|a| a.kind), Some("account".to_string()));
+    }
+
+    /// 会话配置项：模型（当前值、可选值）、强度（当前值、可选值；None = 这个模型没有强度这一项）
+    fn opts_of(model: &str, models: &[&str], effort: Option<(&str, &[&str])>) -> Value {
+        let mut list = vec![json!({ "configId": "model", "category": "model", "type": "select", "currentValue": model,
+            "options": models.iter().map(|m| json!({ "value": m, "name": m.to_uppercase() })).collect::<Vec<_>>() })];
+        if let Some((cur, vals)) = effort {
+            list.push(json!({ "configId": "effort", "category": "thought_level", "type": "select", "currentValue": cur,
+                "options": vals.iter().map(|v| json!({ "value": v, "name": v })).collect::<Vec<_>>() }));
+        }
+        Value::Array(list)
+    }
+
+    /// 列模型（#666）：session/options 给模型和默认模型的强度，再开不发提示词的会话逐个切，读出每个模型的强度；default 不算
+    #[test]
+    fn probe_lists_models_and_their_efforts() {
+        let init = json!({ "protocolVersion": 2, "capabilities": { "auth": { "status": {} }, "session": { "options": {} } } });
+        let mut c = Client::new("/w", "", None).with_auth(AuthMode::Probe);
+        c.start();
+        assert_eq!(c.on_frame(&reply(0, init))[0]["method"], "auth/status");
+        let f = c.on_frame(&reply(1, json!({ "state": "authenticated", "accounts": [{ "label": "Claude Max", "_meta": { "claudeCode": { "kind": "account" } } }] })));
+        assert_eq!((f[0]["method"].as_str(), &f[0]["params"]), (Some("session/options"), &json!({ "cwd": "/w" })));
+        let f = c.on_frame(&reply(2, json!({ "configOptions": opts_of("opus", &["default", "opus", "haiku", "sonnet"], Some(("high", &["default", "low", "high", "max"]))) })));
+        assert_eq!((f[0]["method"].as_str(), f[0]["params"]["mcpServers"].clone()), (Some("session/new"), json!([])));
+        let f = c.on_frame(&reply(3, json!({ "sessionId": "p1" })));
+        assert_eq!(f[0]["params"], json!({ "sessionId": "p1", "configId": "model", "type": "id", "value": "haiku" }));
+        let f = c.on_frame(&reply(4, json!({ "configOptions": opts_of("haiku", &["opus", "haiku", "sonnet"], None) })));
+        assert_eq!(f[0]["params"]["value"], "sonnet");
+        assert!(!c.probe_done);
+        assert!(c.on_frame(&reply(5, json!({ "configOptions": opts_of("sonnet", &["opus", "haiku", "sonnet"], Some(("default", &["low", "medium"]))) }))).is_empty());
+        assert!(c.probe_done);
+        let m = c.models.clone().unwrap();
+        assert_eq!((m.model.as_str(), m.effort.as_str(), m.error.as_str()), ("opus", "high", ""));
+        let got: Vec<(String, String, Vec<String>)> = m.models.into_iter().map(|x| (x.id, x.name, x.efforts)).collect();
+        let e = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(got, vec![
+            ("opus".to_string(), "OPUS".to_string(), e(&["low", "high", "max"])),
+            ("haiku".to_string(), "HAIKU".to_string(), vec![]),
+            ("sonnet".to_string(), "SONNET".to_string(), e(&["low", "medium"])),
+        ]);
+        assert_eq!(c.close()[0]["method"], "session/close", "列完关掉会话");
+        // 不支持 session/options 的 agent：写明原因
+        let mut c = Client::new("/w", "", None).with_auth(AuthMode::Probe);
+        c.start();
+        c.on_frame(&reply(0, json!({ "protocolVersion": 2, "capabilities": { "auth": { "status": {} } } })));
+        c.on_frame(&reply(1, json!({ "state": "unauthenticated" })));
+        assert!(c.probe_done && c.models.unwrap().error.contains("session/options"));
+    }
+
+    /// 派发（#666）：v2、公布了 session.options 的 agent，模型和强度当 session/new 的初始值带上（先模型后强度）；回应里的值
+    /// 和要的不一样（账号里没有、这个模型不支持）就出错结束，不按默认跑；对得上就照常往下
+    #[test]
+    fn dispatch_sends_model_and_effort_as_initial_values() {
+        let init = json!({ "protocolVersion": 2, "capabilities": { "session": { "options": {} } } });
+        let start = || {
+            let mut c = Client::new("/w", "做卡", None).with_sets(vec![("@thought_level".into(), "max".into()), ("@model".into(), "sonnet".into())]);
+            c.start();
+            assert_eq!(c.on_frame(&reply(0, init.clone()))[0]["method"], "session/options");
+            let f = c.on_frame(&reply(1, json!({ "configOptions": opts_of("opus", &["opus", "sonnet", "haiku"], Some(("high", &["low", "high", "max"]))) })));
+            assert_eq!(f[0]["method"], "session/new");
+            assert_eq!(
+                f[0]["params"]["configOptions"],
+                json!([{ "configId": "model", "type": "id", "value": "sonnet" }, { "configId": "effort", "type": "id", "value": "max" }]),
+                "先模型后强度"
+            );
+            c
+        };
+        let mut c = start();
+        let f = c.on_frame(&reply(2, json!({ "sessionId": "s1", "configOptions": opts_of("sonnet", &["opus", "sonnet"], Some(("max", &["low", "max"]))) })));
+        assert_eq!(f[0]["method"], "session/prompt", "设上了：不用再切");
+        let mut c = start();
+        c.on_frame(&reply(2, json!({ "sessionId": "s1", "configOptions": opts_of("opus", &["opus"], Some(("max", &["max"]))) })));
+        assert!(matches!(c.outcome, Some(Outcome::Failed(ref w)) if w.starts_with("账号里没有模型 sonnet")), "{:?}", c.outcome);
+        let mut c = start();
+        c.on_frame(&reply(2, json!({ "sessionId": "s1", "configOptions": opts_of("sonnet", &["sonnet"], None) })));
+        assert!(matches!(c.outcome, Some(Outcome::Failed(ref w)) if w.starts_with("模型 sonnet 不支持强度 max")), "{:?}", c.outcome);
+        // 没公布 session.options（旧版适配器）：照旧开会话后切
+        let mut c = Client::new("/w", "做卡", None).with_sets(vec![("@model".into(), "sonnet".into())]);
+        c.start();
+        let f = c.on_frame(&reply(0, json!({ "protocolVersion": 2, "capabilities": {} })));
+        assert!(f[0]["params"].get("configOptions").is_none() && f[0]["method"] == "session/new");
     }
 
     #[test]

@@ -103,23 +103,30 @@ fn run_limited(mut cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Ou
     out
 }
 
-/// 问一个 agent 自己用的身份（#667）：跑 `board acp --auth only`（拼好的命令），读它写到标准输出的那一行。
-/// 跑不起来、超时、没写出来时种类是 `unknown`，label 写原因。最多等 `limit`
-pub fn probe_auth(cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> board_core::hosts::AgentAuth {
-    use board_core::hosts::{AgentAuth, AUTH_UNKNOWN};
-    let unknown = |why: String| AgentAuth { kind: AUTH_UNKNOWN.into(), label: why, ..Default::default() };
+/// 问一个 agent 自己用的身份（#667）和本机账号能用的模型（#666）：跑 `board acp --auth probe`（拼好的命令），读它写到标准输出的
+/// 那一行 `{"auth": …, "models": …}`。跑不起来、超时、没写出来时身份的种类是 `unknown`、label 写原因，模型表写原因。最多等 `limit`
+pub fn probe_agent(cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> (board_core::hosts::AgentAuth, board_core::hosts::LocalModels) {
+    use board_core::hosts::{AgentAuth, LocalModels, AUTH_UNKNOWN};
+    #[derive(serde::Deserialize)]
+    struct Line {
+        auth: AgentAuth,
+        #[serde(default)]
+        models: Option<LocalModels>,
+    }
+    let failed = |why: String| (AgentAuth { kind: AUTH_UNKNOWN.into(), label: why.clone(), ..Default::default() }, LocalModels { error: why, ..Default::default() });
     match run_limited(cmd, log, limit, pids) {
-        Outcome::Spawn(e) => return unknown(format!("启动失败：{e}")),
-        Outcome::Timeout => return unknown(format!("{} 秒内没问出身份", limit.as_secs())),
+        Outcome::Spawn(e) => return failed(format!("启动失败：{e}")),
+        Outcome::Timeout => return failed(format!("{} 秒内没问完", limit.as_secs())),
         Outcome::Exit(..) => {}
     }
     // 标准错误也在这个文件里（agent 的提示）：从后往前找那一行 JSON
     let text = std::fs::read_to_string(log).unwrap_or_default();
     text.lines()
         .rev()
-        .filter_map(|l| serde_json::from_str::<AgentAuth>(l.trim()).ok())
-        .find(|a| !a.kind.is_empty())
-        .unwrap_or_else(|| unknown("没问出身份".into()))
+        .filter_map(|l| serde_json::from_str::<Line>(l.trim()).ok())
+        .find(|x| !x.auth.kind.is_empty())
+        .map(|x| (x.auth, x.models.unwrap_or_else(|| LocalModels { error: "没列出模型".into(), ..Default::default() })))
+        .unwrap_or_else(|| failed("没问出来".into()))
 }
 
 /// 一种接口列模型的地址、是不是 Anthropic 的写法

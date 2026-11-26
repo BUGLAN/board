@@ -361,8 +361,10 @@ struct Host<'a> {
     auth: BTreeMap<String, board_core::hosts::AgentAuth>,
     /// 上一次问身份时 agent 的版本：版本变了（启动时为空）就再问一次；自检时清掉
     auth_ver: BTreeMap<String, String>,
-    /// 正在后台问身份的：agent 标识 → 线程
-    auth_jobs: HashMap<String, std::thread::JoinHandle<board_core::hosts::AgentAuth>>,
+    /// 每个会报身份的 agent 本机账号能用的模型和强度（#666），随上报带上
+    local_models: BTreeMap<String, board_core::hosts::LocalModels>,
+    /// 正在后台问身份和模型的：agent 标识 → 线程
+    auth_jobs: HashMap<String, std::thread::JoinHandle<(board_core::hosts::AgentAuth, board_core::hosts::LocalModels)>>,
     /// 同步配置（机器详情与配置同步重构）：正在后台做的（回应的请求序号，启动时自己写的那一次为空）
     sync_job: Option<(Option<i64>, std::thread::JoinHandle<SyncOut>)>,
     /// 做完了、还没报上去的结果（连不上服务端时下一轮再报）
@@ -506,6 +508,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         selftest_pids: selftest::Pids::default(),
         auth: BTreeMap::new(),
         auth_ver: BTreeMap::new(),
+        local_models: BTreeMap::new(),
         auth_jobs: HashMap::new(),
         agent_latest: None,
         next_agent_check: Instant::now(),
@@ -606,7 +609,11 @@ impl Host<'_> {
             resume: self.resume.clone(),
             os: self.os.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            agents: self.agents.iter().map(|a| HostAgent { auth: self.auth.get(&a.id).cloned(), ..a.report(self.agent_now.get(&a.id)) }).collect(),
+            agents: self
+                .agents
+                .iter()
+                .map(|a| HostAgent { auth: self.auth.get(&a.id).cloned(), local_models: self.local_models.get(&a.id).cloned(), ..a.report(self.agent_now.get(&a.id)) })
+                .collect(),
             envs: self.envs.iter().map(Env::report).collect(),
             workspace: Some(self.ws.clone()),
             dirs: self.dir_reports(),

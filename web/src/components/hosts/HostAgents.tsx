@@ -342,6 +342,7 @@ function Editor({
   ask: ReturnType<typeof useAsk>;
 }) {
   const name = (id: string) => envName(h, id) ?? id;
+  const lm = a.local_models;
   return (
     <div className="hd-edit">
       <span className="hd-k">启动环境</span>
@@ -370,10 +371,21 @@ function Editor({
 
       <span className="hd-k">模型</span>
       <span className="hd-v hd-col">
-        <span className="ha-hint">
-          {a.model ? `本机配置里现在是 ${a.model}${a.effort ? ` · 强度 ${a.effort}` : ''}` : '本机配置里没写模型：用它自己的默认'}
-          。用哪个模型按角色定（Agent → 分工），派发时带给这一个进程，不改它的配置文件
-        </span>
+        {lm?.models.length ? (
+          // 列过账号的模型表（#666）：默认是会话实际用的，悬停看每个模型能设的强度
+          <Tip text={lm.models.map(m => `${m.name || m.id}（${m.id}）：${m.efforts.length ? m.efforts.join(' / ') : '不能设强度'}`).join('\n')}>
+            <span className="ha-hint">
+              默认 {lm.model || '—'}
+              {lm.effort ? ` · 强度 ${lm.effort}` : ''} · 账号能用 {lm.models.length} 个模型
+            </span>
+          </Tip>
+        ) : (
+          <span className="ha-hint">
+            {a.model ? `本机配置里现在是 ${a.model}${a.effort ? ` · 强度 ${a.effort}` : ''}` : '本机配置里没写模型：用它自己的默认'}
+            。用哪个模型按角色定（Agent → 分工），派发时带给这一个进程，不改它的配置文件
+          </span>
+        )}
+        {lm?.error && <span className="ha-hint hd-warn">{lm.models.length ? `模型没列全：${lm.error}` : `列不出模型：${lm.error}`}</span>}
       </span>
 
       <span className="hd-k" />

@@ -63,6 +63,10 @@ pub struct HostAgent {
     /// 只有 Claude Code、Codex 会报；没问过、旧版 board host 为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AgentAuth>,
+    /// 本机配置下这个 agent 的账号能用的模型和每个模型的强度（#666）：和身份一起问（`board acp --auth probe`）。
+    /// 只有 Claude Code、Codex 会报；没问过、旧版 board host 为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_models: Option<LocalModels>,
     /// 安装、版本检查和更新状态（board host 上报；内置 agent 才有）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manage: Option<AgentManage>,
@@ -191,6 +195,51 @@ pub struct AgentAuth {
     /// 套餐：`max`、`pro`、`plus`…（订阅才有）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub plan: String,
+}
+
+/// 本机配置下 agent 账号能用的模型（#666）：ACP `session/options`（Session options RFD）给的模型下拉和默认值，
+/// 再开一个不发提示词的会话逐个切模型读出每个模型的强度。`default` 这种「agent 自己的默认」的选项不算
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalModels {
+    /// 按 agent 列出的顺序
+    #[serde(default)]
+    pub models: Vec<LocalModel>,
+    /// 默认模型（不指定时用的）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// 默认模型的默认强度
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
+    /// 取到的时间（毫秒，board host 的时钟）
+    #[serde(default)]
+    pub at: i64,
+    /// 没取到（或没取全）的原因
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// 账号里的一个模型
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalModel {
+    /// 会话配置项里的值（派发时切到它）
+    pub id: String,
+    /// 显示名
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// 这个模型能设的强度；空 = 不能设
+    #[serde(default)]
+    pub efforts: Vec<String>,
+}
+
+impl LocalModels {
+    /// 按 id 找模型（不区分大小写）
+    pub fn find(&self, id: &str) -> Option<&LocalModel> {
+        self.models.iter().find(|m| m.id.eq_ignore_ascii_case(id.trim()))
+    }
+    /// 有可用的模型表（取到了、不是空的）
+    pub fn known(&self) -> bool {
+        !self.models.is_empty()
+    }
 }
 
 /// 身份是订阅（Claude Pro / Max、ChatGPT Plus / Pro…）

@@ -21,6 +21,15 @@
 >
 > ChatGPT 登录这台机器上没有（Codex 用的是中转），没实测；按 codex-acp 源码是 `{"kind":"account","label":"ChatGPT <套餐>","account":{"plan":…}}`。另外：只带 `HOME`、`PATH` 启动时（没有 `USER`、`LOGNAME`）macOS 上的 Claude Code 读不到钥匙串里的登录，报没登录；board host 带着用户的完整环境，不受影响。
 >
+> 2026-11-25 补记（#666）：codex-acp 升到 2.12.0（`session/options` 从 2.12 起有）。2.12.0 也公布了 `auth.status`，但回的账号里没有种类（只有 label、description），种类还在 `_auth/status_update` 里：`board acp` 回应看不出种类时接着等推送（上表在 2.12.0 上重跑，结果一样）。模型表用 `session/options` + 不发提示词的会话逐个切模型取，本机实测：
+>
+> | agent | 默认 | 模型（强度） |
+> |---|---|---|
+> | Claude Code（Max） | `opus` · `high` | 13 个：`opus`、`fable`、`sonnet`、`haiku` 这几个别名和完整 id；多数是 low / medium / high / xhigh / max，`claude-opus-4-6`、`claude-sonnet-4-6` 没有 xhigh，`claude-haiku-4-5-20251001` 没有强度这一项 |
+> | Codex（中转） | `gpt-5.4` · 无 | 12 个，多数 low…max 再加 ultra；`gpt-5.4` 没有强度 |
+>
+> 两家的模型下拉里都可能有 `default`（「agent 自己的默认」），强度里 Claude 也有 `default`：都不算。`session/new` 的 `configOptions` 初始值实测：设得上的回应里就是要的值；账号里没有的模型、模型不支持的强度被忽略（回应里是默认值，或者没有强度这一项），`board acp` 据此出错结束。
+>
 > 2026-11-25 补记（#668）：订阅账号的额度用 ACP 上顺带来的信息认——claude-agent-acp 0.107.3 的 `usage_update` 在 `_meta["_claude/rateLimit"]` 带 Agent SDK 的 `rate_limit_info`，额度用完时这一轮的错误 `data` 是 `{errorKind: "rate_limit", rateLimit}`；codex-acp 2.7.0 不发额度，用完时错误 `data.codexErrorInfo` 是 `usageLimitExceeded`、重置时间只在文字里。`board acp` 认出时以退出码 4 结束、把额度写进 `--quota-file`，服务端记「额度用完」、不算异常退出，见 [agents.md](agents.md) 和 PRD §9.1「额度用完」。
 
 ## 结论

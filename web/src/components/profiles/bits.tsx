@@ -11,12 +11,12 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { api } from '../../lib/api';
 import { builtinName, metaColor, setAgentMeta, useAgentMeta } from '../../lib/agentMeta';
-import { OP_WORDS, SUBSCRIPTION, subscribable } from '../../lib/profiles';
+import { localChoices, OP_WORDS, SUBSCRIPTION, subscribable } from '../../lib/profiles';
 import type { ClaimRule, HostInfo, Label, Profile, Provider, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { deleteProfilePatch, editProfilePatch, optimistic, useBusy, profileKey, useData } from '../../store/data';
 import { toast, toastError } from '../../store/ui';
-import { LabelChip, Select } from '../bits';
+import { LabelChip, Select, Tip } from '../bits';
 import { AgentIcon } from '../hosts/bits';
 import { Icon } from '../Icon';
 
@@ -148,6 +148,11 @@ export function ProfileForm() {
   const marked = prov ? (prov.efforts?.[d.model] ?? []) : null;
   const efforts = (meta?.efforts ?? []).filter(e => !marked || marked.includes(e));
   const hosts = ws?.hosts ?? [];
+  // 本机配置、官方订阅（#666）：选中的机器报过模型表时，模型是下拉、强度跟着模型变；报不过的机器照旧
+  const local = !d.provider || d.provider === SUBSCRIPTION;
+  const lc = local ? localChoices(hosts, d.agent, d.only, d.model, d.effort) : null;
+  const table = lc?.known ? lc : null;
+  const effortList = table ? table.efforts : efforts;
   // 「只在这些机器上跑」：空 = 所有机器（以后新接的也算）；勾了哪几台就存哪几台，勾满现在的全部也照存（#664）
   const allHosts = d.only.length === 0;
   const on = d.only.filter(id => hosts.some(h => h.id === id));
@@ -240,6 +245,21 @@ export function ProfileForm() {
             <span>模型</span>
             {prov ? (
               <Select value={d.model} options={prov.models.map(m => ({ value: m, label: m }))} aria-label="模型" onChange={v => setD({ ...d, model: v, effort: '' })} />
+            ) : table ? (
+              <Select
+                value={d.model}
+                options={[
+                  { value: '', label: 'agent 默认' },
+                  ...table.models.map(m => ({ value: m.id, label: m.name })),
+                  ...(d.model && !table.models.some(m => m.id === d.model) ? [{ value: d.model, label: `${d.model}（选中的机器上没有）` }] : []),
+                ]}
+                aria-label="模型"
+                onChange={v => {
+                  // 换了模型，强度这个模型设不了就清掉
+                  const next = localChoices(hosts, d.agent, d.only, v, '');
+                  setD({ ...d, model: v, effort: next.efforts.includes(d.effort) ? d.effort : '' });
+                }}
+              />
             ) : (
               <input className="input" value={d.model} placeholder={d.provider && d.provider !== SUBSCRIPTION ? '' : '不填 = agent 自己的默认'} aria-label="模型" onChange={e => setD({ ...d, model: e.target.value })} />
             )}
@@ -248,8 +268,8 @@ export function ProfileForm() {
             <span>强度</span>
             <Select
               value={d.effort}
-              options={[{ value: '', label: '不设' }, ...efforts.map(e => ({ value: e, label: e }))]}
-              disabled={!efforts.length}
+              options={[{ value: '', label: '不设' }, ...effortList.map(e => ({ value: e, label: e }))]}
+              disabled={!effortList.length}
               aria-label="强度"
               onChange={v => setD({ ...d, effort: v })}
             />
@@ -268,11 +288,13 @@ export function ProfileForm() {
             </button>
             {hosts.map(h => {
               const picked = !allHosts && on.includes(h.id);
-              return (
+              // 这台机器的账号里没有选的模型、这个模型不支持选的强度：变灰，原因放在悬停提示里（#666）
+              const miss = lc?.why.get(h.id);
+              const chip = (
                 <button
                   key={h.id}
                   type="button"
-                  className={cx('pf-only-h', picked && 'on')}
+                  className={cx('pf-only-h', picked && 'on', miss && 'miss')}
                   aria-pressed={picked}
                   onClick={() => {
                     const next = allHosts ? [h.id] : picked ? on.filter(x => x !== h.id) : [...on, h.id];
@@ -284,6 +306,13 @@ export function ProfileForm() {
                   {picked && <Icon name="check" />}
                   {h.name}
                 </button>
+              );
+              return miss ? (
+                <Tip key={h.id} text={miss}>
+                  {chip}
+                </Tip>
+              ) : (
+                chip
               );
             })}
             <small>{hosts.length === 0 ? '还没有机器' : allHosts ? '以后新接的也算' : `只在这 ${on.length} 台`}</small>

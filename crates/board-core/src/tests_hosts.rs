@@ -4936,6 +4936,64 @@ fn agent_pauses_after_three_crashes_in_a_row_until_resumed() {
     assert!(!tripped(&s, t2 + 3 * S));
 }
 
+/* ---------------- 本机账号的模型表（#666） ---------------- */
+
+fn with_models(mut r: HostReport, agent: &str, models: &[(&str, &[&str])], default: (&str, &str)) -> HostReport {
+    for a in r.agents.iter_mut().filter(|a| a.id == agent) {
+        a.local_models = Some(crate::hosts::LocalModels {
+            models: models.iter().map(|(id, e)| crate::hosts::LocalModel { id: id.to_string(), name: String::new(), efforts: e.iter().map(|x| x.to_string()).collect() }).collect(),
+            model: default.0.into(),
+            effort: default.1.into(),
+            at: T0,
+            error: String::new(),
+        });
+    }
+    r
+}
+
+/// 本机配置的角色：报过模型表的机器上，模型要在账号里、强度要是这个模型能设的，不然跑不了、写明原因；没报过的机器照旧当能跑。
+/// 保存角色时强度按选中机器报的模型表校验（表里有的强度，固定表里没有也能存）。没填模型时名字、派发记录用报的默认模型和强度
+#[test]
+fn local_roles_follow_the_reported_model_table() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let table: &[(&str, &[&str])] = &[("opus", &["low", "medium", "high", "xhigh", "max"]), ("claude-haiku-4-5", &[])];
+    beat(&mut s, T0, &with_models(rep_mbp(), "claude", table, ("opus", "high"))).unwrap();
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    let sonnet = put_role(&mut s, T0, role("sonnet", "claude", "", "sonnet", "")).unwrap();
+    assert_eq!(fit_on(&s, "mbp", T0, &sonnet.id), (false, "Claude Code 账号里没有 sonnet".to_string()));
+    assert!(fit_on(&s, "desk", T0, &sonnet.id).0, "没报过模型表：照旧当能跑");
+    // 这个模型不能设强度：选中的机器里有报过的就存不了；只选没报过的照旧按固定表
+    let e = put_role(&mut s, T0, role("haiku", "claude", "", "claude-haiku-4-5", "high")).unwrap_err();
+    assert!(e.message.contains("claude-haiku-4-5在选中的机器上不能设强度"), "{}", e.message);
+    let haiku = put_role(&mut s, T0, crate::profiles::Profile { only: vec![desk], ..role("haiku", "claude", "", "claude-haiku-4-5", "high") }).unwrap();
+    // 改成所有机器：又选中了报过表的 mbp，存不了
+    let e = put_role(&mut s, T0, crate::profiles::Profile { only: vec![], ..haiku }).unwrap_err();
+    assert!(e.message.contains("不能设强度"), "{}", e.message);
+    // 没填模型：按默认模型（opus）的强度
+    let deep = put_role(&mut s, T0, role("深想", "claude", "", "", "max")).unwrap();
+    assert!(fit_on(&s, "mbp", T0, &deep.id).0);
+    let e = put_role(&mut s, T0, role("超", "claude", "", "", "ultra")).unwrap_err();
+    assert!(e.message.contains("默认模型在选中的机器上不支持强度 ultra") && e.message.contains("low、medium、high、xhigh、max"), "{}", e.message);
+    // 表里有、固定表里没有的强度（Codex 报的 ultra）：能存
+    let codex: &[(&str, &[&str])] = &[("gpt-6", &["low", "high", "ultra"])];
+    let mut rep = with_models(rep_mbp(), "claude", table, ("opus", "high"));
+    rep.agents.push(HostAgent { id: "codex".into(), name: "Codex".into(), version: "1".into(), found: true, ..Default::default() });
+    beat(&mut s, T0 + S, &with_models(rep, "codex", codex, ("gpt-6", "high"))).unwrap();
+    let mbp = host(&s, T0 + S).id;
+    put_role(&mut s, T0 + S, crate::profiles::Profile { only: vec![mbp], ..role("codex ultra", "codex", "", "gpt-6", "ultra") }).unwrap();
+    // 名字、派发记录：本机配置没填模型时用报的默认模型和强度
+    let c = new_card(&mut s, T0, "C");
+    let d = s
+        .write(T0 + 2 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c, "mbp", None, Some("深想"), &Actor::human())
+        })
+        .unwrap();
+    let d = begin(&mut s, T0 + 2 * S, d.id).unwrap();
+    assert_eq!((d.name.as_deref(), d.model.as_deref(), d.effort.as_deref()), (Some("mbp/opus-max"), Some("opus"), Some("max")));
+}
+
 /* ---------------- 官方订阅（#667） ---------------- */
 
 fn with_auth(mut r: HostReport, agent: &str, kind: &str, label: &str, detail: &str) -> HostReport {

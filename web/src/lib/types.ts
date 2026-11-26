@@ -241,6 +241,8 @@ export interface HostAgent {
   quota_until?: number | null;
   /** agent 自己用的身份（#667）：board host 启动时、版本变了、自检时问的；只有 Claude Code、Codex 有 */
   auth?: AgentAuth | null;
+  /** 本机配置下账号能用的模型和每个模型的强度（#666），和身份一起问的；只有 Claude Code、Codex 有 */
+  local_models?: LocalModels | null;
   /** 安装方式、最新版本、更新状态（内置 agent 才有；旧版 board host 没有） */
   manage?: AgentManage | null;
 }
@@ -254,6 +256,25 @@ export interface AgentAuth {
   detail?: string;
   /** 套餐：max、plus… */
   plan?: string;
+}
+
+/** 本机配置下 agent 账号能用的模型（#666）：ACP session/options 给的 */
+export interface LocalModels {
+  models: LocalModel[];
+  /** 默认模型、它的默认强度 */
+  model?: string;
+  effort?: string;
+  /** 取到的时间（毫秒） */
+  at?: number;
+  /** 没取到的原因 */
+  error?: string;
+}
+
+export interface LocalModel {
+  id: string;
+  name?: string;
+  /** 这个模型能设的强度；空 = 不能设 */
+  efforts: string[];
 }
 
 /** 订阅账号的额度（#668）：board acp 在派发里顺带看到的。Claude 带窗口、已用比例、重置时间；Codex 只在用完时报 */

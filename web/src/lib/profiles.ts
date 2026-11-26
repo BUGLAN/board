@@ -5,7 +5,7 @@
    在能跑它、现在能开始的机器里挑空位最多的，挑不到就在这个角色里排队 */
 import { dispatchesOf, hostLoad } from './hosts';
 import { inWins, nextStart, serverMinute, ALL_DAY } from './sched';
-import type { BoardSnapshot, ClaimRule, Dispatch, HostInfo, Profile, Workspace } from './types';
+import type { BoardSnapshot, ClaimRule, Dispatch, HostInfo, LocalModels, Profile, Workspace } from './types';
 
 export const profilesOf = (ws: Pick<Workspace, 'sched'> | null | undefined): Profile[] => ws?.sched?.profiles ?? [];
 
@@ -227,6 +227,34 @@ export const SUBSCRIPTION = '@subscription';
 export const subscribable = (agent: string) => agent === 'claude' || agent === 'codex';
 /** 模型来源的叫法：本机配置 / 官方订阅 / 供应商的名字 */
 export const sourceName = (provider: string) => (provider === SUBSCRIPTION ? '官方订阅' : provider || '本机配置');
+
+/** 本机配置、官方订阅的角色能选什么（#666）：「在哪些机器上跑」选中的机器（没选就是全部）报的模型表并起来。
+    `known` 为 false（选中的机器都没报过）时表单照旧用输入框和固定的强度表。`why` 是每台报过表的机器跑不了这个模型、强度的原因 */
+export function localChoices(hosts: HostInfo[], agent: string, only: number[], model: string, effort: string) {
+  const tableOf = (h: HostInfo): LocalModels | undefined => {
+    const t = h.agents.find(a => a.id === agent)?.local_models;
+    return t && t.models.length ? t : undefined;
+  };
+  const picked = only.length ? hosts.filter(h => only.includes(h.id)) : hosts;
+  const tables = picked.map(tableOf).filter((t): t is LocalModels => !!t);
+  const models: { id: string; name: string }[] = [];
+  const efforts: string[] = [];
+  for (const t of tables) {
+    for (const m of t.models) if (!models.some(x => x.id === m.id)) models.push({ id: m.id, name: m.name || m.id });
+    const want = model || t.model || '';
+    for (const e of t.models.find(m => m.id === want)?.efforts ?? []) if (!efforts.includes(e)) efforts.push(e);
+  }
+  const why = new Map<number, string>();
+  for (const h of hosts) {
+    const t = tableOf(h);
+    if (!t) continue;
+    const want = model || t.model || '';
+    const m = t.models.find(x => x.id === want);
+    if (model && !m) why.set(h.id, `账号里没有 ${model}`);
+    else if (m && effort && !m.efforts.includes(effort)) why.set(h.id, m.efforts.length ? `${want} 不支持强度 ${effort}` : `${want} 不能设强度`);
+  }
+  return { known: tables.length > 0, models, efforts, why };
+}
 
 /** 「Claude Code · relay · model-a · high」 */
 export function recipe(p: Pick<Profile, 'agent' | 'provider' | 'model' | 'effort'>, agentName: (id: string) => string): string {
