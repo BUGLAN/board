@@ -2912,6 +2912,44 @@ mod tests {
         assert!(f[0]["params"].get("configOptions").is_none() && f[0]["method"] == "session/new");
     }
 
+    /// 回归（#672）：Codex 全局 `model` 被网关删掉（这里还是 `gpt-6.2-sol`）时，用 provider 角色指定网关上另一个
+    /// 存在的模型派发。旧版适配器先按全局默认开 `session/new`，网关 404，角色模型根本没机会生效；#666 之后
+    /// `providers/set`、`session/options` 之后必须把角色模型当初始值带在 `session/new` 里，不能先按默认开会话再切。
+    #[test]
+    fn codex_role_model_replaces_a_global_default_missing_from_the_gateway() {
+        let init = json!({ "protocolVersion": 2, "capabilities": { "session": { "options": {} } } });
+        let provider = json!({
+            "providerId": "openai",
+            "apiType": "openai",
+            "baseUrl": "http://127.0.0.1:3425/v1",
+            "headers": { "Authorization": "Bearer sk-test" }
+        });
+        let mut c = Client::new("/w", "做卡", None)
+            .with_sets(vec![("@model".into(), "group/4.1f".into())])
+            .with_provider(Some(provider));
+        c.start();
+        let f = c.on_frame(&reply(0, init));
+        assert_eq!(f[0]["method"], "providers/set", "先给这一个进程换上角色的供应商");
+        let f = c.on_frame(&reply(1, json!({})));
+        assert_eq!(f[0]["method"], "session/options");
+        // 网关里已经没有全局默认 gpt-6.2-sol，模型下拉里只有现在能用的 group/4.1f
+        let f = c.on_frame(&reply(2, json!({
+            "configOptions": opts_of("gpt-6.2-sol", &["group/4.1f", "auto/deepseek-v4.1-flash"], None)
+        })));
+        assert_eq!(f[0]["method"], "session/new");
+        assert_eq!(
+            f[0]["params"]["configOptions"],
+            json!([{ "configId": "model", "type": "id", "value": "group/4.1f" }]),
+            "开会话时就带上角色模型，不能先按全局默认 gpt-6.2-sol 开"
+        );
+        // 回应里实际用的就是角色模型：照常发提示词，不再开会话后切模型
+        let f = c.on_frame(&reply(3, json!({
+            "sessionId": "s1",
+            "configOptions": opts_of("group/4.1f", &["group/4.1f"], None)
+        })));
+        assert_eq!(f[0]["method"], "session/prompt");
+    }
+
     #[test]
     fn auth_status_payloads() {
         assert_eq!(auth_of_status(&json!({ "state": "unauthenticated" })).kind, "none");
