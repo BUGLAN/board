@@ -91,7 +91,8 @@
 .sp-cell.l3 { background: var(--sp-l3); }
 .sp-cell.l4 { background: var(--sp-l4); }
 .sp-cell.l5 { background: var(--sp-l5); }
-.sp-cell.future { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+/* 日历热力图里今天之后的日子：占着位置但不画出来 */
+.sp-cell.future { visibility: hidden; }
 .sp-legend { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-3); }
 .sp-legend .sp-cell { width: 11px; height: 11px; }
 .sp-legend .sp-cell:first-of-type { margin-left: 4px; }
