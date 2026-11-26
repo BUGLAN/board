@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Card } from '../lib/types';
 import { useData } from '../store/data';
 import { useUI } from '../store/ui';
@@ -80,5 +80,33 @@ describe('白板上的卡片', () => {
   it('没有评论时右上角不显示评论数', () => {
     render({ ...card, comments: 0 });
     expect(host.querySelector('.card-flags .f')).toBeNull();
+  });
+});
+
+describe('卡片上的累计耗时（#665）', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('做过 4 次、不在进行中：显示服务端按每次整秒加好的累计，等于动态里 4 次耗时相加', () => {
+    // 48 秒 + 1 分 48 秒 + 10 秒 + 11 分 56 秒 = 14 分 42 秒（原始毫秒相加是 14 分 44.7 秒）
+    render({ ...card, column: 'review', runs: 4, runsLost: 1, workMs: 882_000, finishedAt: NOW - 60_000 });
+    const pill = host.querySelector('.card-claim.worked .run-pill')!;
+    expect(pill.textContent).toBe('累计 14 分 42 秒');
+    expect(pill.getAttribute('title')).toBe('累计 14 分 42 秒，做过 4 次，其中 1 次异常退出');
+  });
+
+  it('进行中：本次按秒走表，累计是已结束的整秒累计加上本次显示的秒数', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    render({
+      ...card,
+      column: 'doing',
+      holder: 'mac/opus-5.5-high',
+      claimedAt: NOW - 10_000,
+      beatAt: NOW - 1_000,
+      runStartedAt: NOW - 5_700,
+      runs: 5,
+      workMs: 882_000,
+    });
+    expect(host.querySelector('.card-claim .run-pill')!.textContent).toBe('00:05');
+    expect(host.querySelector('.card-claim .claim-sub')!.textContent).toBe('累计 14:47 · 第 5 次');
   });
 });

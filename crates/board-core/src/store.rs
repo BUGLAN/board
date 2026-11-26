@@ -1265,6 +1265,8 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
     } else {
         format!("AND c.id NOT IN ({})", skip.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))
     };
+    // 累计耗时（work_ms）：每一次先截断到整秒再相加，和动态里逐次记的「第 n 次耗时」（dur_words，舍去不足一秒）一致；
+    // 先加原始毫秒再截断，领取几次就会比动态里各次相加多出最多「次数 - 1」秒（#665）
     let sql = format!(
         "SELECT c.id, c.title, c.body, c.col, c.holder, c.claimed_at, c.beat_at, c.created_at, c.updated_at,
                 c.created_by_kind, c.created_by_name, c.claimed_from,
@@ -1272,7 +1274,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 (SELECT GROUP_CONCAT(cl.label) FROM card_labels cl JOIN labels l ON l.id = cl.label
                    WHERE cl.board = c.board AND cl.card = c.id),
                 (SELECT r.started_at FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NULL),
-                (SELECT COALESCE(SUM(r.ended_at - r.started_at), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NOT NULL),
+                (SELECT COALESCE(SUM((r.ended_at - r.started_at) / 1000 * 1000), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.ended_at IS NOT NULL),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),
                 (SELECT COUNT(*) FROM card_runs r WHERE r.board = c.board AND r.card = c.id AND r.how IN ('lost', 'timeout')),
                 (SELECT COALESCE(SUM(r.beats), 0) FROM card_runs r WHERE r.board = c.board AND r.card = c.id),

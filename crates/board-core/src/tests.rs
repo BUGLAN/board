@@ -362,6 +362,76 @@ fn runs_accumulate_across_claims() {
     assert_eq!((c.runs, c.runs_lost, c.work_ms, c.run_started_at), (3, 0, 2 * MIN + 30 * SEC, Some(T0 + 5 * MIN + 2 * SEC)));
 }
 
+/// 动态里「第 n 次耗时 …」写的秒数（dur_words 的格式：3 分 4 秒 / 8 秒 / 1 小时 5 分）
+fn shown_secs(text: &str) -> Option<i64> {
+    let rest = text.split_once("次耗时")?.1.trim_start_matches('约');
+    let (mut secs, mut num) = (0, 0);
+    for tok in rest.split('，').next()?.split_whitespace() {
+        match tok {
+            "小时" => secs += num * 3600,
+            "分" => secs += num * 60,
+            "秒" => secs += num,
+            n => num = n.parse().ok()?,
+        }
+    }
+    Some(secs)
+}
+
+/// #665：每一次都有不足一秒的零头时，累计等于动态里逐次记的整秒耗时之和（每一次先截断再相加），
+/// final 后交审、强制释放、心跳中断、不发 final 直接交审都是同一口径；进行中的这一次不并入累计
+#[test]
+fn work_ms_is_sum_of_whole_seconds_per_run() {
+    let mut s = store();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    // 第 1 次：48.4 秒，先 final 再交审
+    exec(&mut s, B, &alpha(), T0, claim(None)).unwrap();
+    let t1 = T0 + SEC + 300;
+    beat_span(&mut s, &alpha(), 1, t1, t1 + 40 * SEC);
+    exec(&mut s, B, &alpha(), t1 + 48 * SEC + 400, beat(1, true)).unwrap();
+    exec(&mut s, B, &alpha(), t1 + 50 * SEC, mv(1, "review")).unwrap();
+    // 第 2 次：1 分 48.6 秒后被人强制释放
+    exec(&mut s, B, &human(), T0 + 2 * MIN, mv(1, "todo")).unwrap();
+    exec(&mut s, B, &beta(), T0 + 2 * MIN, claim(None)).unwrap();
+    let t2 = T0 + 2 * MIN + 250;
+    beat_span(&mut s, &beta(), 1, t2, t2 + 100 * SEC);
+    exec(&mut s, B, &human(), t2 + 108 * SEC + 600, Cmd::Release { id: 1 }).unwrap();
+    // 第 3 次：10.8 秒后心跳中断，以最后一次心跳为结束
+    exec(&mut s, B, &alpha(), T0 + 5 * MIN, claim(None)).unwrap();
+    let t3 = T0 + 5 * MIN + 700;
+    let last = t3 + 10 * SEC + 800;
+    beat_span(&mut s, &alpha(), 1, t3, last);
+    assert_eq!(s.sweep(last + BEAT_MS * BEAT_MISSES).unwrap(), 1);
+    // 第 4 次：11 分 56.9 秒，没发 final 直接交审
+    exec(&mut s, B, &beta(), T0 + 8 * MIN, claim(None)).unwrap();
+    let t4 = T0 + 8 * MIN + 100;
+    beat_span(&mut s, &beta(), 1, t4, t4 + 716 * SEC);
+    let c = exec(&mut s, B, &beta(), t4 + 716 * SEC + 900, mv(1, "review")).unwrap();
+
+    let shown: Vec<i64> = c.activity.iter().filter_map(|a| shown_secs(&a.text)).collect();
+    assert_eq!(shown, vec![48, 108, 10, 716], "{:?}", c.activity.iter().map(|a| &a.text).collect::<Vec<_>>());
+    // 原始毫秒相加是 884.7 秒（显示 14:44）；每一次先截断再相加是 14:42，和动态里四次相加一样
+    assert_eq!((c.card.runs, c.card.runs_lost, c.card.work_ms), (4, 1, shown.iter().sum::<i64>() * SEC));
+    assert_eq!(c.card.work_ms, (14 * 60 + 42) * SEC);
+    assert_eq!(card(&s, B, 1).card.work_ms, c.card.work_ms, "快照、详情读的是同一个值");
+
+    // 第 5 次进行中：本次按毫秒实时走，不并入累计；结束后同样截断到整秒并入
+    exec(&mut s, B, &human(), T0 + 30 * MIN, mv(1, "todo")).unwrap();
+    exec(&mut s, B, &alpha(), T0 + 30 * MIN, claim(None)).unwrap();
+    let t5 = T0 + 30 * MIN + 450;
+    exec(&mut s, B, &alpha(), t5, beat(1, false)).unwrap();
+    let c = card(&s, B, 1).card;
+    assert_eq!((c.runs, c.run_started_at, c.work_ms), (5, Some(t5), 882 * SEC));
+    let c = exec(&mut s, B, &alpha(), t5 + 9 * SEC + 999, beat(1, true)).unwrap().card;
+    assert_eq!((c.run_started_at, c.work_ms), (None, 891 * SEC));
+
+    // 只领取一次：显示的秒数不变（原来也是整个截断一次）
+    exec(&mut s, B, &human(), T0 + 40 * MIN, new("二")).unwrap();
+    exec(&mut s, B, &beta(), T0 + 40 * MIN, claim(Some(2))).unwrap();
+    exec(&mut s, B, &beta(), T0 + 40 * MIN + 200, beat(2, false)).unwrap();
+    let c = exec(&mut s, B, &beta(), T0 + 40 * MIN + 3 * SEC + 900, beat(2, true)).unwrap().card;
+    assert_eq!(c.work_ms, 3 * SEC);
+}
+
 /// 完成时间（finished_at）：最近一次领取的结束时间，多次领取取最后一次；异常退出也有；评论、编辑、移动不改它
 #[test]
 fn finished_at_is_last_run_end() {

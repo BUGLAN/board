@@ -942,7 +942,7 @@ export interface Card {
   beatAt: number | null;
   /** 这一次的开始时间（第一次心跳）；没有进行中的一次时为空 */
   runStartedAt: number | null;
-  /** 已经结束的各次耗时之和（毫秒），不含进行中的这一次 */
+  /** 已经结束的各次耗时之和（毫秒），不含进行中的这一次。服务端每一次先截断到整秒再相加，等于动态里逐次记的耗时之和 */
   workMs: number;
   /** 做过几次（含进行中的这一次） */
   runs: number;
