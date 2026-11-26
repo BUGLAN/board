@@ -148,7 +148,9 @@ export function ProfileForm() {
   const marked = prov ? (prov.efforts?.[d.model] ?? []) : null;
   const efforts = (meta?.efforts ?? []).filter(e => !marked || marked.includes(e));
   const hosts = ws?.hosts ?? [];
-  const on = d.only.length ? d.only : hosts.map(h => h.id);
+  // 「只在这些机器上跑」：空 = 所有机器（以后新接的也算）；勾了哪几台就存哪几台，勾满现在的全部也照存（#664）
+  const allHosts = d.only.length === 0;
+  const on = d.only.filter(id => hosts.some(h => h.id === id));
   const rules = (ws?.sched?.rules ?? []).filter(r => !isNew && r.profile === d.id).length;
   const sourceOptions = [{ value: '', label: '本机登录' }, ...usable.map(p => ({ value: p.name, label: p.name }))];
   if (d.provider && !usable.some(p => p.name === d.provider)) sourceOptions.push({ value: d.provider, label: `${d.provider}（不能用）` });
@@ -253,24 +255,31 @@ export function ProfileForm() {
         <div className="pf-f">
           <span>在哪些机器上跑</span>
           <div className="pf-only">
-            {hosts.map(h => (
-              <button
-                key={h.id}
-                type="button"
-                className={cx('pf-only-h', on.includes(h.id) && 'on')}
-                aria-pressed={on.includes(h.id)}
-                onClick={() => {
-                  const next = on.includes(h.id) ? on.filter(x => x !== h.id) : [...on, h.id];
-                  // 一台都不勾不行（角色就没地方跑了）；勾满 = 不限制
-                  if (!next.length) return;
-                  setD({ ...d, only: next.length === hosts.length ? [] : next });
-                }}
-              >
-                {on.includes(h.id) && <Icon name="check" />}
-                {h.name}
-              </button>
-            ))}
-            <small>{hosts.length === 0 ? '还没有机器' : d.only.length ? `只在这 ${d.only.length} 台` : '所有能跑的机器'}</small>
+            <button type="button" className={cx('pf-only-h', allHosts && 'on')} aria-pressed={allHosts} onClick={() => setD({ ...d, only: [] })}>
+              {allHosts && <Icon name="check" />}
+              所有机器
+            </button>
+            {hosts.map(h => {
+              const picked = !allHosts && on.includes(h.id);
+              return (
+                <button
+                  key={h.id}
+                  type="button"
+                  className={cx('pf-only-h', picked && 'on')}
+                  aria-pressed={picked}
+                  onClick={() => {
+                    const next = allHosts ? [h.id] : picked ? on.filter(x => x !== h.id) : [...on, h.id];
+                    // 一台都不勾不行（角色就没地方跑了），要不限就点「所有机器」
+                    if (!next.length) return;
+                    setD({ ...d, only: next });
+                  }}
+                >
+                  {picked && <Icon name="check" />}
+                  {h.name}
+                </button>
+              );
+            })}
+            <small>{hosts.length === 0 ? '还没有机器' : allHosts ? '以后新接的也算' : `只在这 ${on.length} 台`}</small>
           </div>
         </div>
         <div className="dialog-actions pf-form-acts">

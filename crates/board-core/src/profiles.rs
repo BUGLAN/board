@@ -269,13 +269,10 @@ impl W<'_> {
         if note.chars().count() > NOTE_MAX {
             return Err(BoardError::usage(format!("附加说明最长 {NOTE_MAX} 个字")));
         }
+        // 勾了几台就存几台，等于现在的全部机器也照存（以后新接的机器不算进来，#664）；空 = 所有能跑的机器，只由调用方明确给
         let mut only: Vec<i64> = p.only.iter().copied().filter(|id| hosts.iter().any(|h| h.id == *id)).collect();
         only.sort_unstable();
         only.dedup();
-        // 勾上了所有机器 = 没限制（以后新接的机器也能跑）
-        if !only.is_empty() && hosts.iter().all(|h| only.contains(&h.id)) {
-            only.clear();
-        }
         let only_raw = serde_json::to_string(&only).unwrap_or_else(|_| "[]".into());
         let id = match old {
             Some(o) => {

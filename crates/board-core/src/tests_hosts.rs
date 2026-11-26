@@ -2574,7 +2574,7 @@ fn only(s: &mut Store, at: i64, agent: &str, hosts: &[i64]) {
     s.write(at, Origin::ui(None), |w| w.profile_put(&p, "人")).unwrap();
 }
 
-/// 角色「只在这些机器上跑」：没勾的机器不自动领交给这个角色的卡，别的角色照常；勾上所有机器等于不限制
+/// 角色「只在这些机器上跑」：没勾的机器不自动领交给这个角色的卡，别的角色照常；勾上现在的所有机器也照存，空才是不限制
 #[test]
 fn profile_only_limits_which_machines_auto_claim() {
     let mut s = store();
@@ -2594,9 +2594,58 @@ fn profile_only_limits_which_machines_auto_claim() {
     assert!(h.fits.iter().any(|f| f.profile == claude_role.id && !f.ok && f.why.contains("不在")), "{:?}", h.fits);
     assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_mbp()), Some(d), "mbp 跳过交给 Claude Code 的卡，领 dsh 的");
     assert_eq!(pull2(&mut s, T0 + 2 * S, &rep_desk()), Some(c));
-    // 勾上所有机器 = 不限制
+    // 勾上现在的所有机器：照存这两台（以后新接的机器不算进来）
     only(&mut s, T0 + 3 * S, "claude", &[desk, mbp]);
+    let claude_only = |s: &Store| s.read(|r| r.profiles()).unwrap().into_iter().find(|p| p.agent == "claude").unwrap().only;
+    let mut both = vec![desk, mbp];
+    both.sort_unstable();
+    assert_eq!(claude_only(&s), both);
+    // 空 = 所有能跑的机器
+    only(&mut s, T0 + 3 * S, "claude", &[]);
     assert!(s.read(|r| r.profiles()).unwrap().iter().all(|p| p.only.is_empty()));
+}
+
+/// 只有一台机器时角色只勾这一台：存成 `only=[这台]`，编辑再存也不清成「所有机器」；之后新接的机器跑不了它，
+/// 自动领取、任意机器不挑它，手动派发到它被拒（#664）
+#[test]
+fn profile_only_keeps_the_single_host_when_it_is_the_only_one() {
+    let mut s = store();
+    beat(&mut s, T0, &rep_mbp()).unwrap();
+    set_on(&mut s, T0, "mbp", HostPatch { max: Some(4), per_session: Some(1), auto: Some(true), ..Default::default() });
+    let lc = label(&mut s, "claude");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    let mbp = host(&s, T0).id;
+    only(&mut s, T0 + S, "claude", &[mbp]);
+    let role_of = |s: &Store| s.read(|r| r.profiles()).unwrap().into_iter().find(|p| p.agent == "claude").unwrap();
+    assert_eq!(role_of(&s).only, vec![mbp]);
+    // 原样再存一次（编辑别的字段）也不清空
+    let mut r = role_of(&s);
+    r.note = "先写测试".into();
+    put_role(&mut s, T0 + S, r).unwrap();
+    let r = role_of(&s);
+    assert_eq!(r.only, vec![mbp]);
+    // 新接一台 desk：跑不了这个角色
+    beat(&mut s, T0 + 2 * S, &rep_desk()).unwrap();
+    set_on(&mut s, T0 + 2 * S, "desk", HostPatch { max: Some(4), per_session: Some(1), auto: Some(true), ..Default::default() });
+    let desk = s.read(|r| r.host("desk", T0 + 2 * S)).unwrap();
+    assert!(desk.fits.iter().any(|f| f.profile == r.id && !f.ok && f.why.contains("不在")), "{:?}", desk.fits);
+    assert_eq!(pull2(&mut s, T0 + 3 * S, &rep_desk()), None, "desk 不自动领交给这个角色的卡");
+    let e = s
+        .write(T0 + 3 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c, "desk", None, Some(&r.name), &Actor::human())
+        })
+        .unwrap_err();
+    assert!(e.message.contains("不在"), "{}", e.message);
+    let d = s
+        .write(T0 + 3 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create_any(&b, c, None, Some(&r.name), &Actor::human())
+        })
+        .unwrap();
+    assert_eq!(d.host, "mbp", "任意机器只在 mbp 里挑");
 }
 
 /// 会话中途角色不再在这台机器上跑：board next 不再把排着的卡交给它，卡片释放给别的机器
