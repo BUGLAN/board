@@ -1335,6 +1335,20 @@ export interface StatsProfile {
   avg: number | null;
 }
 
+/** 进步曲线（大盘总览下面那张）：横轴是创建以来的时间，竖轴是各状态的卡片数 */
+export interface StatsProgress {
+  /** 从什么时候画起：白板、项目的创建时间，全部项目是最早的项目 */
+  since: number;
+  /** 采样时刻（毫秒）：第一个是 since，最后一个是现在 */
+  t: number[];
+  /** 状态：工作流顺序（未整理在最前），和 present.statuses 一致 */
+  statuses: { key: string; name: string; color: string; final: boolean }[];
+  /** n[i][j]：第 j 个时刻在第 i 个状态里的张数 */
+  n: number[][];
+  /** 范围内项目在 since 之后发的版本，按发版时间排；cards 是范围内带这个版本标签的卡片数 */
+  versions: { project: string; name: string; at: number; cards: number }[];
+}
+
 export interface Stats {
   scope: StatsScope;
   path: string | null;
@@ -1364,6 +1378,8 @@ export interface Stats {
     stuck: { board: string; card: number; title: string; key: string; name: string; color: string; since: number; holder: string | null; note: string | null }[];
   };
   life: { since: number; days: number; cards: number; finals: number; reworks: number; agents: number; spent: number; perDay: number } | null;
+  /** 进步曲线：创建以来各状态的卡片数和发版，不受时间范围影响（旧服务端没有） */
+  progress?: StatsProgress;
   boards: StatsBrief[];
   projects: StatsBrief[];
   all: StatsBrief;

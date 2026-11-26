@@ -9,9 +9,13 @@
 //! 状态的角色按工作流规则和连线判断（与 board-skills 认状态的规则一致）：
 //! 可领取（`claim`）、终点（`final`）、需要人处理（锁定状态连出去、名称里带「人工」之类关键词，以及错误节点）、
 //! 交审（锁定状态连出去、不是可领取 / 锁定 / 终点 / 错误节点、也不是需要人处理的状态）。
+//!
+//! 进步曲线（`progress`）不受时间范围影响：从白板 / 项目创建起，每个采样时刻各状态有几张卡（按 `moves` 还原），
+//! 加上范围内项目发过的版本（`releases` 和版本标签）。回收站里的卡片不算。
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::{Flow, INBOX, INBOX_NAME};
+use crate::releases::{is_version_name, version_cmp};
 use crate::store::{flow_of, R};
 use jiff::{tz::TimeZone, RoundMode, Timestamp, ToSpan, Unit, Zoned, ZonedRound};
 use rusqlite::{params, OptionalExtension};
@@ -37,6 +41,10 @@ const LIVES_MAX: usize = 40;
 const STUCK_MAX: usize = 6;
 /// 附注里评论最多几个字
 const NOTE_MAX: usize = 40;
+/// 进步曲线最多几个采样点（不算头尾）
+const PROGRESS_POINTS: i64 = 600;
+/// 进步曲线的采样间隔：从小到大挑第一个点数不超过上限的
+const PROGRESS_STEPS: [i64; 8] = [HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY];
 
 /* ============================== 请求 ============================== */
 
@@ -114,6 +122,8 @@ pub struct Stats {
     pub present: Present,
     /// 创建以来（白板和项目范围）
     pub life: Option<Lifetime>,
+    /// 进步曲线：创建以来各状态的卡片数和发版（不受时间范围影响）
+    pub progress: Progress,
     /// 侧栏和对比表：每块白板、每个项目、全部项目的几个数
     pub boards: Vec<Brief>,
     pub projects: Vec<Brief>,
@@ -331,6 +341,45 @@ pub struct Lifetime {
     pub spent: i64,
     /// 平均每天完成：终点状态张数 ÷ 创建以来的天数，保留一位小数
     pub per_day: f64,
+}
+
+/// 进步曲线
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    /// 从什么时候画起：白板、项目的创建时间，全部项目是最早的项目；有更早新建的卡片时从那张卡算起
+    pub since: i64,
+    /// 采样时刻：第一个是 since，最后一个是现在，中间按 tz 对齐到整点（间隔不到一天）或零点
+    pub t: Vec<i64>,
+    /// 状态，和 `present.statuses` 同一个顺序（「未整理」在最前）
+    pub statuses: Vec<ProgressStatus>,
+    /// `n[i][j]`：第 j 个时刻在第 i 个状态里的张数；最后一列和 `present.statuses` 的张数一样
+    pub n: Vec<Vec<i64>>,
+    /// 范围内项目在 since 之后发的版本（有发版记录的版本标签），按发版时间排
+    pub versions: Vec<ProgressVersion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressStatus {
+    pub key: String,
+    pub name: String,
+    pub color: String,
+    /// 范围内有白板把它设成终点
+    #[serde(rename = "final")]
+    pub fin: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressVersion {
+    /// 项目标识
+    pub project: String,
+    pub name: String,
+    /// 发版时间
+    pub at: i64,
+    /// 范围内带这个版本标签的卡片数（回收站里的不算）
+    pub cards: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -563,6 +612,45 @@ fn bucket_starts(from: i64, to: i64, hourly: bool, tz: &TimeZone) -> Result<Vec<
         out.push(ms_of(&z));
         z = if hourly { z.checked_add(1.hour()) } else { z.tomorrow().and_then(|d| d.start_of_day()) }.map_err(time_err)?;
     }
+    Ok(out)
+}
+
+/// 进步曲线的采样时刻：since、按间隔对齐的整点或零点（按 tz）、现在
+fn progress_times(since: i64, now: i64, tz: &TimeZone) -> Result<Vec<i64>> {
+    let mut out = vec![since];
+    if now <= since {
+        return Ok(out);
+    }
+    let span = now - since;
+    let step = PROGRESS_STEPS.iter().copied().find(|s| span / s < PROGRESS_POINTS).unwrap_or(PROGRESS_STEPS[PROGRESS_STEPS.len() - 1]);
+    let z = zoned(since, tz)?;
+    if step < DAY {
+        let every = step / HOUR;
+        let mut z = z.round(ZonedRound::new().smallest(Unit::Hour).mode(RoundMode::Trunc)).map_err(time_err)?;
+        while ms_of(&z) < now {
+            let t = ms_of(&z);
+            if t > since && i64::from(z.hour()) % every == 0 {
+                out.push(t);
+            }
+            z = z.checked_add(1.hour()).map_err(time_err)?;
+        }
+    } else {
+        let every = step / DAY;
+        let mut z = z.start_of_day().map_err(time_err)?;
+        let mut i = 0;
+        loop {
+            z = z.tomorrow().and_then(|d| d.start_of_day()).map_err(time_err)?;
+            let t = ms_of(&z);
+            if t >= now {
+                break;
+            }
+            if i % every == 0 {
+                out.push(t);
+            }
+            i += 1;
+        }
+    }
+    out.push(now);
     Ok(out)
 }
 
@@ -1004,6 +1092,7 @@ impl R<'_> {
             .collect();
 
         let present = self.present(&d, &scope, now)?;
+        let progress = self.progress(&d, &scope, q, &present, now, &tz)?;
         let life = match q.scope {
             Scope::All => None,
             _ => {
@@ -1083,10 +1172,101 @@ impl R<'_> {
             lives,
             present,
             life,
+            progress,
             boards,
             projects,
             all,
         })
+    }
+
+    /// 进步曲线：创建以来每个采样时刻各状态的卡片数，和范围内项目这段时间发的版本
+    fn progress(&self, d: &Data, scope: &[usize], q: &StatsQuery, present: &Present, now: i64, tz: &TimeZone) -> Result<Progress> {
+        let mut projects: Vec<&str> = vec![];
+        for b in scope {
+            let pk = d.boards[*b].project.as_str();
+            if !projects.contains(&pk) {
+                projects.push(pk);
+            }
+        }
+        let created = match q.scope {
+            Scope::Board => d.boards[scope[0]].created_at,
+            _ => d.projects.iter().filter(|(k, _)| projects.contains(&k.as_str())).map(|p| p.1).min().unwrap_or(now),
+        };
+        // 有比白板、项目更早新建的卡片（导入、迁移来的）时从那张卡算起，曲线不缺一截
+        let since = d.cards_of(scope).map(|c| c.created).fold(created, i64::min).min(now);
+        let t = progress_times(since, now, tz)?;
+        let m = t.len();
+
+        let statuses: Vec<ProgressStatus> = present
+            .statuses
+            .iter()
+            .map(|s| ProgressStatus {
+                key: s.key.clone(),
+                name: s.name.clone(),
+                color: s.color.clone(),
+                fin: scope.iter().any(|b| d.boards[*b].roles.fin.contains(&s.key)),
+            })
+            .collect();
+        let index: HashMap<&str, usize> = statuses.iter().enumerate().map(|(i, s)| (s.key.as_str(), i)).collect();
+        // 每段在状态里的时间 [from, to) 盖住的采样点 +1：差分后再累加
+        let mut diff = vec![vec![0i64; m + 1]; statuses.len()];
+        for c in d.cards_of(scope) {
+            let last = c.segs.len().saturating_sub(1);
+            for (k, s) in c.segs.iter().enumerate() {
+                // 最后一段按卡片现在的状态算，右端和「现在卡片在哪」对得上；状态删掉了的那几段不画
+                let key = if k == last { Some(c.col.as_str()) } else { s.key.as_deref() };
+                let Some(&i) = key.and_then(|k| index.get(k)) else { continue };
+                let a = t.partition_point(|x| *x < s.from);
+                let b = s.to.map_or(m, |to| t.partition_point(|x| *x < to));
+                if a < b {
+                    diff[i][a] += 1;
+                    diff[i][b] -= 1;
+                }
+            }
+        }
+        let n = diff
+            .into_iter()
+            .map(|row| {
+                let mut acc = 0;
+                row[..m].iter().map(|v| {
+                    acc += v;
+                    acc
+                })
+                .collect()
+            })
+            .collect();
+
+        // 发版：范围内项目的版本标签里有发版记录、发版时间在 since 之后的；张数只数范围内白板上的卡
+        let mut uses: HashMap<i64, i64> = HashMap::new();
+        {
+            let mut st = self.conn.prepare_cached(
+                "SELECT cl.label, COUNT(*) FROM card_labels cl JOIN cards c ON c.board = cl.board AND c.id = cl.card
+                 WHERE cl.board = ?1 AND c.deleted_at IS NULL GROUP BY cl.label",
+            )?;
+            for b in scope {
+                for row in st.query_map([d.boards[*b].id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+                    let (l, k) = row?;
+                    *uses.entry(l).or_default() += k;
+                }
+            }
+        }
+        let mut versions = vec![];
+        let mut rel = self.conn.prepare_cached("SELECT name, released_at FROM releases WHERE project = ?1")?;
+        let mut lab = self.conn.prepare_cached("SELECT id, name FROM labels WHERE project = ?1")?;
+        for pk in projects {
+            let at: HashMap<String, i64> = rel
+                .query_map([pk], |r| Ok((r.get::<_, String>(0)?.to_lowercase(), r.get::<_, i64>(1)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+            let labels: Vec<(i64, String)> = lab.query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+            for (id, name) in labels {
+                let Some(&when) = at.get(&name.to_lowercase()) else { continue };
+                if is_version_name(&name) && when >= since && when <= now {
+                    versions.push(ProgressVersion { project: pk.to_string(), name, at: when, cards: uses.get(&id).copied().unwrap_or(0) });
+                }
+            }
+        }
+        versions.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| version_cmp(&a.name, &b.name)));
+        Ok(Progress { since, t, statuses, n, versions })
     }
 
     fn present(&self, d: &Data, scope: &[usize], now: i64) -> Result<Present> {

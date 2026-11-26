@@ -22,6 +22,7 @@ import { Icon, StatsIcon24 } from '../Icon';
 import { CalHeat, HeatLegend, HourHeat, PairBars, Spark, TrendBars, fmtDay, useWidth } from './charts';
 import { HINT, LEAD_BINS, METRICS, TZ, binOf, durParts, fmtDur, metricFmt, metricValue, num, pct, recent, type Metric } from './format';
 import { AgentTimeline, CardTimeline } from './timeline';
+import { ProgressChart, ProgressLegend } from './progress';
 import './stats.css';
 
 /* ------------------------------ 状态 ------------------------------ */
@@ -613,6 +614,26 @@ export function AllOverview({ s }: { s: Stats }) {
   );
 }
 
+/* ------------------------------ 进步曲线 ------------------------------ */
+
+/** 创建以来各状态的卡片数，横轴下面一行是每次发版（旧服务端没有这份数据时不显示） */
+function ProgressCard({ s }: { s: Stats }) {
+  const ws = useData(st => st.ws);
+  const p = s.progress;
+  const versions = useMemo(() => {
+    const names = new Map((ws?.projects ?? []).map(x => [x.key, x.name]));
+    return (p?.versions ?? []).map(v => ({ ...v, project: s.scope === 'all' ? (names.get(v.project) ?? v.project) : undefined }));
+  }, [p, ws, s.scope]);
+  if (!p) return null;
+  const days = Math.max(1, Math.round((s.now - p.since) / DAY));
+  return (
+    <Card title="进步曲线" id="sp-progress" className="sp-progress" extra={<Note>创建以来 {days} 天</Note>}>
+      <ProgressChart p={p} versions={versions} />
+      <ProgressLegend p={p} versions={versions.length} />
+    </Card>
+  );
+}
+
 /* ------------------------------ 现在 ------------------------------ */
 
 /** 待复盘最久的一张等了这么久就提醒 */
@@ -1045,6 +1066,7 @@ function Report({ s }: { s: Stats }) {
   return (
     <>
       <Overview s={s} />
+      <ProgressCard s={s} />
       <NowCard s={s} />
       <h3 className="sp-sec-h">这段时间</h3>
       {s.activity === 0 ? (

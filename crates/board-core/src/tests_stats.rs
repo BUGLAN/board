@@ -2,7 +2,8 @@
 //! 待复盘最久的卡片、领取明细。白板说明和附件相关的用例在 `tests.rs`。
 
 use crate::hosts::EndHow;
-use crate::stats::{Scope, Stats, StatsQuery};
+use crate::releases::{ReleaseCommit, ReleaseSync};
+use crate::stats::{Progress, Scope, Stats, StatsQuery};
 use crate::*;
 
 const MIN: i64 = 60 * 1000;
@@ -523,4 +524,86 @@ fn empty_range_has_no_nan() {
     let json = serde_json::to_string(&st).unwrap();
     assert!(!json.contains("NaN") && !json.contains("Infinity"));
     assert_eq!(st.cur.first_pass, None);
+}
+
+/* ------------------------------ 进步曲线 ------------------------------ */
+
+fn sync_version(s: &mut Store, at: i64, name: &str, cards: &[i64]) {
+    let commits = vec![ReleaseCommit { h: "abc1234".into(), at, s: "feat: x".into(), cards: cards.iter().map(|c| format!("main#{c}")).collect() }];
+    s.write(at, Origin::cli(), |w| w.sync_release(ReleaseSync { project: "default".into(), name: name.into(), released_at: at, commits })).unwrap();
+}
+
+/// 进步曲线上 key 状态在 t 时刻的张数（t 要是采样点）
+fn n_at(p: &Progress, key: &str, t: i64) -> i64 {
+    let i = p.statuses.iter().position(|s| s.key == key).unwrap();
+    let j = p.t.iter().position(|x| *x == t).unwrap_or_else(|| panic!("{t} 不是采样点"));
+    p.n[i][j]
+}
+
+#[test]
+fn progress_counts_cards_per_status_since_creation() {
+    let mut s = store();
+    let a = new(&mut s, B, BASE, "a");
+    let b = new(&mut s, B, BASE + HOUR, "b");
+    mv(&mut s, B, &Actor::human(), BASE + 2 * HOUR, a, "done");
+    mv(&mut s, B, &Actor::human(), BASE + 3 * HOUR, b, "review");
+    let c = new(&mut s, B, BASE + 5 * HOUR, "c");
+    mv(&mut s, B, &Actor::human(), BASE + 6 * HOUR, c, "review");
+    sync_version(&mut s, BASE + 4 * HOUR, "v0.1.0", &[a]);
+    sync_version(&mut s, BASE + 7 * HOUR, "v0.1.1", &[b, c]);
+    let now = BASE + 10 * HOUR + 17 * MIN;
+
+    // 不随时间范围变：只看 24 小时和看 30 天得到同一条曲线
+    let st = stats(&s, Scope::Board, Some(B), BASE, BASE + DAY, "UTC", now);
+    let p = &st.progress;
+    let wide = stats(&s, Scope::Board, Some(B), now - 30 * DAY, now, "UTC", now).progress;
+    assert_eq!((&p.t, &p.n), (&wide.t, &wide.n));
+
+    // 从白板创建算起，最后一个点是现在；点数不超过上限，按 2 小时对齐（30 天 10 小时按 1 小时会超过 600 个点）
+    assert_eq!(p.since, BASE - 30 * DAY);
+    assert_eq!(p.t[0], p.since);
+    assert_eq!(*p.t.last().unwrap(), now);
+    assert!(p.t.len() <= 602, "{}", p.t.len());
+    assert!(p.t.windows(2).all(|w| w[0] < w[1]));
+    assert!(p.t[1..p.t.len() - 1].iter().all(|t| t % (2 * HOUR) == 0));
+
+    // 状态和「现在卡片在哪」同一个顺序，终点状态标出来
+    let keys: Vec<&str> = p.statuses.iter().map(|x| x.key.as_str()).collect();
+    let present: Vec<&str> = st.present.statuses.iter().map(|x| x.key.as_str()).collect();
+    assert_eq!(keys, present);
+    assert!(p.statuses.iter().find(|x| x.key == "done").unwrap().fin);
+    assert!(!p.statuses.iter().find(|x| x.key == "review").unwrap().fin);
+
+    // 每个时刻的张数：新建前是 0；移动的那一刻已经算在新状态里
+    assert_eq!(n_at(p, "todo", BASE - 2 * HOUR), 0);
+    assert_eq!(n_at(p, "todo", BASE), 1);
+    assert_eq!((n_at(p, "todo", BASE + 2 * HOUR), n_at(p, "done", BASE + 2 * HOUR)), (1, 1));
+    assert_eq!((n_at(p, "todo", BASE + 4 * HOUR), n_at(p, "review", BASE + 4 * HOUR), n_at(p, "done", BASE + 4 * HOUR)), (0, 1, 1));
+    assert_eq!(n_at(p, "review", BASE + 6 * HOUR), 2);
+    // 右端就是「现在卡片在哪」的张数
+    let last: Vec<i64> = p.n.iter().map(|row| *row.last().unwrap()).collect();
+    assert_eq!(last, st.present.statuses.iter().map(|x| x.n).collect::<Vec<_>>());
+    assert_eq!((n_at(p, "review", now), n_at(p, "done", now)), (2, 1));
+
+    // 发版：按时间排，张数是带这个版本标签的卡
+    let v: Vec<(&str, i64, i64)> = p.versions.iter().map(|v| (v.name.as_str(), v.at, v.cards)).collect();
+    assert_eq!(v, vec![("v0.1.0", BASE + 4 * HOUR, 1), ("v0.1.1", BASE + 7 * HOUR, 2)]);
+    assert!(p.versions.iter().all(|v| v.project == "default"));
+}
+
+#[test]
+fn progress_aligns_to_local_midnight_for_long_histories() {
+    let mut s = Store::open_in_memory().unwrap();
+    // 白板建了 400 天：按小时、半天都超过 600 个点，改成按天，对齐到上海的零点
+    s.ensure_default(BASE - 400 * DAY).unwrap();
+    let now = BASE + 3 * HOUR;
+    let p = stats(&s, Scope::All, None, BASE, BASE + DAY, "Asia/Shanghai", now).progress;
+    assert_eq!(p.t[0], BASE - 400 * DAY);
+    assert_eq!(*p.t.last().unwrap(), now);
+    // 上海零点是 UTC 16:00
+    assert!(p.t[1..p.t.len() - 1].iter().all(|t| (t + 8 * HOUR) % DAY == 0), "{:?}", &p.t[..3]);
+    assert!(p.t.len() <= 602);
+    // 没有卡片：全是 0，不出错
+    assert!(p.n.iter().flatten().all(|v| *v == 0));
+    assert!(p.versions.is_empty());
 }

@@ -428,3 +428,36 @@
 .sp-now-stat.go:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
 .sp-now-stat.go > span { display: inline-flex; align-items: center; gap: 2px; }
 .sp-now-stat.go > span svg { width: 12px; height: 12px; }
+
+/* ---------- 进步曲线（创建以来各状态的卡片数） ---------- */
+.pg-chart { position: relative; }
+.pg-chart svg { display: block; outline: none; touch-action: pan-y; }
+.pg-chart svg:focus-visible { box-shadow: 0 0 0 2px var(--focus, var(--accent)); border-radius: var(--r-sm); }
+.pg-band { transition: opacity var(--dur-1); }
+.pg-band.dim { opacity: .8; }
+.pg-edge { fill: none; stroke-width: 1.25; stroke-linejoin: round; }
+.pg-edge.final { stroke-width: 2.25; }
+.pg-cross { stroke: var(--text-3); stroke-width: 1; }
+.pg-dot { stroke: var(--surface); stroke-width: 2; }
+.pg-tip {
+  position: absolute; z-index: 5; pointer-events: none; display: grid; grid-template-columns: auto; gap: 2px; min-width: 132px;
+  padding: 8px 10px; border-radius: var(--r-sm); white-space: nowrap; font-size: 12px;
+  color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
+}
+.pg-tip.left { transform: translateX(-100%); }
+.pg-tip b { font-weight: 600; margin-bottom: 2px; }
+.pg-tip span { display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+.pg-tip span i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pg-tip span em { margin-left: auto; padding-left: 14px; font-style: normal; font-variant-numeric: tabular-nums; color: var(--text); }
+.pg-tip span.zero { color: var(--text-4); }
+.pg-tip span.zero i { opacity: .45; }
+.pg-tip span.zero em { color: var(--text-4); }
+.pg-tip .pg-tip-sum { margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--line-2); }
+.pg-key { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.pg-major line { stroke: var(--line-3); stroke-width: 1; }
+.pg-ver { stroke: var(--text-4); stroke-width: 2; stroke-linecap: round; transition: stroke var(--dur-1); }
+.pg-ver.big { stroke: var(--text-2); }
+.pg-ver.on { stroke: var(--text); }
+.pg-tip .pg-tip-h { display: flex; align-items: center; gap: 8px; }
+.pg-tip .pg-tip-h small { margin-left: auto; padding: 0 6px; border-radius: 4px; font: 500 11px/18px var(--f-mono); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pg-vkey { display: inline-block; width: 2px; height: 10px; margin: 0 4px; border-radius: 1px; background: var(--text-3); }
