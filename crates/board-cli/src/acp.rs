@@ -856,18 +856,17 @@ const USAGE_LIMIT_PREFIXES: &[&str] = &[
 ];
 
 /// Agent SDK 的 `rate_limit_info`（`{status, resetsAt, rateLimitType, utilization, …}`）→ 额度；不是对象、没有状态时为 None。
-/// `resetsAt` 是 Unix 秒（看着像毫秒的照用），`utilization` 是 0–1 的比例（大于 1 的当百分数）
+/// `resetsAt` 是 Unix 秒（看着像毫秒的照用），`utilization` 是 0–1 的比例（大于 1 的当百分数）。现在的 Claude Code 把每个
+/// 窗口的用量放在 `unifiedWindows.<窗口>` 里（`{status, resetsAt, utilization}`），顶层没有 `utilization`：顶层没有的从
+/// `rateLimitType` 那个窗口里取（本机端到端实测）
 fn rate_of(v: &Value) -> Option<Quota> {
     let status = v["status"].as_str().filter(|s| !s.is_empty())?;
-    let resets_at = v["resetsAt"].as_f64().filter(|t| *t > 0.0).map(|t| if t < 1e11 { (t * 1000.0) as i64 } else { t as i64 });
-    let used = v["utilization"].as_f64().filter(|u| u.is_finite() && *u >= 0.0).map(|u| if u <= 1.0 { (u * 100.0).round() as i64 } else { u.round() as i64 });
-    Some(Quota {
-        status: status.to_string(),
-        window: v["rateLimitType"].as_str().unwrap_or_default().to_string(),
-        used,
-        resets_at,
-        ..Default::default()
-    })
+    let window = v["rateLimitType"].as_str().unwrap_or_default().to_string();
+    let unified = &v["unifiedWindows"][window.as_str()];
+    let num = |k: &str| v[k].as_f64().or_else(|| unified[k].as_f64());
+    let resets_at = num("resetsAt").filter(|t| *t > 0.0).map(|t| if t < 1e11 { (t * 1000.0) as i64 } else { t as i64 });
+    let used = num("utilization").filter(|u| u.is_finite() && *u >= 0.0).map(|u| if u <= 1.0 { (u * 100.0).round() as i64 } else { u.round() as i64 });
+    Some(Quota { status: status.to_string(), window, used, resets_at, ..Default::default() })
 }
 
 /// 这一轮的错误是不是额度用完；是的话返回记上用完、重置时间的额度（`seen` 是之前 `usage_update` 带的）。
@@ -2386,6 +2385,12 @@ mod tests {
         assert_eq!(exit_for(c.outcome.as_ref().unwrap()), EXIT_QUOTA);
         let q = c.quota.clone().unwrap();
         assert_eq!((q.exhausted, q.resets_at, q.used, q.text.as_str()), (true, Some(1_795_003_600_000), Some(100), "You've hit your session limit · resets 3pm"));
+        // 现在的 Claude Code：用量在 unifiedWindows.<窗口> 里（本机端到端实测的样子）
+        let mut c = working(true);
+        c.on_frame(&usage("s1", json!({ "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1795676400, "overageStatus": "rejected",
+            "unifiedWindows": { "five_hour": { "status": "allowed", "resetsAt": 1795676400, "utilization": 0.3 } } })));
+        let q = c.quota.clone().unwrap();
+        assert_eq!((q.window.as_str(), q.used, q.resets_at), ("five_hour", Some(30), Some(1_795_676_400_000)));
         // 一时的 429：状态 allowed，文字也不是额度用完
         let mut c = working(true);
         let err = json!({ "code": -32603, "message": "API Error: 429 overloaded", "data": { "errorKind": "rate_limit", "rateLimit": { "status": "allowed" } } });
