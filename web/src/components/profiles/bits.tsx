@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { api } from '../../lib/api';
 import { builtinName, metaColor, setAgentMeta, useAgentMeta } from '../../lib/agentMeta';
-import { OP_WORDS } from '../../lib/profiles';
+import { OP_WORDS, SUBSCRIPTION, subscribable } from '../../lib/profiles';
 import type { ClaimRule, HostInfo, Label, Profile, Provider, Workspace } from '../../lib/types';
 import { cx } from '../../lib/util';
 import { deleteProfilePatch, editProfilePatch, optimistic, useBusy, profileKey, useData } from '../../store/data';
@@ -116,13 +116,13 @@ export function providersFor(list: Provider[], protocols: string[]): Provider[] 
 /** 打开着的角色表单：`edit` 是在改的那一份（新建时没有 id） */
 export const useProfileForm = create<{ edit: (Omit<Profile, 'id'> & { id?: string }) | null }>(() => ({ edit: null }));
 
-/** 打开角色表单：改一个，或者新建（默认第一个 agent、本机登录） */
+/** 打开角色表单：改一个，或者新建（默认第一个 agent、本机配置） */
 export function openProfile(p: Profile | null) {
   const first = useAgentMeta.getState().list[0]?.id ?? 'claude';
   useProfileForm.setState({ edit: p ? { ...p } : { name: '', agent: first, provider: '', model: '', effort: '', note: '', only: [] } });
 }
 
-/** 新建 / 改一个角色：名字、谁来做、模型（本机登录或供应商 · 模型）、强度、附加说明、在哪些机器上跑。
+/** 新建 / 改一个角色：名字、谁来做、模型（本机配置、官方订阅或供应商 · 模型）、强度、附加说明、在哪些机器上跑。
     新建等服务端返回才画得出来（按钮转圈并禁用）；改是乐观更新，失败时带着改过的内容重新打开 */
 export function ProfileForm() {
   const edit = useProfileForm(s => s.edit);
@@ -152,8 +152,15 @@ export function ProfileForm() {
   const allHosts = d.only.length === 0;
   const on = d.only.filter(id => hosts.some(h => h.id === id));
   const rules = (ws?.sched?.rules ?? []).filter(r => !isNew && r.profile === d.id).length;
-  const sourceOptions = [{ value: '', label: '本机登录' }, ...usable.map(p => ({ value: p.name, label: p.name }))];
-  if (d.provider && !usable.some(p => p.name === d.provider)) sourceOptions.push({ value: d.provider, label: `${d.provider}（不能用）` });
+  // 官方订阅（#667）：只有 Claude Code、Codex 能选
+  const sub = subscribable(d.agent);
+  const sourceOptions = [
+    { value: '', label: '本机配置' },
+    ...(sub ? [{ value: SUBSCRIPTION, label: '官方订阅' }] : []),
+    ...usable.map(p => ({ value: p.name, label: p.name })),
+  ];
+  if (d.provider && !(d.provider === SUBSCRIPTION ? sub : usable.some(p => p.name === d.provider)))
+    sourceOptions.push({ value: d.provider, label: `${d.provider === SUBSCRIPTION ? '官方订阅' : d.provider}（不能用）` });
   const save = async () => {
     const body = { ...d, name: d.name.trim(), model: d.model.trim() };
     if (isNew) {
@@ -205,8 +212,8 @@ export function ProfileForm() {
                 aria-checked={d.agent === a.id}
                 className={cx('pf-agent', d.agent === a.id && 'on')}
                 onClick={() => {
-                  // 换 agent：供应商对不上就回到本机登录，强度这个 agent 设不了就清掉
-                  const ok = providersFor(providers, a.protocols).some(p => p.name === d.provider);
+                  // 换 agent：供应商对不上（官方订阅：这个 agent 不能选）就回到本机配置，强度这个 agent 设不了就清掉
+                  const ok = d.provider === SUBSCRIPTION ? subscribable(a.id) : providersFor(providers, a.protocols).some(p => p.name === d.provider);
                   setD({ ...d, agent: a.id, provider: ok ? d.provider : '', model: ok ? d.model : '', effort: a.efforts.includes(d.effort) ? d.effort : '' });
                 }}
               >
@@ -234,7 +241,7 @@ export function ProfileForm() {
             {prov ? (
               <Select value={d.model} options={prov.models.map(m => ({ value: m, label: m }))} aria-label="模型" onChange={v => setD({ ...d, model: v, effort: '' })} />
             ) : (
-              <input className="input" value={d.model} placeholder={d.provider ? '' : '不填 = agent 自己的默认'} aria-label="模型" onChange={e => setD({ ...d, model: e.target.value })} />
+              <input className="input" value={d.model} placeholder={d.provider && d.provider !== SUBSCRIPTION ? '' : '不填 = agent 自己的默认'} aria-label="模型" onChange={e => setD({ ...d, model: e.target.value })} />
             )}
           </label>
           <label>
@@ -293,7 +300,7 @@ export function ProfileForm() {
           <button className="btn" type="button" onClick={close}>
             取消
           </button>
-          <button className={cx('btn brand', busy && 'is-busy')} type="button" disabled={busy || !d.name.trim() || (!!d.provider && !d.model)} onClick={save}>
+          <button className={cx('btn brand', busy && 'is-busy')} type="button" disabled={busy || !d.name.trim() || (!!d.provider && d.provider !== SUBSCRIPTION && !d.model)} onClick={save}>
             {isNew ? '新建' : '保存'}
           </button>
         </div>

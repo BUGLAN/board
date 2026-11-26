@@ -179,6 +179,9 @@ pub fn is_builtin(id: &str) -> bool {
 /// （上报里 `custom` 为 true）是自定义 agent，照常用
 pub const REMOVED_IDS: &[&str] = &["pi"];
 
+/// 会报自己用的身份（`auth/status`、`_auth/status_update`）、能按「官方订阅」派发的内置 agent（#667）
+pub const SUBSCRIPTION_AGENTS: &[&str] = &["claude", "codex"];
+
 /// 这一项是已经移除的内置 agent（不是配置文件里新加的同名 agent）
 pub fn is_removed(id: &str, custom: bool) -> bool {
     !custom && REMOVED_IDS.contains(&id)

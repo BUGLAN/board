@@ -28,6 +28,12 @@
 //!      等它跑完、按 board-skills 做完或交给人），最多续这么多轮，每次在标准错误写一行；续满了收尾。
 //! 7. 收尾：v2 先发 `session/close`，再关掉 agent 的标准输入，最多等 5 秒让它退出，再退出自己。
 //!
+//! 身份（#667）：`--auth subscription`（按「官方订阅」角色派发）、`--auth only`（board host 问身份）时，`initialize` 之后、
+//! 开会话之前先问 agent 自己用的身份：agent 公布了 `auth.status`（ACP Authentication State Query RFD，Claude Code）就发
+//! `auth/status`；只公布了 `_meta.authStatus`（扩展：Codex）就等它推 `_auth/status_update`，最多等 [`AUTH_WAIT`]。
+//! `subscription`：身份不是订阅（`kind: account`）就出错结束、写明身份，不开会话。`only`：不开会话，把身份写成一行 JSON
+//! 到标准输出就退出（帧不写日志），退出码 0。
+//!
 //! 期间 agent 发来的请求：`session/request_permission` 自动允许（和以前跳过审批的参数同一个口径，Board 没有人工审批）；
 //! 别的（`fs/*`、`terminal/*` 这些没声明的能力）回 `-32601`。收到 SIGTERM、SIGINT（人点停止、board host 退出）时发
 //! `session/cancel`，最多等 5 秒。
@@ -50,7 +56,7 @@
 //! 重置时间）写进去，board host 随派发结束上报。
 
 use crate::envs::Env;
-use board_core::hosts::Quota;
+use board_core::hosts::{AgentAuth, Quota, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -62,6 +68,8 @@ use std::time::{Duration, Instant};
 
 /// 握手时要的协议大版本：ACP v2（草案）。agent 只会 v1 时回 1，按 v1 走
 const PROTOCOL: i64 = 2;
+/// 问身份时最多等 agent 多久（Claude Code 读 `claude auth status` 最多 5 秒；Codex 要读一次账号）
+pub const AUTH_WAIT: Duration = Duration::from_secs(30);
 /// 握手（initialize、session/new、切模式）多久没回应算失败：agent 第一次启动可能要装依赖、读配置，给足时间
 const HANDSHAKE: Duration = Duration::from_secs(180);
 /// 取消后等 agent 回 `cancelled`、收尾时等 agent 退出各最多多久
@@ -87,7 +95,19 @@ pub const EXTRA_TURNS: u32 = 3;
 
 static TERM: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>]) [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] [--quota-file <文件>] -- <ACP 入口命令> [参数…]";
+const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>] | --auth only) [--auth subscription] [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] [--quota-file <文件>] -- <ACP 入口命令> [参数…]";
+
+/// 开会话前要不要问身份（`--auth`，#667）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AuthMode {
+    /// 不问
+    #[default]
+    Skip,
+    /// 「官方订阅」的派发：不是订阅就不开会话
+    Subscription,
+    /// 只问身份，写到标准输出就退出（board host 上报用）
+    Only,
+}
 
 /// 对话模式（`--chat`）：多久没有新消息就收尾退出（board host 下一条消息来时再启动、接回会话）
 pub const CHAT_IDLE_EXIT: u64 = 10 * 60;
@@ -108,6 +128,8 @@ pub(crate) struct Opts {
     pub extra_turns: u32,
     /// 结束时把看到的额度写进这个文件（`--quota-file`，board host 读了随派发结束上报）
     pub quota_file: Option<PathBuf>,
+    /// 开会话前问身份（`--auth subscription | only`）
+    pub auth: AuthMode,
     /// 机器对话（`--chat <状态文件>`）：提示词从标准输入一条一条来，每一轮结束不退出；会话标识、这一轮的状态写进这个文件
     pub chat: Option<PathBuf>,
     /// 对话：接回这个 ACP 会话（`--resume`）
@@ -126,7 +148,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     let mut i = 0;
     while i < head.len() {
         let k = head[i].as_str();
-        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit" | "--quota-file") {
+        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit" | "--quota-file" | "--auth") {
             return Err(format!("不认识的参数 {k}。{USAGE}"));
         }
         let v = head.get(i + 1).ok_or_else(|| format!("{k} 后面要有值。{USAGE}"))?;
@@ -145,6 +167,12 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         None => 0,
     };
     let chat = m.get("--chat").filter(|x| !x.trim().is_empty()).map(PathBuf::from);
+    let auth = match m.get("--auth").map(|x| x.trim()) {
+        None => AuthMode::Skip,
+        Some("subscription") => AuthMode::Subscription,
+        Some("only") => AuthMode::Only,
+        Some(x) => return Err(format!("--auth 只能是 subscription 或 only：{x}")),
+    };
     let idle_exit = match m.get("--idle-exit") {
         Some(v) => v.trim().parse::<u64>().map_err(|_| format!("--idle-exit 要写秒数：{v}"))?,
         None => CHAT_IDLE_EXIT,
@@ -153,12 +181,13 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         env: need("--env")?,
         env_prog: m.get("--env-prog").cloned().unwrap_or_default(),
         cwd: PathBuf::from(need("--cwd")?),
-        prompt_file: if chat.is_some() { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
+        prompt_file: if chat.is_some() || auth == AuthMode::Only { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
         mode: m.get("--mode").cloned().filter(|x| !x.trim().is_empty()),
         sets,
         provider_file: m.get("--provider-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         extra_turns,
         quota_file: m.get("--quota-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
+        auth,
         resume: m.get("--resume").map(|x| x.trim().to_string()).filter(|x| !x.is_empty()),
         idle_exit,
         chat,
@@ -181,6 +210,8 @@ enum Pending {
     Mode,
     Prompt,
     Close,
+    /// `auth/status`（#667）
+    Auth,
 }
 
 /// 协商到的协议版本
@@ -224,6 +255,12 @@ pub(crate) struct Client {
     pub background: Option<usize>,
     /// 最近一次看到的额度（Claude 的 `usage_update` 带的）；额度用完时 `exhausted`，带上重置时间
     pub quota: Option<Quota>,
+    /// 开会话前问不问身份（#667）
+    auth_mode: AuthMode,
+    /// agent 自己用的身份：`auth/status` 的回应或推来的 `_auth/status_update`
+    pub auth: Option<AgentAuth>,
+    /// 在等 agent 推身份（只公布了 `_meta.authStatus` 的）
+    pub waiting_auth: bool,
     /// 对话模式：配置切完后不发提示词，等 [`Client::ask`]
     chat: bool,
     /// 对话：要接回的会话
@@ -258,6 +295,9 @@ impl Client {
             proto: Proto::V1,
             background: None,
             quota: None,
+            auth_mode: AuthMode::Skip,
+            auth: None,
+            waiting_auth: false,
             chat: false,
             resume: None,
             pending_resume: None,
@@ -305,6 +345,46 @@ impl Client {
     pub(crate) fn with_provider(mut self, provider: Option<Value>) -> Client {
         self.provider = provider;
         self
+    }
+
+    /// 开会话前问身份（`--auth`）
+    pub(crate) fn with_auth(mut self, mode: AuthMode) -> Client {
+        self.auth_mode = mode;
+        self
+    }
+
+    /// 握手完、身份也问完（或不用问）之后：换供应商，或开会话
+    fn after_init(&mut self) -> Vec<Value> {
+        match self.provider.take() {
+            Some(p) => vec![self.request("providers/set", p, Pending::Provider)],
+            None => self.new_session(),
+        }
+    }
+
+    /// 问到身份（或问不出来）之后：`only` 到此为止；`subscription` 不是订阅就出错结束，不开会话
+    fn after_auth(&mut self) -> Vec<Value> {
+        match self.auth_mode {
+            AuthMode::Only => vec![],
+            AuthMode::Subscription => {
+                let a = self.auth.clone().unwrap_or_else(|| AgentAuth { kind: AUTH_UNKNOWN.into(), ..Default::default() });
+                if a.kind == AUTH_ACCOUNT {
+                    return self.after_init();
+                }
+                self.outcome = Some(Outcome::Failed(format!("按「官方订阅」派发，agent 用的不是订阅：{}，没有开会话", a.words())));
+                vec![]
+            }
+            AuthMode::Skip => self.after_init(),
+        }
+    }
+
+    /// 等 agent 推身份的时候过了 [`AUTH_WAIT`]：按问不出来算
+    pub(crate) fn auth_timeout(&mut self) -> Vec<Value> {
+        if !self.waiting_auth {
+            return vec![];
+        }
+        self.waiting_auth = false;
+        self.auth = Some(AgentAuth { kind: AUTH_UNKNOWN.into(), label: format!("{} 秒内没报身份", AUTH_WAIT.as_secs()), ..Default::default() });
+        self.after_auth()
     }
 
     fn new_session(&mut self) -> Vec<Value> {
@@ -418,6 +498,19 @@ impl Client {
                         self.on_update(&v["params"]);
                     }
                 }
+                // 身份推送（#667）：扩展的 `_auth/status_update`（`{authStatus}`）和 RFD 的 `auth/status_update`（`{state, accounts}`）
+                if method == "_auth/status_update" || method == "auth/status_update" {
+                    let p = &v["params"];
+                    let a = if p["authStatus"].is_object() { auth_of_ext(&p["authStatus"]) } else { auth_of_status(p) };
+                    // RFD 的 `unknown` 不盖掉已经知道的
+                    if a.kind != AUTH_UNKNOWN || self.auth.is_none() {
+                        self.auth = Some(a);
+                    }
+                    if self.waiting_auth {
+                        self.waiting_auth = false;
+                        return self.after_auth();
+                    }
+                }
                 vec![]
             }
             // 回应
@@ -449,6 +542,10 @@ impl Client {
                     return self.new_session();
                 }
                 Pending::Prompt => self.outcome = Some(self.turn_error(e, format!("session/prompt 失败：{msg}"))),
+                Pending::Auth => {
+                    self.auth = Some(AgentAuth { kind: AUTH_UNKNOWN.into(), label: format!("auth/status 失败：{msg}"), ..Default::default() });
+                    return self.after_auth();
+                }
             }
             return vec![];
         }
@@ -460,10 +557,26 @@ impl Client {
                 let caps = if r["agentCapabilities"].is_object() { &r["agentCapabilities"] } else { &r["capabilities"] };
                 self.can_load = caps["loadSession"].as_bool().unwrap_or(false);
                 self.can_resume = ["sessionCapabilities", "session", "sessions"].iter().any(|k| caps[*k]["resume"].is_object() || caps[*k]["resume"].as_bool() == Some(true));
-                match self.provider.take() {
-                    Some(p) => vec![self.request("providers/set", p, Pending::Provider)],
-                    None => self.new_session(),
+                if self.auth_mode == AuthMode::Skip {
+                    return self.after_init();
                 }
+                // 身份（#667）：公布了 `auth.status` 就问；只公布了 `_meta.authStatus` 的等它推；都没有的问不出来
+                if caps["auth"]["status"].is_object() {
+                    return vec![self.request("auth/status", json!({}), Pending::Auth)];
+                }
+                if caps["_meta"]["authStatus"].is_object() || caps["auth"]["_meta"]["authStatus"].is_object() {
+                    if self.auth.is_none() {
+                        self.waiting_auth = true;
+                        return vec![];
+                    }
+                    return self.after_auth();
+                }
+                self.auth = Some(AgentAuth { kind: AUTH_UNKNOWN.into(), label: "这个版本的 agent 不报身份".into(), ..Default::default() });
+                self.after_auth()
+            }
+            Pending::Auth => {
+                self.auth = Some(auth_of_status(r));
+                self.after_auth()
             }
             Pending::Provider => self.new_session(),
             Pending::Resume | Pending::Load => {
@@ -627,6 +740,37 @@ fn try_again_at(text: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64>
     let d = NaiveDate::parse_from_str(&date, "%b %d %Y").ok()?;
     let t = NaiveTime::parse_from_str(&time, "%I:%M %p").ok()?;
     local(d.and_time(t))
+}
+
+/* ------------------------------ 身份（#667） ------------------------------ */
+
+/// 扩展的 `authStatus`（`{kind, label, detail?, account?: {plan, …}}`，Claude Code、Codex 一样）→ 身份。邮箱不留
+fn auth_of_ext(v: &Value) -> AgentAuth {
+    let s = |x: &Value| x.as_str().unwrap_or_default().trim().to_string();
+    let kind = s(&v["kind"]);
+    AgentAuth { kind: if kind.is_empty() { AUTH_UNKNOWN.into() } else { kind }, label: s(&v["label"]), detail: s(&v["detail"]), plan: s(&v["account"]["plan"]) }
+}
+
+/// ACP `auth/status` 的回应（`{state, accounts}`）→ 身份。种类只有 Claude Code 在账号的 `_meta.claudeCode.kind` 里给；
+/// 没有时登录了也按问不出来算（看不出是不是订阅）
+fn auth_of_status(r: &Value) -> AgentAuth {
+    let s = |x: &Value| x.as_str().unwrap_or_default().trim().to_string();
+    match r["state"].as_str() {
+        Some("unauthenticated") => AgentAuth { kind: AUTH_NONE.into(), label: "Not logged in".into(), ..Default::default() },
+        Some("authenticated") => {
+            let list = r["accounts"].as_array().cloned().unwrap_or_default();
+            let a = list.iter().find(|a| a["active"].as_bool() == Some(true)).or(list.first()).cloned().unwrap_or(Value::Null);
+            let meta = &a["_meta"]["claudeCode"];
+            let kind = s(&meta["kind"]);
+            AgentAuth {
+                kind: if kind.is_empty() { AUTH_UNKNOWN.into() } else { kind },
+                label: s(&a["label"]),
+                detail: [s(&a["description"]), s(&meta["detail"])].into_iter().find(|d| !d.is_empty()).unwrap_or_default(),
+                plan: s(&meta["plan"]),
+            }
+        }
+        _ => AgentAuth { kind: AUTH_UNKNOWN.into(), ..Default::default() },
+    }
 }
 
 /// 毫秒时间戳 → 本机时间「11-26 15:15」（写进日志给人看）
@@ -838,6 +982,7 @@ pub fn main(args: &[String]) -> i32 {
     on_signals();
     let code = match o.chat.clone() {
         Some(state) => run_chat(&o, &state),
+        None if o.auth == AuthMode::Only => run_auth(&o),
         None => run(&o),
     };
     let _ = std::io::stdout().flush();
@@ -895,14 +1040,8 @@ fn send(stdin: &mut Option<ChildStdin>, frames: Vec<Value>) {
     }
 }
 
-fn run(o: &Opts) -> i32 {
-    let prompt = match std::fs::read_to_string(&o.prompt_file) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("✗ board acp：读不了提示词 {}：{e}", o.prompt_file.display());
-            return EXIT_PROTOCOL;
-        }
-    };
+/// 在启动环境里拉起 agent 的 ACP 入口：标准输出一行一行送进返回的通道（读完送 None）。启动失败时写明原因、返回退出码
+fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Option<ChildStdin>, mpsc::Receiver<Option<String>>), i32> {
     let env = Env::from_parts(&o.env, &o.env_prog);
     let mut c = env.command(&o.prog, &o.args, Some(&o.cwd), true);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -910,10 +1049,10 @@ fn run(o: &Opts) -> i32 {
         Ok(ch) => ch,
         Err(e) => {
             eprintln!("✗ board acp：在{}里启动 {} 失败：{e}", env.name, o.prog);
-            return EXIT_PROTOCOL;
+            return Err(EXIT_PROTOCOL);
         }
     };
-    let mut stdin = child.stdin.take();
+    let stdin = child.stdin.take();
     let (tx, rx) = mpsc::channel::<Option<String>>();
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
@@ -934,6 +1073,84 @@ fn run(o: &Opts) -> i32 {
             let _ = tx.send(None);
         });
     }
+    Ok((child, stdin, rx))
+}
+
+/// `--auth only`（#667）：握手、问身份，不开会话；身份写成一行 JSON（[`AgentAuth`]）到标准输出，退出码 0。
+/// 帧不写日志（标准输出只有这一行）。agent 起不来、握手失败时也写一行，种类是 `unknown`、label 写原因
+fn run_auth(o: &Opts) -> i32 {
+    let say = |a: &AgentAuth| log(&serde_json::to_string(a).unwrap_or_default());
+    let unknown = |why: String| AgentAuth { kind: AUTH_UNKNOWN.into(), label: why, ..Default::default() };
+    let (mut child, mut stdin, rx) = match spawn_agent(o) {
+        Ok(x) => x,
+        Err(code) => {
+            say(&unknown(format!("启动 {} 失败", o.prog)));
+            return code;
+        }
+    };
+    let quiet = |stdin: &mut Option<ChildStdin>, frames: Vec<Value>| {
+        for f in frames {
+            if let Some(w) = stdin.as_mut() {
+                if writeln!(w, "{f}").and_then(|_| w.flush()).is_err() {
+                    *stdin = None;
+                }
+            }
+        }
+    };
+    let cwd = o.cwd.display().to_string();
+    let mut client = Client::new(&cwd, "", None).with_auth(AuthMode::Only);
+    quiet(&mut stdin, client.start());
+    let started = Instant::now();
+    let mut wait_from: Option<Instant> = None;
+    let got = loop {
+        if let Some(a) = client.auth.clone().filter(|_| !client.waiting_auth) {
+            break a;
+        }
+        if let Some(Outcome::Failed(why)) = &client.outcome {
+            break unknown(why.clone());
+        }
+        if TERM.load(Ordering::SeqCst) {
+            break unknown("被停止".into());
+        }
+        if client.waiting_auth {
+            if wait_from.get_or_insert_with(Instant::now).elapsed() >= AUTH_WAIT {
+                let f = client.auth_timeout();
+                quiet(&mut stdin, f);
+                continue;
+            }
+        } else if started.elapsed() >= HANDSHAKE {
+            break unknown(format!("agent {} 秒内没有完成握手", HANDSHAKE.as_secs()));
+        }
+        match rx.recv_timeout(TICK) {
+            Ok(Some(line)) => {
+                let t = line.trim();
+                if let Some(v) = t.starts_with('{').then(|| serde_json::from_str::<Value>(t).ok()).flatten().filter(Value::is_object) {
+                    let reply = client.on_frame(&v);
+                    quiet(&mut stdin, reply);
+                }
+            }
+            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break unknown("agent 还没报身份就退出了".into()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    };
+    say(&got);
+    drop(stdin);
+    wait(&mut child, GRACE);
+    EXIT_OK
+}
+
+fn run(o: &Opts) -> i32 {
+    let prompt = match std::fs::read_to_string(&o.prompt_file) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ board acp：读不了提示词 {}：{e}", o.prompt_file.display());
+            return EXIT_PROTOCOL;
+        }
+    };
+    let (mut child, mut stdin, rx) = match spawn_agent(o) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
     // 角色的供应商：读完就删（里面有 key），读不了、格式不对就不往下走
     let provider = match &o.provider_file {
         None => None,
@@ -951,8 +1168,10 @@ fn run(o: &Opts) -> i32 {
         }
     };
     let cwd = o.cwd.display().to_string();
-    let mut client = Client::new(&cwd, &prompt, o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider);
+    let mut client = Client::new(&cwd, &prompt, o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider).with_auth(o.auth);
     let mut merger = Merger::default();
+    // 等 agent 推身份从什么时候开始（`--auth subscription`）
+    let mut auth_from: Option<Instant> = None;
     send(&mut stdin, client.start());
     let started = Instant::now();
     // 已经续了几轮（见 decide）
@@ -986,6 +1205,10 @@ fn run(o: &Opts) -> i32 {
         if client.handshaking() && started.elapsed() >= HANDSHAKE {
             client.outcome = Some(Outcome::Failed(format!("agent {} 秒内没有完成握手（initialize、session/new）", HANDSHAKE.as_secs())));
             break;
+        }
+        if client.waiting_auth && auth_from.get_or_insert_with(Instant::now).elapsed() >= AUTH_WAIT {
+            let f = client.auth_timeout();
+            send(&mut stdin, f);
         }
         if merger.due() {
             for l in merger.flush_due() {
@@ -1179,7 +1402,7 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
         }
     };
     let cwd = o.cwd.display().to_string();
-    let mut client = Client::new(&cwd, "", o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider).for_chat(o.resume.clone());
+    let mut client = Client::new(&cwd, "", o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider).with_auth(o.auth).for_chat(o.resume.clone());
     let mut merger = Merger::default();
     let mut st = ChatState::default();
     st.save(state_file);
@@ -1947,6 +2170,83 @@ mod tests {
         let e = json!({ "message": "Internal error", "data": { "message": "You've hit your usage limit. Try again later.", "codex_error_info": "usage_limit_exceeded" } });
         let q = quota_of(&e, None, now).unwrap();
         assert_eq!((q.exhausted, q.resets_at), (true, None));
+    }
+
+    /// 「官方订阅」（#667）：Claude Code 公布了 auth.status → 先问 auth/status，是订阅才开会话；是 API key 就出错、写明身份
+    #[test]
+    fn subscription_asks_auth_status_before_the_session() {
+        let init = json!({ "protocolVersion": 2, "capabilities": { "auth": { "status": {} }, "_meta": { "authStatus": {} } } });
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        let f = c.on_frame(&reply(0, init.clone()));
+        assert_eq!((f[0]["method"].as_str(), f[0]["id"].as_i64()), (Some("auth/status"), Some(1)));
+        let max = json!({ "state": "authenticated", "accounts": [{ "label": "Claude Max", "active": true, "email": "a@b.c", "_meta": { "claudeCode": { "kind": "account", "plan": "max" } } }] });
+        let f = c.on_frame(&reply(1, max));
+        assert_eq!(f[0]["method"], "session/new", "是订阅：开会话");
+        assert_eq!(c.auth, Some(AgentAuth { kind: "account".into(), label: "Claude Max".into(), detail: String::new(), plan: "max".into() }));
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        c.on_frame(&reply(0, init));
+        let key = json!({ "state": "authenticated", "accounts": [{ "label": "Anthropic API key", "description": "ANTHROPIC_API_KEY", "active": true, "_meta": { "claudeCode": { "kind": "api_key", "detail": "ANTHROPIC_API_KEY" } } }] });
+        assert!(c.on_frame(&reply(1, key)).is_empty(), "不是订阅：不开会话");
+        assert_eq!(c.outcome, Some(Outcome::Failed("按「官方订阅」派发，agent 用的不是订阅：Anthropic API key（ANTHROPIC_API_KEY），没有开会话".into())));
+    }
+
+    /// Codex 只公布 `_meta.authStatus`：等它推 `_auth/status_update`；没登录、网关都不开会话；不报身份的、等不到的也不开
+    #[test]
+    fn subscription_waits_for_the_pushed_auth_status() {
+        let init = json!({ "protocolVersion": 2, "capabilities": { "auth": { "_meta": { "authStatus": {} } } } });
+        let push = |st: Value| json!({ "jsonrpc": "2.0", "method": "_auth/status_update", "params": { "authStatus": st } });
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        assert!(c.on_frame(&reply(0, init.clone())).is_empty());
+        assert!(c.waiting_auth && c.handshaking());
+        let f = c.on_frame(&push(json!({ "kind": "account", "label": "ChatGPT Plus", "account": { "email": "a@b.c", "plan": "plus" } })));
+        assert_eq!(f[0]["method"], "session/new");
+        assert_eq!(c.auth.as_ref().map(|a| (a.label.as_str(), a.plan.as_str())), Some(("ChatGPT Plus", "plus")));
+        for (st, want) in [
+            (json!({ "kind": "gateway", "label": "Custom model gateway", "detail": "relay" }), "Custom model gateway（relay）"),
+            (json!({ "kind": "none", "label": "Not logged in" }), "Not logged in"),
+        ] {
+            let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+            c.start();
+            c.on_frame(&reply(0, init.clone()));
+            assert!(c.on_frame(&push(st)).is_empty());
+            assert!(matches!(c.outcome, Some(Outcome::Failed(ref w)) if w.contains(want)), "{:?}", c.outcome);
+        }
+        // 推之前就到了：不用等
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        c.on_frame(&push(json!({ "kind": "account", "label": "ChatGPT Pro" })));
+        assert_eq!(c.on_frame(&reply(0, init.clone()))[0]["method"], "session/new");
+        // 等不到
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        c.on_frame(&reply(0, init));
+        assert!(c.auth_timeout().is_empty());
+        assert!(matches!(c.outcome, Some(Outcome::Failed(ref w)) if w.contains("秒内没报身份")), "{:?}", c.outcome);
+        // 不报身份的 agent（dsh、旧版适配器）
+        let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
+        c.start();
+        c.on_frame(&reply(0, json!({ "protocolVersion": 1 })));
+        assert!(matches!(c.outcome, Some(Outcome::Failed(ref w)) if w.contains("不报身份")), "{:?}", c.outcome);
+        // 不问身份（默认）：照旧直接开会话
+        let mut c = Client::new("/w", "p", None);
+        c.start();
+        assert_eq!(c.on_frame(&reply(0, json!({ "protocolVersion": 2, "capabilities": { "auth": { "status": {} } } })))[0]["method"], "session/new");
+    }
+
+    #[test]
+    fn auth_status_payloads() {
+        assert_eq!(auth_of_status(&json!({ "state": "unauthenticated" })).kind, "none");
+        assert_eq!(auth_of_status(&json!({ "state": "unknown" })).kind, "unknown");
+        // 登录了、却看不出种类（没有 claudeCode 的 _meta）：按不知道算
+        let a = auth_of_status(&json!({ "state": "authenticated", "accounts": [{ "label": "Someone" }] }));
+        assert_eq!((a.kind.as_str(), a.label.as_str()), ("unknown", "Someone"));
+        assert_eq!(auth_of_ext(&json!({ "kind": "external", "label": "AWS Bedrock" })).words(), "AWS Bedrock");
+        assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--auth", "only", "--", "x"])).is_ok(), "only 不要提示词");
+        assert_eq!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--auth", "subscription", "--", "x"])).unwrap().auth, AuthMode::Subscription);
+        assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--auth", "x", "--", "x"])).unwrap_err().contains("--auth"));
     }
 
     #[test]

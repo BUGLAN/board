@@ -499,7 +499,7 @@ impl<'a> W<'a> {
     }
 
     /// 记下 board acp 看到的额度（#668），作为这台机器上这个 agent 最近一次的额度。额度用完时这台机器上这个 agent 的
-    /// 本机登录角色暂停接单到重置时间（取不到时 1 小时后），记一条操作；返回暂停到什么时候（没用完时为 None）
+    /// 本机配置角色暂停接单到重置时间（取不到时 1 小时后），记一条操作；返回暂停到什么时候（没用完时为 None）
     pub(super) fn note_quota(&mut self, d: &DRow, q: &Quota) -> Result<Option<i64>> {
         let Some(h) = self.host_row(&d.host)?.filter(|h| h.id == d.host_id) else { return Ok(None) };
         let mut q = q.clone();
@@ -514,7 +514,7 @@ impl<'a> W<'a> {
         }
         self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
         if let Some(u) = until {
-            let text = format!("{} 的额度用完，本机登录的角色暂停接单到 {}，到点自动恢复", d.agent_label, crate::store::when_words(u, self.now));
+            let text = format!("{} 的额度用完，本机配置的角色暂停接单到 {}，到点自动恢复", d.agent_label, crate::store::when_words(u, self.now));
             self.host_op(h.id, "board", &text)?;
         }
         self.touch_hosts();
@@ -586,7 +586,7 @@ impl<'a> W<'a> {
         // 名字：<机器名>/<模型名>-<强度>（win/opus-5.5-high），见 free_agent_name。模型、强度来自
         // board host 上报的 agent 数据（配置文件 [agents.<标识>] model/effort，内置模板有默认值），
         // 没有模型时用 agent 标识
-        // 按角色派的：模型、强度是角色的（本机登录、没指定模型时用机器上报的这个 agent 现在的模型）
+        // 按角色派的：模型、强度是角色的（本机配置、没指定模型时用机器上报的这个 agent 现在的模型）
         let (mut run_model, mut run_effort) = h.run_opts(&d.agent);
         let (mut name_model, _) = h.model_for(&d.agent);
         let mut name_effort = effort_of(&h.agents, &d.agent);
@@ -765,7 +765,7 @@ impl<'a> W<'a> {
     }
 
     /// 同 [`W::dispatch_end_with`]，另外带上 board acp 看到的额度（#668）：记成这台机器上这个 agent 最近一次的额度；
-    /// 额度用完（`exhausted`）时结果记「额度用完」，不算异常退出，卡片放回领取前的状态，本机登录的角色暂停接单到重置时间
+    /// 额度用完（`exhausted`）时结果记「额度用完」，不算异常退出，卡片放回领取前的状态，本机配置的角色暂停接单到重置时间
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch_end_full(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], events: &[String], how: EndHow, why: Option<&str>, quota: Option<&Quota>) -> Result<Dispatch> {
         let mut d = self.drow(id)?;
@@ -796,7 +796,7 @@ impl<'a> W<'a> {
     }
 
     pub(super) fn finish(&mut self, d: &DRow, exit_code: Option<i64>, tail: &Tail, how: Finish) -> Result<()> {
-        // 额度（#668）：先记下；这一轮因为额度用完结束（agent 自己退出、没人停）时本机登录的角色暂停到重置时间
+        // 额度（#668）：先记下；这一轮因为额度用完结束（agent 自己退出、没人停）时本机配置的角色暂停到重置时间
         let paused = match tail.quota {
             Some(q) => self.note_quota(d, q)?,
             None => None,

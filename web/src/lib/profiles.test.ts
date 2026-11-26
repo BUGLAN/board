@@ -1,6 +1,6 @@
 /* 角色（lib/profiles.ts）：规则命中、机器现在能不能接、挑机器、推算一块白板上的卡会交给谁 */
 import { describe, expect, it } from 'vitest';
-import { forecast, groupPick, hostsFor, pickHost, routeOf, ruleGroups, ruleMatches, slotOf, soonest } from './profiles';
+import { forecast, groupPick, hostsFor, pickHost, recipe, routeOf, ruleGroups, ruleMatches, short, slotOf, soonest, SUBSCRIPTION, subscribable } from './profiles';
 import type { BoardSnapshot, ClaimRule, HostInfo, Workspace } from './types';
 
 const host = (name: string, id: number, x: Partial<HostInfo> = {}): HostInfo =>
@@ -132,5 +132,19 @@ describe('批量派送：按规则分组、预选角色', () => {
     expect(groupPick([{ rule: 0, profile: 'fix', ids: [1] }, { rule: 1, profile: 'ui', ids: [2] }])).toBe('fix');
     expect(groupPick([{ rule: 0, profile: 'fix', ids: [1] }, { rule: 1, profile: 'ui', ids: [2, 3] }, { rule: 3, profile: 'fix', ids: [4, 5] }])).toBe('fix');
     expect(groupPick([{ rule: 2, profile: null, ids: [1] }, { rule: null, profile: null, ids: [2] }])).toBeNull();
+  });
+});
+
+describe('模型来源的叫法（#667）', () => {
+  const name = (id: string) => ({ claude: 'Claude Code', codex: 'Codex' })[id] ?? id;
+  it('本机配置、官方订阅、供应商', () => {
+    expect(recipe({ agent: 'claude', provider: '', model: '', effort: 'high' }, name)).toBe('Claude Code · 本机配置 · high');
+    expect(recipe({ agent: 'codex', provider: SUBSCRIPTION, model: 'gpt-5', effort: '' }, name)).toBe('Codex · 官方订阅 · gpt-5');
+    expect(recipe({ agent: 'claude', provider: 'relay', model: 'm1', effort: '' }, name)).toBe('Claude Code · relay · m1');
+    expect(short({ provider: SUBSCRIPTION, model: '', effort: '' })).toBe('默认模型');
+    expect(short({ provider: 'relay', model: '', effort: 'high' })).toBe('high');
+  });
+  it('只有 Claude Code、Codex 能选官方订阅', () => {
+    expect([subscribable('claude'), subscribable('codex'), subscribable('dsh')]).toEqual([true, true, false]);
   });
 });

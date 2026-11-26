@@ -237,10 +237,23 @@ export interface HostAgent {
   tripped?: boolean;
   /** 最近一次派发里看到的本机账号额度（#668）；没看到过、旧版服务端没有 */
   quota?: AgentQuota | null;
-  /** 额度用完：这台机器上它的本机登录角色暂停接单到这个时间（毫秒），到点自动恢复，点「恢复」提前恢复 */
+  /** 额度用完：这台机器上它的本机配置角色暂停接单到这个时间（毫秒），到点自动恢复，点「恢复」提前恢复 */
   quota_until?: number | null;
+  /** agent 自己用的身份（#667）：board host 启动时、版本变了、自检时问的；只有 Claude Code、Codex 有 */
+  auth?: AgentAuth | null;
   /** 安装方式、最新版本、更新状态（内置 agent 才有；旧版 board host 没有） */
   manage?: AgentManage | null;
+}
+
+/** agent 自己用的身份（#667）：account 订阅 · api_key · gateway 网关 / 中转 · external 云服务商 · none 没登录 · unknown 问不出来 */
+export interface AgentAuth {
+  kind: string;
+  /** 「Claude Max」「Anthropic API key」「ChatGPT Plus」 */
+  label?: string;
+  /** 来源：ANTHROPIC_API_KEY、网关的名字 */
+  detail?: string;
+  /** 套餐：max、plus… */
+  plan?: string;
 }
 
 /** 订阅账号的额度（#668）：board acp 在派发里顺带看到的。Claude 带窗口、已用比例、重置时间；Codex 只在用完时报 */
@@ -781,9 +794,9 @@ export interface Profile {
   id: string;
   name: string;
   agent: string;
-  /** 共用配置里的供应商；空 = 本机登录（用机器上 agent 自己登录的账号） */
+  /** 共用配置里的供应商；空 = 本机配置（按这台机器上 agent 自己的配置跑）；@subscription = 官方订阅（#667） */
   provider: string;
-  /** 模型；空 = agent 自己的默认（只有本机登录时可以空） */
+  /** 模型；空 = agent 自己的默认（只有本机配置时可以空） */
   model: string;
   /** 思考强度；空 = 不设 */
   effort: string;
@@ -844,7 +857,7 @@ export interface Dispatch {
   /** 按哪个角色派的（角色标识）、派发时角色的名字；按 agent 派的、旧服务端没有 */
   profile?: string;
   profileName?: string;
-  /** 角色用的供应商；本机登录时没有 */
+  /** 角色用的供应商；本机配置时没有 */
   provider?: string;
 }
 

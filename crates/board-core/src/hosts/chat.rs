@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS chats (
   agent_label TEXT NOT NULL,              -- agent 名称：Claude Code …
   profile     TEXT NOT NULL DEFAULT '',   -- 按哪个角色开的（角色标识）；空 = 直接选的 agent
   profile_name TEXT NOT NULL DEFAULT '',
-  provider    TEXT NOT NULL DEFAULT '',   -- 角色用的供应商；空 = 本机登录
+  provider    TEXT NOT NULL DEFAULT '',   -- 角色用的供应商；空 = 本机配置
   model       TEXT,
   effort      TEXT,
   env         TEXT,                       -- 启动环境标识（开始时按机器设置定）

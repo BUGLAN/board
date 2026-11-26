@@ -56,7 +56,7 @@ export function ProvidersSection() {
   const remove = async (p: Provider) => {
     const roles = (useData.getState().ws?.sched?.profiles ?? []).filter(r => r.provider === p.name).map(r => `「${r.name}」`);
     if (roles.length) {
-      toast({ type: 'error', title: `角色${roles.join('')}还在用 ${p.name}`, text: '先在 Agent → 分工里把它们改成别的供应商或本机登录' });
+      toast({ type: 'error', title: `角色${roles.join('')}还在用 ${p.name}`, text: '先在 Agent → 分工里把它们改成别的供应商或本机配置' });
       return;
     }
     const ok = await confirm({
@@ -84,7 +84,7 @@ export function ProvidersSection() {
           <h2>模型供应商</h2>
           <p>
             供应商在这里加、改。哪个角色用哪个供应商、哪个模型，在 Agent → 分工里选；派发时 board host 只给这一次 agent 进程换上，agent 直接连供应商，不经过 Board。{' '}
-            <HowTip tip="只对这次派发生效，不改 agent 自己的配置文件。以前旧版 Board 写进 agent 配置文件的那组设置不会自动清理；本机登录、没填模型的角色仍可能用到它，要换就在 agent 自己的配置里改。角色只能选模型标了的强度。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
+            <HowTip tip="只对这次派发生效，不改 agent 自己的配置文件。以前旧版 Board 写进 agent 配置文件的那组设置不会自动清理；本机配置、没填模型的角色仍可能用到它，要换就在 agent 自己的配置里改。角色只能选模型标了的强度。API key 只存在服务端，界面上只显示末尾 4 位，完整值只发给要用它的机器上的 board host。" />
           </p>
         </div>
         <div className="sc-acts">

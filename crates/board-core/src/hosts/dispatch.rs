@@ -73,7 +73,7 @@ pub struct Dispatch {
     /// 派发时角色的名字
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub profile_name: String,
-    /// 角色用的供应商：board host 给这一个 agent 进程换上它（ACP `providers/set`，dsh 写进这次的 `--patch`）；空 = 本机登录
+    /// 角色用的供应商：board host 给这一个 agent 进程换上它（ACP `providers/set`，dsh 写进这次的 `--patch`）；空 = 本机配置
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
     /// 角色的附加说明：board host 接在提示词后面
@@ -472,7 +472,7 @@ impl<'a> W<'a> {
         Ok(a)
     }
 
-    /// 派发记下按哪个角色：标识、当时的名字、供应商、附加说明，模型、强度也按角色写（本机登录、不指定模型时留空，
+    /// 派发记下按哪个角色：标识、当时的名字、供应商、附加说明，模型、强度也按角色写（本机配置、不指定模型时留空，
     /// 开始时按机器上报的写）
     pub(super) fn set_profile(&mut self, id: i64, role: Option<&crate::profiles::Profile>) -> Result<()> {
         let Some(p) = role else { return Ok(()) };

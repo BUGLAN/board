@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, lastTest } from '../../lib/hostDetail';
 import { skillHome } from '../../lib/agentMeta';
-import { envName, isLocalHost, missWord, quotaWords, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps, whenWords } from '../../lib/hosts';
+import { authWords, envName, isLocalHost, missWord, quotaWords, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps, whenWords } from '../../lib/hosts';
 import { installSkill, localHost, shell } from '../../lib/platform';
 import { metaOf } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
@@ -156,7 +156,7 @@ function AgentCard({
   const mine = ask.is(`one:${a.id}`) || ask.is(`test:${a.id}`) || selftestLive(h, now).some(x => x.agent === a.id);
   const testing = mine || ask.is('all') || selftestBusy(h, now, a.id);
   const failed = [`env:${a.id}`, `resume:${a.id}`].some(k => sync[k] === 'failed');
-  // 额度用完、本机登录的角色暂停中（#668）：到点自动恢复，这时不再另画一行额度
+  // 额度用完、本机配置的角色暂停中（#668）：到点自动恢复，这时不再另画一行额度
   const quotaPaused = !a.tripped && a.quota_until != null && a.quota_until > now;
   return (
     <article className={cx('hd-agent', !a.found && 'missing', a.found && !hr.ok && 'warn', failed && 'hp-rollback')}>
@@ -182,7 +182,7 @@ function AgentCard({
       {a.found && !meta && (
         <div className="hd-conf muted">
           <Icon name="info" />
-          <span>配置文件里新加的 agent：角色只能选本机登录，模型在它自己的配置里</span>
+          <span>配置文件里新加的 agent：角色只能选本机配置，模型在它自己的配置里</span>
         </div>
       )}
       {a.found && hr.why && (
@@ -213,6 +213,12 @@ function AgentCard({
           )}
         </div>
       )}
+      {a.found && a.auth && (
+        <div className={cx('hd-conf', a.auth.kind === 'account' ? 'ok' : a.auth.kind === 'none' ? 'bad' : 'muted')}>
+          <Icon name="user" />
+          <span>用的身份：{authWords(a.auth)}</span>
+        </div>
+      )}
       {a.tripped && (
         <div className="hd-why">
           <span>连续 3 次异常退出，已经暂停接单：不再给它派新的卡。看「概况 → 最近」里那几次的原因，修好后恢复。</span>
@@ -223,7 +229,7 @@ function AgentCard({
       )}
       {quotaPaused && (
         <div className="hd-why">
-          <span>额度用完，本机登录的角色暂停接单到 {whenWords(a.quota_until ?? now, now)}，到点自动恢复；用供应商的角色照常。</span>
+          <span>额度用完，本机配置的角色暂停接单到 {whenWords(a.quota_until ?? now, now)}，到点自动恢复；用供应商的角色照常。</span>
           <button className={cx('btn sm', sync[`resume:${a.id}`] === 'saving' && 'is-busy')} type="button" onClick={() => save({ resume: a.id })}>
             恢复
           </button>

@@ -325,7 +325,7 @@ impl W<'_> {
                     return Err(BoardError::usage("领取规则至少要选一个标签"));
                 }
                 // 交给的角色：按标识或名字找。旧版界面（和 `board` 命令行）只给 agent 时，交给这个 agent 的第一个角色；
-                // 还没有时建一个同名的（本机登录、不指定模型，和升级时一样），agent 要至少在一台机器上找得到
+                // 还没有时建一个同名的（本机配置、不指定模型，和升级时一样），agent 要至少在一台机器上找得到
                 let agent = r.agent.trim().to_string();
                 if r.profile.trim().is_empty() && !agent.is_empty() && !profiles.iter().any(|p| p.agent == agent) {
                     if !old.iter().any(|x| x.agent == agent) && !found(&agent) {

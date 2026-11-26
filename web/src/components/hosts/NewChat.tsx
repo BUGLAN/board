@@ -145,7 +145,7 @@ export function NewChatForm({ h, onStarted }: { h: HostInfo; onStarted: (id: num
                   </span>
                   <span>
                     <b>{'p' in c ? c.p.name : c.a.name}</b>
-                    <small>{c.ok ? ('p' in c ? short(c.p) : c.a.version || '本机登录') : c.why}</small>
+                    <small>{c.ok ? ('p' in c ? short(c.p) : c.a.version || '本机配置') : c.why}</small>
                   </span>
                 </button>
               ))}

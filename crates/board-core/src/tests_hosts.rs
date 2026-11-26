@@ -2434,7 +2434,7 @@ fn rules_route_labels_to_profiles_and_unmatched_cards_stay() {
     assert_eq!(rules(&mut s, &[("claude", "claude")], Some("dsh")).unwrap_err().code, ErrorCode::Usage);
     rules(&mut s, &[("claude", "claude")], None).unwrap();
     assert_eq!(round_all(&mut s, T0 + S), vec![(c, "claude".into())]);
-    // 升级时按 agent 写的规则交给同名角色（本机登录、不指定模型）
+    // 升级时按 agent 写的规则交给同名角色（本机配置、不指定模型）
     let sched = s.read(|r| r.sched(T0)).unwrap();
     assert_eq!(sched.profiles.len(), 1);
     assert_eq!((sched.profiles[0].name.as_str(), sched.profiles[0].agent.as_str(), sched.profiles[0].provider.as_str()), ("Claude Code", "claude", ""));
@@ -4936,6 +4936,62 @@ fn agent_pauses_after_three_crashes_in_a_row_until_resumed() {
     assert!(!tripped(&s, t2 + 3 * S));
 }
 
+/* ---------------- 官方订阅（#667） ---------------- */
+
+fn with_auth(mut r: HostReport, agent: &str, kind: &str, label: &str, detail: &str) -> HostReport {
+    for a in r.agents.iter_mut().filter(|a| a.id == agent) {
+        a.auth = Some(crate::hosts::AgentAuth { kind: kind.into(), label: label.into(), detail: detail.into(), plan: String::new() });
+    }
+    r
+}
+
+/// 角色的模型来源「官方订阅」：只有 Claude Code、Codex 能选；只派给报的身份是订阅的机器，不是订阅、不知道、没登录都写明原因；
+/// 本机配置的角色不看是不是订阅，只看没登录；派发记录、动态里写「官方订阅」
+#[test]
+fn subscription_roles_only_go_to_machines_on_a_subscription() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let sub = |name: &str, agent: &str| crate::profiles::Profile { provider: crate::profiles::SUBSCRIPTION.into(), ..role(name, agent, "", "", "") };
+    let e = put_role(&mut s, T0, sub("订阅 dsh", "dsh")).unwrap_err();
+    assert!(e.message.contains("不能选「官方订阅」"), "{}", e.message);
+    let r = put_role(&mut s, T0, sub("订阅", "claude")).unwrap();
+    let local = put_role(&mut s, T0, role("本机", "claude", "", "", "")).unwrap();
+    assert_eq!(r.recipe(), "Claude Code · 官方订阅");
+    assert_eq!(local.recipe(), "Claude Code · 本机配置");
+    // 还没报身份（旧版 board host、还没问过）：订阅的不派，本机配置照常
+    let (ok, why) = fit_on(&s, "mbp", T0, &r.id);
+    assert!(!ok && why == "还不知道 Claude Code 用的是什么账号：升级 board、点「自检」后再看", "{why}");
+    assert!(fit_on(&s, "mbp", T0, &local.id).0);
+    // mbp 报 API key，desk 报订阅
+    beat(&mut s, T0 + S, &with_auth(rep_mbp(), "claude", "api_key", "Anthropic API key", "ANTHROPIC_API_KEY")).unwrap();
+    beat(&mut s, T0 + S, &with_auth(rep_desk(), "claude", "account", "Claude Max", "")).unwrap();
+    assert_eq!(fit_on(&s, "mbp", T0 + S, &r.id), (false, "Claude Code 用的是 Anthropic API key（ANTHROPIC_API_KEY），不是订阅".to_string()));
+    assert_eq!(fit_on(&s, "desk", T0 + S, &r.id), (true, String::new()));
+    assert!(fit_on(&s, "mbp", T0 + S, &local.id).0, "本机配置不管是不是订阅");
+    assert_eq!(s.read(|x| x.host("mbp", T0 + S)).unwrap().agents.iter().find(|a| a.id == "claude").unwrap().auth.as_ref().map(|a| a.label.clone()), Some("Anthropic API key".into()));
+    // 手动派发到 mbp 被拒；任意机器只挑 desk；派发记录写官方订阅
+    let c = new_card(&mut s, T0, "C");
+    let e = s
+        .write(T0 + 2 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c, "mbp", None, Some("订阅"), &Actor::human())
+        })
+        .unwrap_err();
+    assert!(e.message.contains("不是订阅"), "{}", e.message);
+    let d = s
+        .write(T0 + 2 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create_any(&b, c, None, Some("订阅"), &Actor::human())
+        })
+        .unwrap();
+    assert_eq!((d.host.as_str(), d.provider.as_str()), ("desk", crate::profiles::SUBSCRIPTION));
+    // 报没登录：本机配置、官方订阅都不派
+    beat(&mut s, T0 + 3 * S, &with_auth(rep_desk(), "claude", "none", "Not logged in", "")).unwrap();
+    for p in [&r.id, &local.id] {
+        assert_eq!(fit_on(&s, "desk", T0 + 3 * S, p), (false, "Claude Code 没登录：登录后重新自检".to_string()));
+    }
+}
+
 /* ---------------- 额度用完（#668） ---------------- */
 
 fn quota_end(s: &mut Store, at: i64, id: i64, q: &crate::hosts::Quota) -> Dispatch {
@@ -4953,7 +5009,7 @@ fn fit_on(s: &Store, host: &str, at: i64, profile: &str) -> (bool, String) {
     (f.ok, f.why.clone())
 }
 
-/// 额度用完：派发结果「额度用完」，卡片回到待办、动态写明恢复时间，别的机器能接；这台机器上这个 agent 的本机登录角色
+/// 额度用完：派发结果「额度用完」，卡片回到待办、动态写明恢复时间，别的机器能接；这台机器上这个 agent 的本机配置角色
 /// 暂停到重置时间（自动领取不领、手动派发被拒），到点自动恢复；用供应商的角色、别的机器不受影响；机器详情带上额度
 #[test]
 fn quota_exhausted_releases_the_card_and_pauses_local_roles_until_reset() {
@@ -4990,7 +5046,7 @@ fn quota_exhausted_releases_the_card_and_pauses_local_roles_until_reset() {
         "{texts:?}"
     );
     assert!(texts.iter().any(|t| t.starts_with("派发结束：额度用完")), "{texts:?}");
-    // 本机登录的角色在 mbp 上暂停；用供应商的照常；desk 上照常
+    // 本机配置的角色在 mbp 上暂停；用供应商的照常；desk 上照常
     let (ok, why) = fit_on(&s, "mbp", T0 + 3 * S, &local.id);
     assert!(!ok && why.starts_with("额度用完，") && why.ends_with(" 恢复"), "{why}");
     assert_eq!(fit_on(&s, "mbp", T0 + 3 * S, &viar.id), (true, String::new()));
@@ -4998,8 +5054,8 @@ fn quota_exhausted_releases_the_card_and_pauses_local_roles_until_reset() {
     let a = claude_agent(&s, "mbp", T0 + 3 * S);
     assert_eq!((a.quota_until, a.tripped), (Some(reset), false));
     assert_eq!(a.quota.map(|q| (q.exhausted, q.used, q.window, q.at)), Some((true, Some(100), "five_hour".to_string(), T0 + 2 * S)));
-    assert!(host(&s, T0 + 3 * S).ops.iter().any(|o| o.text.starts_with("Claude Code 的额度用完，本机登录的角色暂停接单到")));
-    // mbp 不再领交给本机登录角色的卡，desk 接着做
+    assert!(host(&s, T0 + 3 * S).ops.iter().any(|o| o.text.starts_with("Claude Code 的额度用完，本机配置的角色暂停接单到")));
+    // mbp 不再领交给本机配置角色的卡，desk 接着做
     assert_eq!(pull2(&mut s, T0 + 4 * S, &switching(rep_mbp())), None);
     assert_eq!(pull2(&mut s, T0 + 4 * S, &rep_desk()), Some(c));
     // 手动派发到 mbp 被拒，写明原因
@@ -5035,7 +5091,7 @@ fn quota_without_reset_pauses_an_hour_is_not_a_crash_and_can_be_resumed() {
     assert!(!tripped(&s, t + 3 * S));
     crash_once(&mut s, t + 10 * S);
     assert!(!tripped(&s, t + 13 * S));
-    // 没有重置时间：暂停 1 小时；规则交给本机登录角色的卡不领
+    // 没有重置时间：暂停 1 小时；规则交给本机配置角色的卡不领
     assert_eq!(claude_agent(&s, "mbp", t + 13 * S).quota_until, Some(t + 2 * S + crate::hosts::QUOTA_PAUSE_DEFAULT));
     let next = new_card_tagged(&mut s, "T");
     beat(&mut s, t + 14 * S, &report("mbp", "i1", vec![])).unwrap();
@@ -6180,7 +6236,7 @@ fn profiles_are_validated_and_deleting_drops_their_rules() {
     let fix = put_role(&mut s, T0, role("修复", "claude", "relay", "model-b", "max")).unwrap();
     assert_eq!(fix.recipe(), "Claude Code · relay · model-b · max");
     assert!(err(&mut s, role("修复", "dsh", "", "", "")).contains("已经有叫「修复」"), "名字不分大小写不能重复");
-    // 本机登录可以不指定模型；改名字不换标识
+    // 本机配置可以不指定模型；改名字不换标识
     let local = put_role(&mut s, T0, role("本机", "claude", "", "", "")).unwrap();
     let renamed = put_role(&mut s, T0, crate::profiles::Profile { name: "主力".into(), ..local.clone() }).unwrap();
     assert_eq!((renamed.id.as_str(), renamed.name.as_str()), (local.id.as_str(), "主力"));
@@ -6281,7 +6337,7 @@ fn fits_count_login_provider_reach_and_old_board() {
         let f = h.fits.iter().find(|f| f.profile == p).unwrap();
         (f.ok, f.why.clone())
     };
-    // 旧版 board host（不报 switch）：用供应商的角色跑不了，本机登录的照常
+    // 旧版 board host（不报 switch）：用供应商的角色跑不了，本机配置的照常
     beat(&mut s, T0, &report_cd("i1")).unwrap();
     assert_eq!(fit(&s, &local.id), (true, String::new()));
     assert_eq!(fit(&s, &viar.id), (false, "board 版本太旧，升级后才能换供应商".into()));
@@ -6314,7 +6370,7 @@ fn fits_count_login_provider_reach_and_old_board() {
     let mut r = cond("in", &["x"], "");
     r.profile = local.id.clone();
     s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[r]), None)).unwrap();
-    assert!(pull(&mut s, T0 + 3 * S).is_none(), "没登录的机器不领交给本机登录角色的卡");
+    assert!(pull(&mut s, T0 + 3 * S).is_none(), "没登录的机器不领交给本机配置角色的卡");
     let e = s
         .write(T0 + 3 * S, Origin::ui(None), |w| {
             let b = w.resolve(B)?;

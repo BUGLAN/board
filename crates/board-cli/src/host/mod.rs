@@ -357,6 +357,12 @@ struct Host<'a> {
     selftest_seen: HashSet<i64>,
     /// 自检启动的子进程：退出时结束它们
     selftest_pids: selftest::Pids,
+    /// 每个会报身份的 agent（Claude Code、Codex）自己用的身份（#667），随上报带上
+    auth: BTreeMap<String, board_core::hosts::AgentAuth>,
+    /// 上一次问身份时 agent 的版本：版本变了（启动时为空）就再问一次；自检时清掉
+    auth_ver: BTreeMap<String, String>,
+    /// 正在后台问身份的：agent 标识 → 线程
+    auth_jobs: HashMap<String, std::thread::JoinHandle<board_core::hosts::AgentAuth>>,
     /// 同步配置（机器详情与配置同步重构）：正在后台做的（回应的请求序号，启动时自己写的那一次为空）
     sync_job: Option<(Option<i64>, std::thread::JoinHandle<SyncOut>)>,
     /// 做完了、还没报上去的结果（连不上服务端时下一轮再报）
@@ -498,6 +504,9 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         selftest_out: vec![],
         selftest_seen: HashSet::new(),
         selftest_pids: selftest::Pids::default(),
+        auth: BTreeMap::new(),
+        auth_ver: BTreeMap::new(),
+        auth_jobs: HashMap::new(),
         agent_latest: None,
         next_agent_check: Instant::now(),
         agent_job: None,
@@ -597,7 +606,7 @@ impl Host<'_> {
             resume: self.resume.clone(),
             os: self.os.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            agents: self.agents.iter().map(|a| a.report(self.agent_now.get(&a.id))).collect(),
+            agents: self.agents.iter().map(|a| HostAgent { auth: self.auth.get(&a.id).cloned(), ..a.report(self.agent_now.get(&a.id)) }).collect(),
             envs: self.envs.iter().map(Env::report).collect(),
             workspace: Some(self.ws.clone()),
             dirs: self.dir_reports(),
@@ -778,6 +787,10 @@ impl Host<'_> {
             }
             // 自检：界面上点了就在后台做，做完回报
             self.poll_selftest();
+            // 身份（#667）：启动时、agent 版本变了、自检时在后台问一次，问到了马上上报
+            if self.poll_auth() {
+                next_beat = Instant::now();
+            }
             // agent 版本每天在后台查一次；安装/更新在后台跑，不占会话位
             if self.poll_agent_latest() {
                 next_beat = Instant::now();

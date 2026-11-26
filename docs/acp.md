@@ -9,6 +9,18 @@
 > dsh 用它自带的 `--profile acp`（下文写它没有 ACP 是当时没查到），Claude Code、Codex 用 ACP 组织维护的适配器（`npx -y` 固定版本）。
 > 现在怎么做见 [agents.md](agents.md)「board host 怎么启动 agent」「已经接入的」；下文是当时的调研，结论和路线不再适用。
 >
+> 2026-11-25 补记（#667）：身份用 ACP 的 `auth/status`（Authentication State Query RFD）和适配器的 `authStatus` 扩展（`_auth/status_update`）问。claude-agent-acp 0.107.3 两种都有（`capabilities.auth.status`、`capabilities._meta.authStatus`），回的账号在 `_meta.claudeCode` 里带 `kind`（`account` / `api_key` / `gateway` / `external`）和 `plan`；codex-acp 2.7.0 只推 `_auth/status_update`（`capabilities.auth._meta.authStatus`），握手后读一次账号就推。本机（macOS）用 `board acp --auth only` 实测，只握手、不开会话：
+>
+> | agent | 情况 | 报的身份 |
+> |---|---|---|
+> | Claude Code | `/login` 登了 Max | `{"kind":"account","label":"Claude Max","plan":"max"}` |
+> | Claude Code | 同上，环境里另有 `ANTHROPIC_API_KEY` | `{"kind":"api_key","label":"Anthropic API key","detail":"ANTHROPIC_API_KEY"}` |
+> | Codex | `config.toml` 的 `model_provider` 指向自己配的中转 | `{"kind":"gateway","label":"Custom model gateway","detail":"<中转的名字>"}` |
+> | Codex | `auth.json` 里是 API key | `{"kind":"api_key","label":"OpenAI API key"}` |
+> | Codex | 没登录（空的 `CODEX_HOME`） | `{"kind":"none","label":"Not logged in"}` |
+>
+> ChatGPT 登录这台机器上没有（Codex 用的是中转），没实测；按 codex-acp 源码是 `{"kind":"account","label":"ChatGPT <套餐>","account":{"plan":…}}`。另外：只带 `HOME`、`PATH` 启动时（没有 `USER`、`LOGNAME`）macOS 上的 Claude Code 读不到钥匙串里的登录，报没登录；board host 带着用户的完整环境，不受影响。
+>
 > 2026-11-25 补记（#668）：订阅账号的额度用 ACP 上顺带来的信息认——claude-agent-acp 0.107.3 的 `usage_update` 在 `_meta["_claude/rateLimit"]` 带 Agent SDK 的 `rate_limit_info`，额度用完时这一轮的错误 `data` 是 `{errorKind: "rate_limit", rateLimit}`；codex-acp 2.7.0 不发额度，用完时错误 `data.codexErrorInfo` 是 `usageLimitExceeded`、重置时间只在文字里。`board acp` 认出时以退出码 4 结束、把额度写进 `--quota-file`，服务端记「额度用完」、不算异常退出，见 [agents.md](agents.md) 和 PRD §9.1「额度用完」。
 
 ## 结论

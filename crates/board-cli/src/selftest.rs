@@ -8,7 +8,7 @@
 //! - 供应商（整台机器时）：共用配置里的每个供应商，每种接口发一次列模型的请求（`<地址>/models`，Anthropic 是
 //!   `<地址>/v1/models`），带上 key。连不上（解析不了、拒绝连接、超时）、key 被拒（401、403）算没通过；别的回应
 //!   （包括 404：有的中转不给模型列表）都算连得上。服务端据此算用这个供应商的角色在这台机器上能不能跑（#574）。
-//!   agent 一项因为没登录没通过（原因以 [`board_core::profiles::LOGIN_FAILED`] 开头）时，本机登录的角色在这台机器上跑不了。
+//!   agent 一项因为没登录没通过（原因以 [`board_core::profiles::LOGIN_FAILED`] 开头）时，本机配置的角色在这台机器上跑不了。
 //! - board 版本是否落后由服务端在收到结果时补上。
 //!
 //! 命令在 host/manage.rs 里按派发同样的办法拼好（启动环境、模型、强度），这里只负责跑、限时、看输出下结论。
@@ -103,6 +103,25 @@ fn run_limited(mut cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Ou
     out
 }
 
+/// 问一个 agent 自己用的身份（#667）：跑 `board acp --auth only`（拼好的命令），读它写到标准输出的那一行。
+/// 跑不起来、超时、没写出来时种类是 `unknown`，label 写原因。最多等 `limit`
+pub fn probe_auth(cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> board_core::hosts::AgentAuth {
+    use board_core::hosts::{AgentAuth, AUTH_UNKNOWN};
+    let unknown = |why: String| AgentAuth { kind: AUTH_UNKNOWN.into(), label: why, ..Default::default() };
+    match run_limited(cmd, log, limit, pids) {
+        Outcome::Spawn(e) => return unknown(format!("启动失败：{e}")),
+        Outcome::Timeout => return unknown(format!("{} 秒内没问出身份", limit.as_secs())),
+        Outcome::Exit(..) => {}
+    }
+    // 标准错误也在这个文件里（agent 的提示）：从后往前找那一行 JSON
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    text.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<AgentAuth>(l.trim()).ok())
+        .find(|a| !a.kind.is_empty())
+        .unwrap_or_else(|| unknown("没问出身份".into()))
+}
+
 /// 一种接口列模型的地址、是不是 Anthropic 的写法
 fn probe_url(interface: &str, url: &str) -> Option<(String, bool)> {
     let base = board_core::providers::normalize_url(interface, url);
@@ -153,7 +172,10 @@ fn redact_key(s: &str, key: &str) -> String {
 /// 输出里像「没有登录」的那一行。`lines` 是转写后的日志，原始 JSON 事件里的 uuid、session_id 等元数据不算；
 /// 401 只认单独的状态码（uuid 里的 `401e8ee6-…` 不算）
 fn login_line(lines: &[String]) -> Option<String> {
-    const MARKS: [&str; 11] = [
+    // 「要求先登录」「authentication required」：适配器在 session/new 按 ACP 规范回 -32000 时 board acp 记的（#667）
+    const MARKS: [&str; 13] = [
+        "要求先登录",
+        "authentication required",
         "not logged in",
         "please run /login",
         "run /login",
@@ -520,6 +542,10 @@ mod tests {
         let (pass, why, _) = judge(&Outcome::Exit(false, Some(1)), None, &["Not logged in · Please run /login"]);
         assert!(!pass);
         assert!(why.unwrap().starts_with("没有登录：Not logged in"));
+        // 适配器按 ACP 规范在 session/new 回 -32000：board acp 写「agent 要求先登录」（#667）
+        let (pass, why, _) = judge(&Outcome::Exit(false, Some(2)), None, &["✗ agent 要求先登录：Authentication required"]);
+        assert!(!pass);
+        assert!(why.unwrap().starts_with("没有登录：✗ agent 要求先登录"), "要求先登录也算没登录");
         // 超时
         let (pass, why, _) = judge(&Outcome::Timeout, None, &[]);
         assert!(!pass && why.unwrap().contains("超时"));

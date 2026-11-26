@@ -4,12 +4,12 @@
 //!   `env.CLAUDE_CODE_EFFORT_LEVEL`；Codex `$CODEX_HOME/config.toml` 的 `model`、`model_reasoning_effort`；dsh
 //!   `~/.dsh/profiles/acp/cordis.patch.yml` 里 `acp` 的 `model`（ACP 会话实际用的；老配置没有时才退到
 //!   `agent-default-model` 的 `model`）和 `agent-default-model` 的 `reasoningEffort`）：board host 上报，派发名字、
-//!   派发记录和本机登录、没填模型的角色用它。
+//!   派发记录和本机配置、没填模型的角色用它。
 //! - [`route_for`] 按角色派发时怎么给这一个 agent 进程换上供应商（ACP `providers/set`，dsh 写这次的 `--patch`），
 //!   不改 agent 的全局配置文件。
 //!
 //! 以前 board host 还按机器上「指定」的供应商、模型把地址和 key 写进这些配置文件（#576 去掉了）：已经写进去的不恢复，
-//! 本机登录、没填模型的角色照旧用它；要换就在 agent 自己的配置里改，或者建一个用供应商的角色。
+//! 本机配置、没填模型的角色照旧用它；要换就在 agent 自己的配置里改，或者建一个用供应商的角色。
 //! 配置文件里新加的 agent、WSL 里的 agent 不读（WSL 里的文件要经 `\\wsl.localhost\…`）。
 
 use crate::envs::{self, Env};

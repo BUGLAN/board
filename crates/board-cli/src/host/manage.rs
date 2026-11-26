@@ -217,6 +217,8 @@ impl Host<'_> {
         self.say(format!("{} {} 请求自检{what}", self.p.cyan("◇"), ask.by));
         // 每个请求一个目录（整台机器是 all，单查是 agent 标识）：同时做的几个互不覆盖日志、提示词
         let tmp = std::env::temp_dir().join(format!("board-selftest-{}", self.name)).join(ask.agent.as_deref().unwrap_or("all"));
+        // 身份也重新问一次（#667）
+        self.auth_ver.retain(|id, _| ask.agent.as_deref().is_some_and(|a| a != id));
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::create_dir_all(&tmp);
         let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
@@ -266,6 +268,51 @@ impl Host<'_> {
                 vec![]
             }
         }
+    }
+
+    /// 身份（#667）：收下问完的；会报身份的 agent（[`board_core::agentdef::SUBSCRIPTION_AGENTS`]）找到了命令、版本和上次问的
+    /// 时候不一样（启动时、更新了、自检清掉了）就在后台再问一次（`board acp --auth only`，不开会话、不花 token）。
+    /// 返回身份有没有变（变了马上上报）
+    pub(super) fn poll_auth(&mut self) -> bool {
+        let mut changed = false;
+        let done: Vec<String> = self.auth_jobs.iter().filter(|(_, h)| h.is_finished()).map(|(id, _)| id.clone()).collect();
+        for id in done {
+            let Some(h) = self.auth_jobs.remove(&id) else { continue };
+            if let Ok(a) = h.join() {
+                if self.auth.get(&id) != Some(&a) {
+                    self.say(format!("{} {} 用的身份：{}", self.p.dim("·"), id, a.words()));
+                    self.auth.insert(id, a);
+                    changed = true;
+                }
+            }
+        }
+        let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
+        let mut start = vec![];
+        for spec in self.agents.iter().filter(|a| a.builtin.is_some() && board_core::agentdef::SUBSCRIPTION_AGENTS.contains(&a.id.as_str())) {
+            let u = used.iter().find(|a| a.id == spec.id);
+            let Some(check) = u.and_then(|u| u.env.as_deref()).and_then(|e| spec.checks.iter().find(|c| c.env == e)).or_else(|| spec.default_check()) else {
+                continue;
+            };
+            if check.prog.is_none() || check.missing.is_some() || self.auth_jobs.contains_key(&spec.id) || self.auth_ver.get(&spec.id) == Some(&check.version) {
+                continue;
+            }
+            let Some(env) = self.envs.iter().find(|e| e.id == check.env).cloned() else { continue };
+            let tmp = std::env::temp_dir().join(format!("board-auth-{}", self.name));
+            let _ = std::fs::create_dir_all(&tmp);
+            match self.acp_command(spec, check, &env, &tmp, Path::new(""), 0, None, &["--auth".to_string(), "only".to_string()]) {
+                Ok(c) => start.push((spec.id.clone(), check.version.clone(), c, tmp.join(format!("{}.log", spec.id)))),
+                Err(_) => {
+                    self.auth_ver.insert(spec.id.clone(), check.version.clone());
+                }
+            }
+        }
+        for (id, ver, cmd, log) in start {
+            self.auth_ver.insert(id.clone(), ver);
+            let pids = self.selftest_pids.clone();
+            let limit = crate::acp::AUTH_WAIT + Duration::from_secs(180);
+            self.auth_jobs.insert(id, std::thread::spawn(move || selftest::probe_auth(cmd, &log, limit, &pids)));
+        }
+        changed
     }
 
     /// 自检时启动一个 agent 的命令：和派发一样的启动环境、模型、思考强度，工作目录是临时目录

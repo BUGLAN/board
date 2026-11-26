@@ -267,6 +267,8 @@ pub(super) struct RoleRun {
     pub(super) dsh_patch: Option<(PathBuf, String)>,
     /// dsh 用供应商时的 key（放进环境变量）
     pub(super) dsh_key: Option<String>,
+    /// 「官方订阅」的角色（#667）：board acp 开会话前确认 agent 用的是订阅（`--auth subscription`）
+    pub(super) subscription: bool,
 }
 
 /// 写只有自己能读的文件（里面有 key）
@@ -409,6 +411,9 @@ impl Host<'_> {
                 if let Some(f) = &r.provider_file {
                     c.arg("--provider-file").arg(f);
                 }
+                if r.subscription {
+                    c.arg("--auth").arg("subscription");
+                }
             }
             // agent 配置文件里现在的思考强度：会话配置里有 reasoning_effort 这一项时切过去（dsh 的 ACP 只能这样定强度）
             None => {
@@ -444,8 +449,13 @@ impl Host<'_> {
         }
         let model = d.model.clone().unwrap_or_default();
         let effort = d.effort.clone().unwrap_or_default();
-        let mut out = RoleRun { model: model.clone(), effort: effort.clone(), provider_file: None, dsh_patch: None, dsh_key: None };
+        let mut out = RoleRun { model: model.clone(), effort: effort.clone(), provider_file: None, dsh_patch: None, dsh_key: None, subscription: false };
         if d.provider.is_empty() {
+            return Ok(Some(out));
+        }
+        // 官方订阅：不换线路，只在开会话前确认是订阅（#667）
+        if d.provider == board_core::profiles::SUBSCRIPTION {
+            out.subscription = true;
             return Ok(Some(out));
         }
         let lib: crate::providersync::Lib = self

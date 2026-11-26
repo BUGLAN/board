@@ -60,7 +60,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
    本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
 4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。手动启动的会话不用自己拼名字：`board check --agent <标识>` 由 Board 按这台机器的设置生成同样的名字（§3.2）。
-5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面。额度用完（上面第 3 步）是例外：记「额度用完」，不算异常退出，卡片回到领取前的可领取状态最上面，这台机器上这个 agent 的本机登录角色暂停到重置时间。
+5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面。额度用完（上面第 3 步）是例外：记「额度用完」，不算异常退出，卡片回到领取前的可领取状态最上面，这台机器上这个 agent 的本机配置角色暂停到重置时间。
 6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
 
 ## 在一台新机器上装 `board`、接任务
@@ -113,7 +113,7 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 ## 模型供应商和角色：谁用哪个模型
 
-供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用。谁用哪个在「Agent → 分工」的**角色**里定：一个角色 = agent + 模型来源（「<供应商> · <模型>」，或「本机登录」：用机器上 agent 自己登录的账号，模型可以不填）+ 强度，可选附加说明（接在提示词后面）、可选「只在这些机器上跑」。领取规则是「条件 → 角色」，手动派发也选角色；`board dispatch <ID> --host <机器> --profile <角色>`。
+供应商（地址、API key、模型、每个模型支持的思考强度）在「Agent → 模型供应商」里加一次，各台机器共用。谁用哪个在「Agent → 分工」的**角色**里定：一个角色 = agent + 模型来源（「<供应商> · <模型>」；「本机配置」：按这台机器上 agent 自己的配置跑，可能是订阅、API key 或中转，模型可以不填；「官方订阅」：只有 Claude Code、Codex，跑法同本机配置，但只派给 agent 报的身份是订阅的机器，见下面「身份和官方订阅」）+ 强度，可选附加说明（接在提示词后面）、可选「只在这些机器上跑」。领取规则是「条件 → 角色」，手动派发也选角色；`board dispatch <ID> --host <机器> --profile <角色>`。
 
 board host 每次派发按角色给**这一个 agent 进程**带上供应商、模型和强度，不改 agent 的全局配置文件，agent 直接连供应商，不经过 Board（Board 不做网关，也不转协议）：
 
@@ -122,13 +122,20 @@ board host 每次派发按角色给**这一个 agent 进程**带上供应商、�
 | Claude Code（`claude-agent-acp`） | ACP 握手后、开会话前发 `providers/set`：`providerId: "main"`、`apiType: "anthropic"`、`baseUrl`（不带 `/v1`）、`headers: {"Authorization": "Bearer <key>"}`。适配器把它写进会话的程序化 settings，优先级高于 `~/.claude/settings.json` 里的 `env` | ACP 会话配置项：类别 `model`、`thought_level` |
 | Codex（`codex-acp`） | 同样 `providers/set`：`providerId: "openai"`、`apiType: "openai"`（Responses 接口）、`baseUrl`、`headers`。适配器以 `-c model_provider=…` 覆盖启动 codex app-server，不改 `config.toml` | 同上 |
 | dsh | 这次派发的 `--patch` 后面接上 `llm-pi-ai` 里一条 `board-role` 路由和 `acp` 用的提供方、模型、强度；key 放在这个进程的环境变量 `BOARD_ROLE_API_KEY` 里 | 写在补丁里；没有供应商时用会话配置项 `reasoning_effort` 切强度 |
-| 配置文件里新加的 agent | 不能换供应商：角色只能选「本机登录」 | 会话配置项 |
+| 配置文件里新加的 agent | 不能换供应商：角色只能选「本机配置」 | 会话配置项 |
 
 - `providers/set` 的参数（含 key）写进 `~/.board/host/run/<派发 ID>.provider.json`（只有自己能读），交给 `board acp --provider-file`，读完就删；派发日志里这一帧的请求头写成 `***`。换供应商失败（例如网关列不出模型）时不开会话，按异常退出记下原因。
-- 本机登录的角色不换供应商，只切模型、强度；没填模型时不切，用 agent 自己的默认。
+- 本机配置、官方订阅的角色不换供应商，只切模型、强度；没填模型时不切，用 agent 自己的默认。
+
+**身份和官方订阅**（#667）：本机配置不保证走订阅——机器上有别的凭据时会悄悄盖过订阅（Claude Code 的[凭据优先级](https://code.claude.com/docs/en/authentication)里 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_API_KEY`、`apiKeyHelper` 都排在 `/login` 的订阅前面，`~/.claude/settings.json` 的 `env` 里的也算；Codex 的 `config.toml` 里 `model_provider` 指向中转、`auth.json` 里是 API key 时不走 ChatGPT 订阅）。所以要确认走订阅的用「官方订阅」：
+
+- **问身份**：`board acp --auth only` 只握手、不开会话：agent 公布了 `auth.status`（ACP [Authentication State Query RFD](https://agentclientprotocol.com/rfds/get-auth-state)，claude-agent-acp）就发 `auth/status`，从账号的 `_meta.claudeCode.kind` 取种类；只公布了 `_meta.authStatus`（扩展，codex-acp）就等它推 `_auth/status_update`（`{authStatus: {kind, label, detail?, account?}}`），最多 30 秒。种类：`account` 订阅、`api_key`、`gateway` 网关 / 中转、`external` 云服务商、`none` 没登录；问不出来记 `unknown`。写一行 JSON 到标准输出（不带邮箱）。
+- **上报**：board host 启动时、agent 版本变了、点「自检」时在后台问 Claude Code、Codex 一次，随上报带上（`HostAgent.auth`），机器详情 agent 页写「用的身份：Claude Max · 订阅」。报的是没登录时，本机配置、官方订阅的角色都不派到这台。
+- **派发**：官方订阅的角色只派给报的身份是订阅的机器（没报过、不知道的也不派）；派发时 board host 给 `board acp` 带 `--auth subscription`，它在 `initialize` 之后、`session/new` 之前再问一次，不是订阅就出错结束（「按「官方订阅」派发，agent 用的不是订阅：…，没有开会话」），不开会话。
+- 只判断、不改机器上的配置：发现 key 盖过了订阅时只写明，不去删 settings.json 或环境变量。实测结果见 [acp.md](acp.md) 开头的补记。
 - 每个角色只能选接口对得上的供应商：Claude Code 只认 Anthropic Messages，Codex 只认 OpenAI Responses，dsh 三种都认（路由的 `api` 跟着写成 `anthropic-messages`、`openai-completions` 或 `openai-responses`）。模型只能从这家供应商的模型里选；强度只能选这个 agent 能设、模型也标了的档位。
-- 派发名字的第二段和派发记录里的模型、强度是角色的；本机登录、没填模型时用 board host 从 agent 配置文件里读出来的。
-- 以前在机器详情里「指定」过供应商的 agent：Board 之前写进它配置文件的那组留着（按「本机登录」跑、角色没填模型时用的就是它）；board host 不再按机器上的设置写 agent 的配置文件（#576），要换就在 agent 自己的配置里改，或者建一个用供应商的角色。升级时规则里用到的每个 agent 建一个同名的「本机登录」角色，行为和以前一样。
+- 派发名字的第二段和派发记录里的模型、强度是角色的；本机配置、没填模型时用 board host 从 agent 配置文件里读出来的。
+- 以前在机器详情里「指定」过供应商的 agent：Board 之前写进它配置文件的那组留着（按「本机配置」跑、角色没填模型时用的就是它）；board host 不再按机器上的设置写 agent 的配置文件（#576），要换就在 agent 自己的配置里改，或者建一个用供应商的角色。升级时规则里用到的每个 agent 建一个同名的「本机配置」角色，行为和以前一样。
 - API key 只存在服务端：界面上只显示末尾 4 位，完整的值只发给这台机器用的 board host 令牌（`GET /api/hosts/{名字}/providers`，按角色派发时现取），不写进日志和卡片动态。
 
 
@@ -174,7 +181,7 @@ agent 标识：小写字母、数字、`.`、`-`，以字母开头，最长 16 �
 
 配置文件里新加的 agent 在 Windows 上支持 `pwsh` → `powershell` → `git-bash` → `wsl:*` → `cmd` → `direct`；同标识覆盖内置模板时，支持的启动环境不变。
 
-**模型和思考强度**：按角色派发时模型、强度按 ACP 会话配置项切（上面「模型供应商」），不按次传命令行参数；本机登录、没填模型的角色用 agent 自己配置文件里的。派发名字的第二段是角色的模型，或 board host 读出来的、它配置文件里现在的模型（例如 `mbp/sonnet-high`；强度也读出来接在后面），读不到时用配置文件 `[agents.<标识>] model`，再没有就是 agent 标识。
+**模型和思考强度**：按角色派发时模型、强度按 ACP 会话配置项切（上面「模型供应商」），不按次传命令行参数；本机配置、没填模型的角色用 agent 自己配置文件里的。派发名字的第二段是角色的模型，或 board host 读出来的、它配置文件里现在的模型（例如 `mbp/sonnet-high`；强度也读出来接在后面），读不到时用配置文件 `[agents.<标识>] model`，再没有就是 agent 标识。
 
 各自的说明：
 

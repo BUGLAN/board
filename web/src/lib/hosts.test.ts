@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf, quotaWords, whenWords } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf, quotaWords, whenWords, authWords } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Status, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -445,5 +445,15 @@ describe('额度（#668）', () => {
   it('时间点：同一天只写时刻', () => {
     expect(whenWords(at(25, 23, 59), now)).toBe('23:59');
     expect(whenWords(at(26, 0, 1), now)).toBe('11-26 00:01');
+  });
+});
+
+describe('身份（#667）', () => {
+  it('一句话说清是订阅、API key 还是中转', () => {
+    expect(authWords({ kind: 'account', label: 'Claude Max', plan: 'max' })).toBe('Claude Max · 订阅');
+    expect(authWords({ kind: 'api_key', label: 'Anthropic API key', detail: 'ANTHROPIC_API_KEY' })).toBe('Anthropic API key（ANTHROPIC_API_KEY）');
+    expect(authWords({ kind: 'gateway', label: 'Custom model gateway', detail: 'my_codex' })).toBe('Custom model gateway（my_codex） · 网关');
+    expect(authWords({ kind: 'none', label: 'Not logged in' })).toBe('没登录');
+    expect(authWords({ kind: 'unknown', label: '这个版本的 agent 不报身份' })).toBe('不知道（这个版本的 agent 不报身份）');
   });
 });

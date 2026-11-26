@@ -221,14 +221,21 @@ export function forecast(ws: Workspace | null, board: BoardSnapshot | null, now:
 /** 一个角色在跑的派发（按派发上记的角色） */
 export const runningOf = (ws: Workspace | null, profile: string): Dispatch[] => dispatchesOf(ws).filter(d => d.state === 'running' && d.profile === profile);
 
+/** 模型来源「官方订阅」存在 provider 里的值（#667）；供应商的名字不能以 @ 开头 */
+export const SUBSCRIPTION = '@subscription';
+/** 能选「官方订阅」的 agent：会报自己用的身份的 Claude Code、Codex（和服务端 agentdef::SUBSCRIPTION_AGENTS 一致） */
+export const subscribable = (agent: string) => agent === 'claude' || agent === 'codex';
+/** 模型来源的叫法：本机配置 / 官方订阅 / 供应商的名字 */
+export const sourceName = (provider: string) => (provider === SUBSCRIPTION ? '官方订阅' : provider || '本机配置');
+
 /** 「Claude Code · relay · model-a · high」 */
 export function recipe(p: Pick<Profile, 'agent' | 'provider' | 'model' | 'effort'>, agentName: (id: string) => string): string {
-  return [agentName(p.agent), p.provider || '本机登录', p.model, p.effort].filter(Boolean).join(' · ');
+  return [agentName(p.agent), sourceName(p.provider), p.model, p.effort].filter(Boolean).join(' · ');
 }
 
 /** 「model-a · high」：节点上一行写不下全部时用 */
 export function short(p: Pick<Profile, 'model' | 'effort' | 'provider'>): string {
-  return [p.model || (p.provider ? '' : '默认模型'), p.effort].filter(Boolean).join(' · ');
+  return [p.model || (p.provider && p.provider !== SUBSCRIPTION ? '' : '默认模型'), p.effort].filter(Boolean).join(' · ');
 }
 
 /** 规则里的条件词 */

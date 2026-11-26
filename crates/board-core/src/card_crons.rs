@@ -70,7 +70,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// 升级（#575）：选了 agent 的定时建卡换成这个 agent 的角色（已经有就用排在最前面的，没有就建一个本机登录的，
+/// 升级（#575）：选了 agent 的定时建卡换成这个 agent 的角色（已经有就用排在最前面的，没有就建一个本机配置的，
 /// 和规则升级同一个办法），agent 清掉。每次打开都看一遍（要在角色表、规则升级之后），旧版界面又写回 agent 也能接上
 pub(crate) fn migrate_profiles(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let olds: Vec<(i64, String)> = {
@@ -177,7 +177,7 @@ pub struct CardCronPatch {
     /// 派给哪台机器；空字符串表示不派发
     #[serde(default)]
     pub host: Option<String>,
-    /// 旧版界面：用哪个 agent（换成这个 agent 的角色，没有就建一个本机登录的）；空字符串不改
+    /// 旧版界面：用哪个 agent（换成这个 agent 的角色，没有就建一个本机配置的）；空字符串不改
     #[serde(default)]
     pub agent: Option<String>,
     /// 用哪个角色（标识或名字）；空字符串表示按规则
@@ -363,7 +363,7 @@ impl<'a> W<'a> {
         } else {
             c.host = opt(c.host.take());
         }
-        // 角色：给了就按标识或名字找、存标识；旧版界面只给 agent 时换成这个 agent 的角色（没有就建一个本机登录的）。不派发时不留
+        // 角色：给了就按标识或名字找、存标识；旧版界面只给 agent 时换成这个 agent 的角色（没有就建一个本机配置的）。不派发时不留
         let dispatching = c.pick == PICK_RANDOM || c.host.is_some();
         let agent = opt(c.agent.take());
         c.profile = match (opt(c.profile.take()), agent) {
@@ -1111,7 +1111,7 @@ mod tests {
             .expect("派发了");
         assert_eq!((d.profile.as_str(), d.model.as_deref(), d.effort.as_deref(), d.source.as_str()), (fix.id.as_str(), Some("opus"), Some("high"), SOURCE_SCHEDULE));
         let acts: Vec<String> = card(&s, id).activity.into_iter().map(|a| a.text).collect();
-        assert!(acts.iter().any(|t| t.contains("修复（Claude Code · 本机登录 · opus · high）")), "{acts:?}");
+        assert!(acts.iter().any(|t| t.contains("修复（Claude Code · 本机配置 · opus · high）")), "{acts:?}");
         s.write(t1, Origin::ui(None), |w| {
             let b = w.resolve(B)?;
             w.exec(&b, &Actor::human(), Cmd::Delete { id })
@@ -1130,7 +1130,7 @@ mod tests {
         assert_eq!(list(&s, t1).into_iter().find(|x| x.id == c.id).unwrap().profile, None);
     }
 
-    /// #575 升级：选了 agent 的定时建卡换成这个 agent 的角色（已经有就用它，没有就建一个本机登录的），agent 清掉；没选 agent 的不动
+    /// #575 升级：选了 agent 的定时建卡换成这个 agent 的角色（已经有就用它，没有就建一个本机配置的），agent 清掉；没选 agent 的不动
     #[test]
     fn old_agent_choice_becomes_its_profile() {
         let dir = tempfile::tempdir().unwrap();
@@ -1230,7 +1230,7 @@ mod tests {
         let on = |h: &str| CardCronPatch { host: Some(h.into()), ..patch("更新代码", "0 3 * * *") };
         assert!(usage(create(&mut s, on("nope"))).contains("没有叫「nope」的机器"));
         assert!(usage(create(&mut s, on("win"))).contains("还没有配工作空间"));
-        // 旧版界面只给 agent：换成这个 agent 的角色（没有就建一个本机登录的），这台机器跑不了就拒绝
+        // 旧版界面只给 agent：换成这个 agent 的角色（没有就建一个本机配置的），这台机器跑不了就拒绝
         assert!(usage(create(&mut s, CardCronPatch { agent: Some("codex".into()), ..on("mbp") })).contains("跑不了角色「Codex」：没装 Codex"));
         assert!(usage(create(&mut s, CardCronPatch { agent: Some("mycli".into()), ..on("mbp") })).contains("没找到 mycli 的命令"));
         assert!(usage(create(&mut s, CardCronPatch { profile: Some("没有这个".into()), ..on("mbp") })).contains("没有角色「没有这个」"));

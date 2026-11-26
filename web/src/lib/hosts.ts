@@ -6,7 +6,7 @@ import dshIcon from '../assets/agents/dsh.png';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
-import type { AgentQuota, BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, Status, Workspace } from './types';
+import type { AgentAuth, AgentQuota, BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, Status, Workspace } from './types';
 import { metaColor, skillHome } from './agentMeta';
 import { agentColor, agentGlyph, hhmm } from './util';
 
@@ -172,6 +172,19 @@ export function whenWords(t: number, now: number) {
   const d = new Date(t);
   const same = d.toDateString() === new Date(now).toDateString();
   return same ? hhmm(t) : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hhmm(t)}`;
+}
+
+/** 身份的种类怎么说（#667） */
+const AUTH_KINDS: Record<string, string> = { account: '订阅', api_key: 'API key', gateway: '网关', external: '云服务商', none: '没登录', unknown: '不知道' };
+
+/** agent 自己用的身份，一句话（#667）：「Claude Max · 订阅」「Anthropic API key（ANTHROPIC_API_KEY）」「Custom model gateway（my_codex）· 网关」「没登录」 */
+export function authWords(a: AgentAuth): string {
+  const kind = AUTH_KINDS[a.kind] ?? a.kind;
+  if (a.kind === 'none') return '没登录';
+  if (a.kind === 'unknown') return a.label ? `不知道（${a.label}）` : '不知道';
+  const name = `${a.label || kind}${a.detail ? `（${a.detail}）` : ''}`;
+  // 名字里已经有种类（「Anthropic API key」）就不再重复
+  return name.toLowerCase().includes(kind.toLowerCase()) ? name : `${name} · ${kind}`;
 }
 
 /** 最近一次看到的额度，一句话（#668）：「5 小时窗口用了 91% · 15:00 重置」「额度用完 · 15:00 恢复」 */

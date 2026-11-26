@@ -56,9 +56,13 @@ pub struct HostAgent {
     /// 服务端发出去时才有：最近一次派发里看到的这个 agent 本机账号的额度（#668）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<Quota>,
-    /// 服务端发出去时才有：额度用完，本机登录的角色在这台机器上暂停接单到这个时间（毫秒）；到点自动恢复，人点「恢复」提前恢复
+    /// 服务端发出去时才有：额度用完，本机配置的角色在这台机器上暂停接单到这个时间（毫秒）；到点自动恢复，人点「恢复」提前恢复
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_until: Option<i64>,
+    /// agent 自己用的身份（#667）：board host 启动时、agent 版本变了、自检时用 `board acp --auth-only` 问一次上报。
+    /// 只有 Claude Code、Codex 会报；没问过、旧版 board host 为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AgentAuth>,
     /// 安装、版本检查和更新状态（board host 上报；内置 agent 才有）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manage: Option<AgentManage>,
@@ -165,10 +169,57 @@ pub struct AgentRun {
     /// 最近一次派发里看到的本机账号额度（#668）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<Quota>,
-    /// 额度用完：这台机器上这个 agent 的本机登录角色暂停接单到这个时间（毫秒）。到点自动恢复（[`crate::profiles::fit`]
+    /// 额度用完：这台机器上这个 agent 的本机配置角色暂停接单到这个时间（毫秒）。到点自动恢复（[`crate::profiles::fit`]
     /// 拿它和现在比），人点「恢复」时清掉
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_until: Option<i64>,
+}
+
+/// agent 自己用的身份（#667）：ACP 的 `auth/status`（Authentication State Query RFD）或适配器推的
+/// `_auth/status_update`（`authStatus` 扩展）。只是 agent 自己登录的那个，`providers/set` 换的线路不算
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAuth {
+    /// [`AUTH_ACCOUNT`] 订阅、`api_key`、`gateway` 网关 / 中转、`external` 云服务商、[`AUTH_NONE`] 没登录、
+    /// [`AUTH_UNKNOWN`] 问不出来（适配器不报、超时）
+    pub kind: String,
+    /// 给人看的：「Claude Max」「Anthropic API key」「ChatGPT Plus」「Custom model gateway」
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// 来源：`ANTHROPIC_API_KEY`、网关的名字…
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    /// 套餐：`max`、`pro`、`plus`…（订阅才有）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plan: String,
+}
+
+/// 身份是订阅（Claude Pro / Max、ChatGPT Plus / Pro…）
+pub const AUTH_ACCOUNT: &str = "account";
+/// 身份是没登录
+pub const AUTH_NONE: &str = "none";
+/// 问不出身份
+pub const AUTH_UNKNOWN: &str = "unknown";
+
+impl AgentAuth {
+    /// 「Anthropic API key（ANTHROPIC_API_KEY）」「Claude Max」；没有 label 时按种类说
+    pub fn words(&self) -> String {
+        let label = if !self.label.trim().is_empty() {
+            self.label.trim().to_string()
+        } else {
+            match self.kind.as_str() {
+                AUTH_ACCOUNT => "订阅".into(),
+                "api_key" => "API key".into(),
+                "gateway" => "网关".into(),
+                "external" => "云服务商的凭据".into(),
+                AUTH_NONE => "没登录".into(),
+                _ => "不知道".into(),
+            }
+        };
+        match self.detail.trim() {
+            "" => label,
+            d => format!("{label}（{d}）"),
+        }
+    }
 }
 
 /// 订阅账号的额度（#668）：`board acp` 在派发里顺带看到的，不主动去查。Claude Code 跑的时候 `usage_update` 的
@@ -200,7 +251,7 @@ pub struct Quota {
     pub at: i64,
 }
 
-/// 额度用完、没取到重置时间时，本机登录的角色暂停多久（毫秒）
+/// 额度用完、没取到重置时间时，本机配置的角色暂停多久（毫秒）
 pub const QUOTA_PAUSE_DEFAULT: i64 = 60 * 60 * 1000;
 
 /// 一台机器的工作空间（PRD §9.1「工作空间」）：每台设备只配一个目录，每块白板在它里面的目录固定是

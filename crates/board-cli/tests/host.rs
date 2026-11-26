@@ -33,9 +33,17 @@ json.dump(d, open(p, "w"))
   exit $?
 fi
 # ACP 握手：答 initialize、session/new；session/prompt 里的提示词当成 $1，下面照旧按它做事
-read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-agent","version":"9.9.9"}}}'
-# 按角色换供应商：先答 providers/set（把收到的地址记下来），再答 session/new
 read -r l
+# 身份（#667）：有 $FAKE_DIR/auth 时像 codex-acp 那样公布 _meta.authStatus，握手后马上推 _auth/status_update
+if [ -f "$FAKE_DIR/auth" ]; then
+  echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-agent","version":"9.9.9"},"agentCapabilities":{"_meta":{"authStatus":{}}}}}'
+  echo "{\"jsonrpc\":\"2.0\",\"method\":\"_auth/status_update\",\"params\":{\"authStatus\":$(cat "$FAKE_DIR/auth")}}"
+else
+  echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-agent","version":"9.9.9"}}}'
+fi
+# 按角色换供应商：先答 providers/set（把收到的地址记下来），再答 session/new。只问身份的（--auth only）、
+# 不是订阅的（--auth subscription）不开会话，标准输入结束就退出
+read -r l || exit 0
 case "$l" in *'"providers/set"'*)
   printf '%s\n' "$l" | sed 's/.*"baseUrl":"\([^"]*\)".*/\1/' > "$FAKE_DIR/provider-url"
   echo '{"jsonrpc":"2.0","id":1,"result":{}}'
@@ -747,6 +755,41 @@ fn quota_exhausted_is_reported_and_the_card_goes_back() {
     let a = h["agents"].as_array().unwrap().iter().find(|a| a["quota"].is_object()).unwrap_or_else(|| panic!("{h}")).clone();
     assert_eq!(a["quota"]["exhausted"], true, "{a}");
     assert!(a["quota_until"].as_i64().is_some(), "{a}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 卡片 #667：board host 启动时问 agent 自己用的身份（`board acp --auth only`）上报；按「官方订阅」派发时 board acp 开会话前
+/// 再确认一次：派发前机器上换成了 API key（board host 还不知道），就出错结束、写明身份，不开会话
+#[test]
+fn host_reports_auth_and_subscription_dispatch_checks_it_again() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let auth = rig.fake.parent().unwrap().join("auth");
+    std::fs::write(&auth, r#"{"kind":"account","label":"Claude Max","account":{"email":"me@example.com","plan":"max"}}"#).unwrap();
+    let host = rig.host("mbp");
+    let claude_auth = || {
+        let ws = rig.workspace();
+        let h = ws["hosts"].as_array().and_then(|h| h.iter().find(|x| x["name"] == "mbp").cloned()).unwrap_or(Value::Null);
+        h["agents"].as_array().and_then(|a| a.iter().find(|a| a["id"] == "claude").cloned()).map(|a| a["auth"].clone()).unwrap_or(Value::Null)
+    };
+    wait_until("mbp 报 Claude Code 的身份", Duration::from_secs(30), || claude_auth()["label"] == "Claude Max");
+    assert_eq!(claude_auth(), serde_json::json!({ "kind": "account", "label": "Claude Max", "plan": "max" }), "邮箱不上报");
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        let role = board_core::profiles::Profile { name: "订阅".into(), agent: "claude".into(), provider: board_core::profiles::SUBSCRIPTION.into(), ..Default::default() };
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.profile_put(&role, "buglan")).unwrap();
+    }
+    std::fs::write(&auth, r#"{"kind":"api_key","label":"Anthropic API key","detail":"ANTHROPIC_API_KEY"}"#).unwrap();
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--profile", "订阅", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 异常退出", Duration::from_secs(30), || ended(&rig.show(1), "异常退出"));
+    let texts = activity(&rig.show(1));
+    assert!(texts.iter().any(|t| t.contains("用的不是订阅：Anthropic API key（ANTHROPIC_API_KEY），没有开会话")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("订阅（Claude Code · 官方订阅）")), "{texts:?}");
+    let log = std::fs::read_to_string(log_file(&rig.s.home, d)).unwrap();
+    assert!(!log.contains("\"method\":\"session/new\""), "不开会话：{log}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }

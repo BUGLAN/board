@@ -1,18 +1,21 @@
 //! 角色（PRD §9.1「分工」）：把「谁来做、用什么模型」从机器上拿出来，服务端存一份，所有机器共用。
 //!
 //! - 一个角色 = agent + 模型来源 + 强度，可选附加说明（派发时接在提示词后面）、可选「只在这些机器上跑」。
-//!   模型来源二选一：共用配置里的「供应商 · 模型」（`provider` 不为空），或「本机登录」（`provider` 为空：用机器上
-//!   agent 自己登录的账号，会话里切到 `model`；`model` 也为空时用 agent 自己的默认模型）。
+//!   模型来源三选一：共用配置里的「供应商 · 模型」（`provider` 是供应商的名字）；「本机配置」（`provider` 为空：按这台机器上
+//!   agent 自己的配置跑，可能是订阅、API key 或中转，会话里切到 `model`；`model` 也为空时用 agent 自己的默认模型）；
+//!   「官方订阅」（`provider` 是 [`SUBSCRIPTION`]，只有 Claude Code、Codex：和本机配置一样跑，但只派给 agent 报的身份是订阅的
+//!   机器，派发开始时 board acp 再确认一次，#667）。
 //! - 领取规则是「条件 → 角色」（`sched.rules` 每条的 `profile`），派发（手动、任意机器、改派）也选角色。
 //!   board host 每次派发按角色给这一个 agent 进程带上供应商、模型和强度（ACP `providers/set` + 会话配置项；
 //!   dsh 写进这次派发的 `--patch`），只对这个进程生效，不改 agent 的全局配置文件。
 //! - 一台机器能跑一个角色（[`fit`]）：装了这个 agent（找得到命令、没缺 ACP 入口要的命令），没被这个角色排除
-//!   （`only` 不为空时只在这些机器上）；本机登录的角色：最近一次自检里这个 agent 没有因为没登录而失败；用供应商的角色：
+//!   （`only` 不为空时只在这些机器上）；本机配置、官方订阅的角色：这个 agent 没登录（最近一次自检因为没登录失败，或者报的身份是
+//!   没登录）时跑不了，官方订阅还要报的身份是订阅；用供应商的角色：
 //!   这台机器的 board host 会按次换供应商（[`crate::hosts::HostAgent::switch`]，旧版不会），最近一次自检里连得上这个供应商。
 //!   登录和供应商的结果来自自检（机器详情「自检」），一直算到下一次自检。
 //! - 删掉一个角色时，交给它的规则一起删。
 //!
-//! 升级（[`migrate`]）：规则、兜底、「由这些机器做」里用到的每个 agent 生成一个同名角色（本机登录、不指定模型，等于
+//! 升级（[`migrate`]）：规则、兜底、「由这些机器做」里用到的每个 agent 生成一个同名角色（本机配置、不指定模型，等于
 //! 以前机器上的「不改」），规则指向它；「由这些机器做」里排除的机器换成这个角色的「只在这些机器上跑」。
 //! 兜底（规则都没命中的卡交给谁）去掉了：规则都没命中的卡不自动领，可以手动派发。
 
@@ -29,8 +32,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   agent      TEXT NOT NULL,
-  provider   TEXT NOT NULL DEFAULT '',  -- 空 = 本机登录
-  model      TEXT NOT NULL DEFAULT '',  -- 空 = agent 自己的默认（只有本机登录时可以空）
+  provider   TEXT NOT NULL DEFAULT '',  -- 空 = 本机配置；@subscription = 官方订阅；其他是供应商的名字
+  model      TEXT NOT NULL DEFAULT '',  -- 空 = agent 自己的默认（只有本机配置时可以空）
   effort     TEXT NOT NULL DEFAULT '',  -- 空 = 不设
   note       TEXT NOT NULL DEFAULT '',  -- 附加说明：派发时接在提示词后面
   only       TEXT NOT NULL DEFAULT '[]', -- 只在这些机器上跑（机器 id）；空数组 = 所有能跑的
@@ -43,6 +46,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_name ON profiles (name COLLATE NOCASE
 
 /// 名字最长几个字
 pub const NAME_MAX: usize = 20;
+/// 模型来源「官方订阅」存在 `provider` 里的保留值（供应商的名字不能以 `@` 开头，#667）
+pub const SUBSCRIPTION: &str = "@subscription";
 /// 附加说明最长几个字
 pub const NOTE_MAX: usize = 2000;
 /// 最多几个角色
@@ -58,10 +63,10 @@ pub struct Profile {
     pub name: String,
     /// agent 标识：claude、codex、dsh …
     pub agent: String,
-    /// 共用配置里的供应商名称；空 = 本机登录
+    /// 共用配置里的供应商名称；空 = 本机配置；[`SUBSCRIPTION`] = 官方订阅
     #[serde(default)]
     pub provider: String,
-    /// 模型；空 = agent 自己的默认（只有本机登录时可以空）
+    /// 模型；空 = agent 自己的默认（只有本机配置时可以空）
     #[serde(default)]
     pub model: String,
     /// 思考强度；空 = 不设
@@ -80,10 +85,14 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// 「Claude Code · 本机登录 · sonnet · high」：动态、派发记录里写
+    /// 「Claude Code · 本机配置 · sonnet · high」：动态、派发记录里写
     pub fn recipe(&self) -> String {
         let mut parts = vec![crate::providers::agent_name(&self.agent).to_string()];
-        parts.push(if self.provider.is_empty() { "本机登录".into() } else { self.provider.clone() });
+        parts.push(match self.provider.as_str() {
+            "" => "本机配置".into(),
+            SUBSCRIPTION => "官方订阅".into(),
+            p => p.to_string(),
+        });
         if !self.model.is_empty() {
             parts.push(self.model.clone());
         }
@@ -126,7 +135,7 @@ pub const LOGIN_FAILED: &str = "没有登录";
 const COLS: &str = "id, name, agent, provider, model, effort, note, only, sort, created_at";
 
 /// 一台机器能不能跑这个角色：只看角色和机器，不看在不在线、有没有空位、在不在接单时段（那些是「现在能不能开始」）。
-/// 跑不了时返回原因。登录、连不连得上供应商看最近一次自检（没自检过、旧版 board host 不报时当能跑）；本机登录的角色
+/// 跑不了时返回原因。登录、连不连得上供应商看最近一次自检（没自检过、旧版 board host 不报时当能跑）；本机配置的角色
 /// 还看这台机器上这个 agent 的额度用没用完（暂停到 `quota_until`，`now` 过了就自动恢复，#668）
 pub(crate) fn fit(p: &Profile, h: &HostRow, now: i64) -> std::result::Result<(), String> {
     if !p.only.is_empty() && !p.only.contains(&h.id) {
@@ -141,12 +150,25 @@ pub(crate) fn fit(p: &Profile, h: &HostRow, now: i64) -> std::result::Result<(),
         Some(a) => a,
     };
     let failed = |kind: &str, key: &str| h.selftest.items.iter().find(|i| i.kind == kind && i.key == key && !i.ok);
-    if p.provider.is_empty() {
+    // 本机配置、官方订阅：用的是这台机器上 agent 自己的账号
+    if p.provider.is_empty() || p.provider == SUBSCRIPTION {
         if failed("agent", &p.agent).is_some_and(|i| i.why.as_deref().is_some_and(|w| w.starts_with(LOGIN_FAILED))) {
             return Err(format!("{name} 没登录（上次自检）：登录后重新自检"));
         }
+        // agent 报的身份是没登录（#667）
+        if a.auth.as_ref().is_some_and(|x| x.kind == crate::hosts::AUTH_NONE) {
+            return Err(format!("{name} 没登录：登录后重新自检"));
+        }
         if let Some(until) = h.run.get(&p.agent).and_then(|r| r.quota_until).filter(|t| *t > now) {
             return Err(format!("额度用完，{} 恢复", crate::store::when_words(until, now)));
+        }
+        if p.provider == SUBSCRIPTION {
+            return match a.auth.as_ref() {
+                Some(x) if x.kind == crate::hosts::AUTH_ACCOUNT => Ok(()),
+                // 原因前面界面、报错都会写上是哪台机器，这里不重复
+                Some(x) if x.kind != crate::hosts::AUTH_UNKNOWN => Err(format!("{name} 用的是 {}，不是订阅", x.words())),
+                _ => Err(format!("还不知道 {name} 用的是什么账号：升级 board、点「自检」后再看")),
+            };
         }
         return Ok(());
     }
@@ -241,9 +263,13 @@ impl W<'_> {
         let model = p.model.trim().to_string();
         let effort = p.effort.trim().to_string();
         let aname = crate::providers::agent_name(&agent);
-        if !provider.is_empty() {
+        if provider == SUBSCRIPTION {
+            if !crate::agentdef::SUBSCRIPTION_AGENTS.contains(&agent.as_str()) {
+                return Err(BoardError::usage(format!("{aname} 不能选「官方订阅」：只有 Claude Code、Codex 能确认用的是订阅，选「本机配置」")));
+            }
+        } else if !provider.is_empty() {
             if !crate::agentdef::is_builtin(&agent) {
-                return Err(BoardError::usage(format!("{aname} 是配置文件里加的 agent，不能换供应商：选「本机登录」")));
+                return Err(BoardError::usage(format!("{aname} 是配置文件里加的 agent，不能换供应商：选「本机配置」")));
             }
             let prov = self.read().provider(&provider)?.ok_or_else(|| BoardError::usage(format!("没有叫「{provider}」的供应商")))?;
             if prov.endpoint_for(&agent, "").is_none() {
@@ -335,7 +361,7 @@ pub(crate) fn no_such_profile(id: &str) -> BoardError {
 }
 
 /// 一个 agent 的角色（升级、旧版界面只给 agent 时用）：已经有这个 agent 的角色就用排在最前面的那个，没有就建一个——名字是
-/// agent 的名称（重名时加标识），本机登录、不指定模型、不设强度（等于以前机器上的「不改」），`only` 是「只在这些机器上跑」
+/// agent 的名称（重名时加标识），本机配置、不指定模型、不设强度（等于以前机器上的「不改」），`only` 是「只在这些机器上跑」
 pub(crate) fn agent_profile(conn: &rusqlite::Connection, agent: &str, only: &[i64], now: i64) -> rusqlite::Result<String> {
     let have: Option<String> =
         conn.query_row("SELECT id FROM profiles WHERE agent = ?1 ORDER BY sort, created_at, id LIMIT 1", [agent], |r| r.get(0)).optional()?;
@@ -360,7 +386,7 @@ pub(crate) fn agent_profile(conn: &rusqlite::Connection, agent: &str, only: &[i6
 /// 升级：旧的「条件 → agent」规则换成「条件 → 角色」。每次打开都看一遍（只在有没换过的规则、或者还有兜底时改，
 /// 改过之后什么也不做），这样哪一步之后断掉、或者旧版又写回了旧的规则都能接上。
 /// 规则、兜底、「由这些机器做」里用到的每个 agent：已经有这个 agent 的角色就用排在最前面的那个，没有就建一个——名字是
-/// agent 的名称（重名时加标识），本机登录、不指定模型、不设强度，等于以前机器上的「不改」；「由这些机器做」里排除了
+/// agent 的名称（重名时加标识），本机配置、不指定模型、不设强度，等于以前机器上的「不改」；「由这些机器做」里排除了
 /// 机器的，换成「只在没排除的机器上跑」。兜底去掉（规则都没命中的卡不自动领）
 pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let got: Option<(String, Option<String>, String)> =
