@@ -196,6 +196,10 @@ impl HostRow {
     pub(crate) fn profile(&self, id: &str) -> Option<&crate::profiles::Profile> {
         self.profiles.iter().find(|p| p.id == id)
     }
+    /// 这台机器上这个 agent 登录的账号（#669）：报的身份里的邮箱（[`AgentAuth::account_key`]）；没报邮箱时为 None
+    pub(crate) fn account_of(&self, agent: &str) -> Option<String> {
+        self.agents.iter().find(|a| a.id == agent).and_then(|a| a.auth.as_ref()).and_then(AgentAuth::account_key)
+    }
     /// 这台机器现在能跑这个角色（[`crate::profiles::fit`]）
     pub(crate) fn can_run(&self, profile: &str, now: i64) -> bool {
         self.profile(profile).is_some_and(|p| crate::profiles::fit(p, self, now).is_ok())

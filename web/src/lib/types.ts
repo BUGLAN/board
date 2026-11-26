@@ -256,6 +256,8 @@ export interface AgentAuth {
   detail?: string;
   /** 套餐：max、plus… */
   plan?: string;
+  /** 账号的邮箱（#669）：订阅登录才有；同一个 agent 报同一个邮箱的机器算同一个账号，额度用完一起暂停 */
+  email?: string;
 }
 
 /** 本机配置下 agent 账号能用的模型（#666）：ACP session/options 给的 */

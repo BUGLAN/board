@@ -177,14 +177,16 @@ export function whenWords(t: number, now: number) {
 /** 身份的种类怎么说（#667） */
 const AUTH_KINDS: Record<string, string> = { account: '订阅', api_key: 'API key', gateway: '网关', external: '云服务商', none: '没登录', unknown: '不知道' };
 
-/** agent 自己用的身份，一句话（#667）：「Claude Max · 订阅」「Anthropic API key（ANTHROPIC_API_KEY）」「Custom model gateway（my_codex）· 网关」「没登录」 */
+/** agent 自己用的身份，一句话（#667）：「Claude Max · 订阅 · 邮箱」（#669）「Anthropic API key（ANTHROPIC_API_KEY）」「Custom model gateway（my_codex）· 网关」「没登录」 */
 export function authWords(a: AgentAuth): string {
   const kind = AUTH_KINDS[a.kind] ?? a.kind;
   if (a.kind === 'none') return '没登录';
   if (a.kind === 'unknown') return a.label ? `不知道（${a.label}）` : '不知道';
   const name = `${a.label || kind}${a.detail ? `（${a.detail}）` : ''}`;
   // 名字里已经有种类（「Anthropic API key」）就不再重复
-  return name.toLowerCase().includes(kind.toLowerCase()) ? name : `${name} · ${kind}`;
+  const words = name.toLowerCase().includes(kind.toLowerCase()) ? name : `${name} · ${kind}`;
+  const email = a.email?.trim();
+  return email ? `${words} · ${email}` : words;
 }
 
 /** 最近一次看到的额度，一句话（#668）：「5 小时窗口用了 91% · 15:00 重置」「额度用完 · 15:00 恢复」 */

@@ -451,6 +451,8 @@ describe('额度（#668）', () => {
 describe('身份（#667）', () => {
   it('一句话说清是订阅、API key 还是中转', () => {
     expect(authWords({ kind: 'account', label: 'Claude Max', plan: 'max' })).toBe('Claude Max · 订阅');
+    expect(authWords({ kind: 'account', label: 'Claude Max', plan: 'max', email: 'someone@example.com' })).toBe('Claude Max · 订阅 · someone@example.com');
+    expect(authWords({ kind: 'account', label: 'ChatGPT Plus', email: ' ' })).toBe('ChatGPT Plus · 订阅');
     expect(authWords({ kind: 'api_key', label: 'Anthropic API key', detail: 'ANTHROPIC_API_KEY' })).toBe('Anthropic API key（ANTHROPIC_API_KEY）');
     expect(authWords({ kind: 'gateway', label: 'Custom model gateway', detail: 'my_codex' })).toBe('Custom model gateway（my_codex） · 网关');
     expect(authWords({ kind: 'none', label: 'Not logged in' })).toBe('没登录');

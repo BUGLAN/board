@@ -334,6 +334,16 @@ impl<'a> W<'a> {
                 self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
                 self.host_op(h.id, by, &format!("恢复了 {} 接单", a.name))?;
             }
+            // 额度按账号算（#669）：报了同一账号、也因为额度暂停着的别的机器一起恢复
+            if quota {
+                for o in self.same_account(&h, id)? {
+                    let mut run = o.run.clone();
+                    let Some(e) = run.get_mut(id).filter(|e| e.quota_until.is_some_and(|t| t > self.now)) else { continue };
+                    e.quota_until = None;
+                    self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![o.id, serde_json::to_string(&run).unwrap_or_default()])?;
+                    self.host_op(o.id, by, &format!("恢复了 {} 接单（同一账号，在 {name} 上恢复）", a.name))?;
+                }
+            }
         }
         if let Some(e) = &p.env {
             let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;

@@ -5013,7 +5013,7 @@ fn local_roles_follow_the_reported_model_table() {
 
 fn with_auth(mut r: HostReport, agent: &str, kind: &str, label: &str, detail: &str) -> HostReport {
     for a in r.agents.iter_mut().filter(|a| a.id == agent) {
-        a.auth = Some(crate::hosts::AgentAuth { kind: kind.into(), label: label.into(), detail: detail.into(), plan: String::new() });
+        a.auth = Some(crate::hosts::AgentAuth { kind: kind.into(), label: label.into(), detail: detail.into(), ..Default::default() });
     }
     r
 }
@@ -5176,6 +5176,86 @@ fn quota_without_reset_pauses_an_hour_is_not_a_crash_and_can_be_resumed() {
     assert_eq!(claude_agent(&s, "mbp", t + 15 * S).quota_until, None);
     assert!(host(&s, t + 15 * S).ops[0].text.contains("恢复了 Claude Code 接单"));
     assert_eq!(pull(&mut s, t + 16 * S).map(|d| d.card), Some(next));
+}
+
+/// 一台机器的上报，Claude Code 报的身份是登录了这个邮箱的订阅（#669）
+fn on_account(mut r: HostReport, email: &str) -> HostReport {
+    for a in r.agents.iter_mut().filter(|a| a.id == "claude") {
+        a.auth = Some(crate::hosts::AgentAuth { kind: "account".into(), label: "Claude Max".into(), plan: "max".into(), email: email.into(), ..Default::default() });
+    }
+    r
+}
+
+/// 账号按邮箱认（#669）：两台机器报同一账号（邮箱不区分大小写），一台额度用完，两台的本机配置、官方订阅角色一起暂停到
+/// 重置时间，各记一条操作；在其中一台点「恢复」两台一起恢复。别的账号、没报邮箱的机器不受影响；邮箱只在机器数据里，
+/// 卡片动态、派发记录、操作记录里没有
+#[test]
+fn quota_pauses_every_machine_on_the_same_account() {
+    let mut s = store();
+    let mbp = on_account(report("mbp", "i1", vec![]), "Someone@Example.com");
+    let desk = on_account(report("desk", "j1", vec![]), " someone@example.com");
+    let lap = on_account(report("lap", "k1", vec![]), "other@example.com");
+    let key = with_auth(report("key", "m1", vec![]), "claude", "api_key", "Anthropic API key", "ANTHROPIC_API_KEY");
+    for r in [&mbp, &desk, &lap, &key] {
+        beat(&mut s, T0, r).unwrap();
+    }
+    let local = put_role(&mut s, T0, role("本机", "claude", "", "", "")).unwrap();
+    let sub = put_role(&mut s, T0, crate::profiles::Profile { provider: crate::profiles::SUBSCRIPTION.into(), ..role("订阅", "claude", "", "", "") }).unwrap();
+    assert_eq!(claude_agent(&s, "mbp", T0).auth.map(|a| a.email), Some("Someone@Example.com".to_string()), "机器数据里有邮箱");
+    let c = new_card(&mut s, T0, "C");
+    let d = dispatch(&mut s, T0 + S, c, "mbp", Some("claude")).unwrap();
+    let d = begin(&mut s, T0 + S, d.id).unwrap();
+    let reset = T0 + 3 * 3600 * 1000;
+    let q = crate::hosts::Quota { exhausted: true, resets_at: Some(reset), text: "You've hit your session limit".into(), ..Default::default() };
+    let d = quota_end(&mut s, T0 + 2 * S, d.id, &q);
+    assert_eq!(d.result.as_deref(), Some("quota"));
+    let at = T0 + 3 * S;
+    let ops = |s: &Store, h: &str, at: i64| s.read(|r| r.host(h, at)).unwrap().ops.into_iter().map(|o| o.text).collect::<Vec<_>>();
+    // 同一账号的两台一起暂停，各记一条
+    for h in ["mbp", "desk"] {
+        assert_eq!(claude_agent(&s, h, at).quota_until, Some(reset), "{h}");
+        for p in [&local.id, &sub.id] {
+            let (ok, why) = fit_on(&s, h, at, p);
+            assert!(!ok && why.starts_with("额度用完，"), "{h}：{why}");
+        }
+    }
+    assert!(ops(&s, "mbp", at).iter().any(|t| t.starts_with("Claude Code 的额度用完，本机配置的角色暂停接单到")));
+    let desk_ops = ops(&s, "desk", at);
+    assert!(desk_ops.iter().any(|t| t.starts_with("Claude Code 的额度用完（mbp 上报），本机配置的角色暂停接单到") && t.ends_with("，到点自动恢复")), "{desk_ops:?}");
+    // 别的账号、没报邮箱的照常
+    for h in ["lap", "key"] {
+        assert_eq!(claude_agent(&s, h, at).quota_until, None, "{h}");
+        assert!(fit_on(&s, h, at, &local.id).0, "{h}");
+        assert!(ops(&s, h, at).iter().all(|t| !t.contains("额度")), "{h}");
+    }
+    // 没报邮箱的 key 额度用完：照旧只停它自己
+    let c2 = new_card(&mut s, at, "C2");
+    let d2 = dispatch(&mut s, at, c2, "key", Some("claude")).unwrap();
+    s.write(at, Origin::cli(), |w| w.dispatch_begin("key", "m1", d2.id, Some(1))).unwrap();
+    let q2 = crate::hosts::Quota { resets_at: Some(reset + 3600 * 1000), ..q.clone() };
+    assert_eq!(quota_end(&mut s, at + S, d2.id, &q2).result.as_deref(), Some("quota"));
+    assert_eq!(claude_agent(&s, "key", at + S).quota_until, Some(reset + 3600 * 1000));
+    for h in ["mbp", "desk", "lap"] {
+        assert_ne!(claude_agent(&s, h, at + S).quota_until, Some(reset + 3600 * 1000), "{h}");
+    }
+    // 在 desk 上点「恢复」：mbp 一起恢复，lap、key 不动
+    let p = HostPatch { resume: Some("claude".into()), ..Default::default() };
+    s.write(at + 2 * S, Origin::ui(None), |w| w.host_update_as("desk", &p, "lan")).unwrap();
+    let at = at + 3 * S;
+    for h in ["mbp", "desk"] {
+        assert_eq!(claude_agent(&s, h, at).quota_until, None, "{h}");
+        assert!(fit_on(&s, h, at, &local.id).0, "{h}");
+    }
+    assert_eq!(ops(&s, "mbp", at)[0], "恢复了 Claude Code 接单（同一账号，在 desk 上恢复）");
+    assert_eq!(ops(&s, "desk", at)[0], "恢复了 Claude Code 接单");
+    assert!(claude_agent(&s, "key", at).quota_until.is_some(), "key 自己的暂停不跟着恢复");
+    // 卡片动态、派发记录、操作记录里没有邮箱
+    let mut texts: Vec<String> = card(&s, c).activity.into_iter().map(|a| a.text).collect();
+    texts.extend([serde_json::to_string(&get(&s, d.id)).unwrap(), serde_json::to_string(&get(&s, d2.id)).unwrap()]);
+    for h in ["mbp", "desk", "lap", "key"] {
+        texts.extend(ops(&s, h, at));
+    }
+    assert!(texts.iter().all(|t| !t.to_lowercase().contains("example.com")), "{texts:?}");
 }
 
 /// Windows 机器的目录用 `\` 拼：服务端派生的路径和机器上报的一样，检查结果才对得上

@@ -498,8 +498,15 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 和这台机器上这个 agent 登录同一账号（agent + 邮箱，不区分大小写，#669）的别的机器；这台没报邮箱时没有
+    pub(super) fn same_account(&self, h: &HostRow, agent: &str) -> Result<Vec<HostRow>> {
+        let Some(key) = h.account_of(agent) else { return Ok(vec![]) };
+        Ok(self.read().host_rows()?.into_iter().filter(|o| o.id != h.id && o.account_of(agent).as_deref() == Some(key.as_str())).collect())
+    }
+
     /// 记下 board acp 看到的额度（#668），作为这台机器上这个 agent 最近一次的额度。额度用完时这台机器上这个 agent 的
-    /// 本机配置角色暂停接单到重置时间（取不到时 1 小时后），记一条操作；返回暂停到什么时候（没用完时为 None）
+    /// 本机配置角色暂停接单到重置时间（取不到时 1 小时后），记一条操作；额度按账号算，报了同一账号的别的机器一起暂停到
+    /// 这个时间（#669，已经暂停到更晚的不动），各记一条。返回暂停到什么时候（没用完时为 None）
     pub(super) fn note_quota(&mut self, d: &DRow, q: &Quota) -> Result<Option<i64>> {
         let Some(h) = self.host_row(&d.host)?.filter(|h| h.id == d.host_id) else { return Ok(None) };
         let mut q = q.clone();
@@ -514,8 +521,20 @@ impl<'a> W<'a> {
         }
         self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
         if let Some(u) = until {
-            let text = format!("{} 的额度用完，本机配置的角色暂停接单到 {}，到点自动恢复", d.agent_label, crate::store::when_words(u, self.now));
+            let when = crate::store::when_words(u, self.now);
+            let text = format!("{} 的额度用完，本机配置的角色暂停接单到 {when}，到点自动恢复", d.agent_label);
             self.host_op(h.id, "board", &text)?;
+            for o in self.same_account(&h, &d.agent)? {
+                let mut run = o.run.clone();
+                let e = run.entry(d.agent.clone()).or_default();
+                if e.quota_until.is_some_and(|t| t >= u) {
+                    continue;
+                }
+                e.quota_until = Some(u);
+                self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![o.id, serde_json::to_string(&run).unwrap_or_default()])?;
+                let text = format!("{} 的额度用完（{} 上报），本机配置的角色暂停接单到 {when}，到点自动恢复", d.agent_label, h.name);
+                self.host_op(o.id, "board", &text)?;
+            }
         }
         self.touch_hosts();
         Ok(until)

@@ -997,15 +997,22 @@ fn initial_mismatch(r: &Value, initial: &[(String, String, String)]) -> Option<S
 
 /* ------------------------------ 身份（#667） ------------------------------ */
 
-/// 扩展的 `authStatus`（`{kind, label, detail?, account?: {plan, …}}`，Claude Code、Codex 一样）→ 身份。邮箱不留
+/// 扩展的 `authStatus`（`{kind, label, detail?, account?: {email, plan, …}}`，Claude Code、Codex 一样）→ 身份。
+/// 邮箱留着认账号（#669），组织名不留
 fn auth_of_ext(v: &Value) -> AgentAuth {
     let s = |x: &Value| x.as_str().unwrap_or_default().trim().to_string();
     let kind = s(&v["kind"]);
-    AgentAuth { kind: if kind.is_empty() { AUTH_UNKNOWN.into() } else { kind }, label: s(&v["label"]), detail: s(&v["detail"]), plan: s(&v["account"]["plan"]) }
+    AgentAuth {
+        kind: if kind.is_empty() { AUTH_UNKNOWN.into() } else { kind },
+        label: s(&v["label"]),
+        detail: s(&v["detail"]),
+        plan: s(&v["account"]["plan"]),
+        email: s(&v["account"]["email"]),
+    }
 }
 
 /// ACP `auth/status` 的回应（`{state, accounts}`）→ 身份。种类只有 Claude Code 在账号的 `_meta.claudeCode.kind` 里给；
-/// 没有时登录了也按问不出来算（看不出是不是订阅）
+/// 没有时登录了也按问不出来算（看不出是不是订阅）。邮箱在账号的 `email`（#669）
 fn auth_of_status(r: &Value) -> AgentAuth {
     let s = |x: &Value| x.as_str().unwrap_or_default().trim().to_string();
     match r["state"].as_str() {
@@ -1020,6 +1027,7 @@ fn auth_of_status(r: &Value) -> AgentAuth {
                 label: s(&a["label"]),
                 detail: [s(&a["description"]), s(&meta["detail"])].into_iter().find(|d| !d.is_empty()).unwrap_or_default(),
                 plan: s(&meta["plan"]),
+                email: s(&a["email"]),
             }
         }
         _ => AgentAuth { kind: AUTH_UNKNOWN.into(), ..Default::default() },
@@ -1266,6 +1274,29 @@ fn log(line: &str) {
     let _ = out.flush();
 }
 
+/// agent 发来的帧写进日志的样子：身份推送（`_auth/status_update`、`auth/status_update`）和 `auth/status` 的回应里账号的邮箱、
+/// 组织名去掉（#669：邮箱只存在机器数据里，不进派发日志），别的原样
+fn without_account(v: &Value) -> std::borrow::Cow<'_, Value> {
+    let auth = matches!(v["method"].as_str(), Some("_auth/status_update" | "auth/status_update")) || v["result"]["accounts"].is_array();
+    if !auth {
+        return std::borrow::Cow::Borrowed(v);
+    }
+    let mut c = v.clone();
+    let strip = |a: &mut serde_json::Map<String, Value>| {
+        a.remove("email");
+        a.remove("organization");
+    };
+    if let Some(a) = c.pointer_mut("/params/authStatus/account").and_then(Value::as_object_mut) {
+        strip(a);
+    }
+    for p in ["/params/accounts", "/result/accounts"] {
+        for a in c.pointer_mut(p).and_then(Value::as_array_mut).into_iter().flatten().filter_map(Value::as_object_mut) {
+            strip(a);
+        }
+    }
+    std::borrow::Cow::Owned(c)
+}
+
 /// 发一帧给 agent，也写进日志
 /// 写进日志的样子：`providers/set` 的请求头（里面是 API key）换成 `***`，别的原样
 fn loggable(f: &Value) -> String {
@@ -1497,7 +1528,7 @@ fn run(o: &Opts) -> i32 {
                 let v = if t.starts_with('{') { serde_json::from_str::<Value>(t).ok().filter(Value::is_object) } else { None };
                 match v {
                     Some(v) => {
-                        for l in merger.push(&v) {
+                        for l in merger.push(&without_account(&v)) {
                             log(&l);
                         }
                         let reply = client.on_frame(&v);
@@ -1768,7 +1799,7 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
                         // session/load 回放的历史之前已经记过：不再记日志
                         let replay = client.replaying && v["method"].as_str() == Some("session/update");
                         if !replay {
-                            for l in merger.push(&v) {
+                            for l in merger.push(&without_account(&v)) {
                                 log(&l);
                             }
                         }
@@ -2464,7 +2495,7 @@ mod tests {
         let max = json!({ "state": "authenticated", "accounts": [{ "label": "Claude Max", "active": true, "email": "a@b.c", "_meta": { "claudeCode": { "kind": "account", "plan": "max" } } }] });
         let f = c.on_frame(&reply(1, max));
         assert_eq!(f[0]["method"], "session/new", "是订阅：开会话");
-        assert_eq!(c.auth, Some(AgentAuth { kind: "account".into(), label: "Claude Max".into(), detail: String::new(), plan: "max".into() }));
+        assert_eq!(c.auth, Some(AgentAuth { kind: "account".into(), label: "Claude Max".into(), detail: String::new(), plan: "max".into(), email: "a@b.c".into() }));
         let mut c = Client::new("/w", "p", None).with_auth(AuthMode::Subscription);
         c.start();
         c.on_frame(&reply(0, init));
@@ -2484,7 +2515,7 @@ mod tests {
         assert!(c.waiting_auth && c.handshaking());
         let f = c.on_frame(&push(json!({ "kind": "account", "label": "ChatGPT Plus", "account": { "email": "a@b.c", "plan": "plus" } })));
         assert_eq!(f[0]["method"], "session/new");
-        assert_eq!(c.auth.as_ref().map(|a| (a.label.as_str(), a.plan.as_str())), Some(("ChatGPT Plus", "plus")));
+        assert_eq!(c.auth.as_ref().map(|a| (a.label.as_str(), a.plan.as_str(), a.email.as_str())), Some(("ChatGPT Plus", "plus", "a@b.c")));
         for (st, want) in [
             (json!({ "kind": "gateway", "label": "Custom model gateway", "detail": "relay" }), "Custom model gateway（relay）"),
             (json!({ "kind": "none", "label": "Not logged in" }), "Not logged in"),
@@ -2627,9 +2658,32 @@ mod tests {
         let a = auth_of_status(&json!({ "state": "authenticated", "accounts": [{ "label": "Someone" }] }));
         assert_eq!((a.kind.as_str(), a.label.as_str()), ("unknown", "Someone"));
         assert_eq!(auth_of_ext(&json!({ "kind": "external", "label": "AWS Bedrock" })).words(), "AWS Bedrock");
+        // 邮箱（#669）：推送的在 account.email，auth/status 的在账号的 email；组织名不留，说给人听的那句话里没有邮箱
+        let a = auth_of_ext(&json!({ "kind": "account", "label": "Claude Max", "account": { "email": " Someone@Example.com ", "organization": "Org", "plan": "max" } }));
+        assert_eq!((a.email.as_str(), a.account_key().as_deref(), a.words().as_str()), ("Someone@Example.com", Some("someone@example.com"), "Claude Max"));
+        let a = auth_of_status(&json!({ "state": "authenticated", "accounts": [{ "label": "Claude Pro", "active": true, "email": "x@example.com", "_meta": { "claudeCode": { "kind": "account" } } }] }));
+        assert_eq!(a.email, "x@example.com");
+        assert_eq!(auth_of_ext(&json!({ "kind": "api_key", "label": "Anthropic API key", "detail": "ANTHROPIC_API_KEY" })).account_key(), None);
         assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--auth", "only", "--", "x"])).is_ok(), "only 不要提示词");
         assert_eq!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--auth", "subscription", "--", "x"])).unwrap().auth, AuthMode::Subscription);
         assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--auth", "x", "--", "x"])).unwrap_err().contains("--auth"));
+    }
+
+    /// 派发日志里没有账号的邮箱、组织名（#669）：身份推送、`auth/status` 的回应去掉这两项，别的帧原样
+    #[test]
+    fn logged_auth_frames_have_no_email() {
+        let push = json!({ "jsonrpc": "2.0", "method": "_auth/status_update", "params": { "authStatus": { "kind": "account", "label": "Claude Max", "account": { "email": "a@example.com", "organization": "Org", "plan": "max" } } } });
+        let rfd = json!({ "jsonrpc": "2.0", "method": "auth/status_update", "params": { "state": "authenticated", "accounts": [{ "label": "Claude Max", "email": "a@example.com" }] } });
+        let answer = reply(1, json!({ "state": "authenticated", "accounts": [{ "label": "Claude Max", "active": true, "email": "a@example.com", "organization": "Org" }] }));
+        for f in [&push, &rfd, &answer] {
+            let l = without_account(f).to_string();
+            assert!(!l.contains("a@example.com") && !l.contains("Org"), "{l}");
+            assert!(l.contains("Claude Max"), "{l}");
+        }
+        assert!(without_account(&push).to_string().contains("\"plan\":\"max\""));
+        // 别的帧（agent 改的文件里也可能有 email 字段）：原样
+        let other = json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "update": { "sessionUpdate": "tool_call", "rawInput": { "email": "b@example.com" } } } });
+        assert!(matches!(without_account(&other), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

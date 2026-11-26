@@ -195,6 +195,10 @@ pub struct AgentAuth {
     /// 套餐：`max`、`pro`、`plus`…（订阅才有）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub plan: String,
+    /// 账号的邮箱（#669）：订阅登录才有（`authStatus.account.email`、`auth/status` 账号的 `email`）。同一个 agent 报同一个邮箱的
+    /// 机器算同一个账号（[`Self::account_key`]），额度用完一起暂停。只存在机器数据里，不写进卡片动态、派发记录、操作记录的文字
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub email: String,
 }
 
 /// 本机配置下 agent 账号能用的模型（#666）：ACP `session/options`（Session options RFD）给的模型下拉和默认值，
@@ -250,7 +254,12 @@ pub const AUTH_NONE: &str = "none";
 pub const AUTH_UNKNOWN: &str = "unknown";
 
 impl AgentAuth {
-    /// 「Anthropic API key（ANTHROPIC_API_KEY）」「Claude Max」；没有 label 时按种类说
+    /// 认账号用的邮箱（#669）：去掉首尾空白、转小写（不区分大小写）；没报邮箱（API key、中转、旧版 board host）时为 None
+    pub fn account_key(&self) -> Option<String> {
+        Some(self.email.trim().to_lowercase()).filter(|e| !e.is_empty())
+    }
+
+    /// 「Anthropic API key（ANTHROPIC_API_KEY）」「Claude Max」；没有 label 时按种类说（不带邮箱：这句话会写进派发记录）
     pub fn words(&self) -> String {
         let label = if !self.label.trim().is_empty() {
             self.label.trim().to_string()

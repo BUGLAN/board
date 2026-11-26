@@ -760,11 +760,13 @@ fn quota_exhausted_is_reported_and_the_card_goes_back() {
 }
 
 /// 卡片 #667：board host 启动时问 agent 自己用的身份（`board acp --auth only`）上报；按「官方订阅」派发时 board acp 开会话前
-/// 再确认一次：派发前机器上换成了 API key（board host 还不知道），就出错结束、写明身份，不开会话
+/// 再确认一次：派发前机器上换成了 API key（board host 还不知道），就出错结束、写明身份，不开会话。
+/// 卡片 #669：身份里带着账号的邮箱上报；派发时 agent 推来的身份里也有邮箱，本机日志、上传的日志里都去掉
 #[test]
 fn host_reports_auth_and_subscription_dispatch_checks_it_again() {
     let rig = Rig::new();
     assert_eq!(rig.board(&["new", "一"]).code, 0);
+    assert_eq!(rig.board(&["new", "二"]).code, 0);
     let auth = rig.fake.parent().unwrap().join("auth");
     std::fs::write(&auth, r#"{"kind":"account","label":"Claude Max","account":{"email":"me@example.com","plan":"max"}}"#).unwrap();
     let host = rig.host("mbp");
@@ -774,18 +776,30 @@ fn host_reports_auth_and_subscription_dispatch_checks_it_again() {
         h["agents"].as_array().and_then(|a| a.iter().find(|a| a["id"] == "claude").cloned()).map(|a| a["auth"].clone()).unwrap_or(Value::Null)
     };
     wait_until("mbp 报 Claude Code 的身份", Duration::from_secs(30), || claude_auth()["label"] == "Claude Max");
-    assert_eq!(claude_auth(), serde_json::json!({ "kind": "account", "label": "Claude Max", "plan": "max" }), "邮箱不上报");
+    assert_eq!(claude_auth(), serde_json::json!({ "kind": "account", "label": "Claude Max", "plan": "max", "email": "me@example.com" }), "邮箱随身份上报");
     {
         let mut store = board_core::Store::open(&rig.s.db).unwrap();
         let role = board_core::profiles::Profile { name: "订阅".into(), agent: "claude".into(), provider: board_core::profiles::SUBSCRIPTION.into(), ..Default::default() };
         store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.profile_put(&role, "buglan")).unwrap();
     }
-    std::fs::write(&auth, r#"{"kind":"api_key","label":"Anthropic API key","detail":"ANTHROPIC_API_KEY"}"#).unwrap();
+    // 是订阅：照常跑完；agent 推来的身份里的邮箱不进日志
+    rig.mode("review");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--profile", "订阅", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let d1 = r.json()["id"].as_i64().unwrap();
+    wait_until("#1 交审", Duration::from_secs(30), || ended(&rig.show(1), "已交审"));
+    let local = std::fs::read_to_string(log_file(&rig.s.home, d1)).unwrap();
+    assert!(local.contains("_auth/status_update") && local.contains("Claude Max"), "{local}");
+    assert!(!local.contains("me@example.com"), "本机日志里没有邮箱：{local}");
+    let uploaded = rig.dispatch_log(d1);
+    assert!(uploaded.iter().any(|l| l == "交审了") && !uploaded.iter().any(|l| l.contains("me@example.com")), "{uploaded:?}");
+    assert!(activity(&rig.show(1)).iter().all(|t| !t.contains("me@example.com")));
+    std::fs::write(&auth, r#"{"kind":"api_key","label":"Anthropic API key","detail":"ANTHROPIC_API_KEY"}"#).unwrap();
+    let r = rig.board(&["dispatch", "2", "--host", "mbp", "--profile", "订阅", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let d = r.json()["id"].as_i64().unwrap();
-    wait_until("#1 异常退出", Duration::from_secs(30), || ended(&rig.show(1), "异常退出"));
-    let texts = activity(&rig.show(1));
+    wait_until("#2 异常退出", Duration::from_secs(30), || ended(&rig.show(2), "异常退出"));
+    let texts = activity(&rig.show(2));
     assert!(texts.iter().any(|t| t.contains("用的不是订阅：Anthropic API key（ANTHROPIC_API_KEY），没有开会话")), "{texts:?}");
     assert!(texts.iter().any(|t| t.contains("订阅（Claude Code · 官方订阅）")), "{texts:?}");
     let log = std::fs::read_to_string(log_file(&rig.s.home, d)).unwrap();
