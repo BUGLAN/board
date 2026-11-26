@@ -38,7 +38,10 @@
 .task-body.tasks-on li.task > i { cursor: pointer; }
 .task-body.tasks-on li.task:hover > i { box-shadow: inset 0 0 0 1.5px var(--brand); }
 .rv-foot { flex: none; position: relative; display: flex; flex-direction: column; gap: 8px; padding: 12px 22px 14px; border-top: 1px solid var(--line); background: var(--glass-strong); }
+.rv-composer { position: relative; }
 .rv-box { min-height: 0; resize: none; font-size: 13px; }
+.rv-composer .rv-box { padding-right: 42px; }
+.rv-attach { position: absolute; right: 6px; bottom: 6px; }
 .rv-box.need { box-shadow: inset 0 0 0 1.5px var(--danger); animation: rv-shake .3s var(--ease-out); }
 @keyframes rv-shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 @media (prefers-reduced-motion: reduce) { .rv-box.need { animation: none; } }

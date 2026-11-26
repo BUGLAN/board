@@ -9,10 +9,11 @@
    - 快捷键：A 通过、R 打回（光标进意见框）、J / K 下一张 / 上一张、Esc 关闭（在意见框里先离开意见框）
    - 乐观更新（AGENTS.md「界面写操作」）：movePatch 当帧把卡片移走，下一张马上顶上来；失败时提示原因、回到那一张，意见还在
    ========================================================================== */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { openCard } from '../lib/actions';
 import { api } from '../lib/api';
+import { stillUploading, useAttach } from '../lib/attach';
 import { repoWeb } from '../lib/repo';
 import { approveTargets, deskQueue, homeOf, latestAgentComment, rejectTargets, splitFacts, taskCount } from '../lib/review';
 import type { CardDetail, Status } from '../lib/types';
@@ -95,7 +96,23 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
   // 每张卡各自的意见草稿：失败回到那一张时还在
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const draft = id != null ? (drafts[id] ?? '') : '';
-  const setDraft = (v: string) => id != null && setDrafts(m => ({ ...m, [id]: v }));
+  const setDraft = (card: number, v: SetStateAction<string>) =>
+    setDrafts(m => {
+      const prev = m[card] ?? '';
+      return { ...m, [card]: typeof v === 'function' ? v(prev) : v };
+    });
+  // 上传也按卡片分开记：换到别的卡时，那边的内容不跟着挡提交；换回来还知道它正在上传
+  const [uploading, setUploading] = useState<Record<number, number>>({});
+  const upload = (card: number, d: number) =>
+    setUploading(m => {
+      const n = Math.max(0, (m[card] ?? 0) + d);
+      if (n === (m[card] ?? 0)) return m;
+      const next = { ...m };
+      if (n) next[card] = n;
+      else delete next[card];
+      return next;
+    });
+  const loads = id != null ? uploading[id] ?? 0 : 0;
   const [need, setNeed] = useState(0);
   const box = useRef<HTMLTextAreaElement>(null);
 
@@ -126,10 +143,12 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
     });
   };
   const doApprove = () => {
+    if (stillUploading(loads)) return;
     if (!toApprove || id == null || busy) return;
     send(toApprove, draft);
   };
   const doReject = () => {
+    if (stillUploading(loads)) return;
     if (!toReject || id == null || busy) return;
     if (!draft.trim()) {
       setNeed(n => n + 1);
@@ -253,24 +272,18 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
             <DispatchHistory board={path} card={c.id} />
           </div>
           <div className="rv-foot">
-            <textarea
-              ref={box}
+            <DeskBox
               key={`box-${c.id}`}
-              className={cx('textarea rv-box', need > 0 && 'need')}
-              style={need ? { ['--n' as string]: need } : undefined}
-              rows={isMobile() ? 2 : 3}
-              placeholder={review ? '意见：打回时必须写，作为评论发出（R）。通过时写了也会一起发出' : '回复 agent 的问题，作为评论发出，再把卡片放回去'}
-              value={draft}
-              onChange={e => {
-                setDraft(e.target.value);
-                setNeed(0);
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  doReject();
-                }
-              }}
+              card={c.id}
+              path={path}
+              draft={draft}
+              setDraft={v => setDraft(c.id, v)}
+              onBusyDelta={d => upload(c.id, d)}
+              need={need}
+              box={box}
+              review={review}
+              onSubmit={doReject}
+              onEdit={() => setNeed(0)}
             />
             {need > 0 && <span className="rv-need">{review ? '打回要写意见' : '要写回复'}</span>}
             <div className="rv-acts">
@@ -309,6 +322,68 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** 一张卡的意见框。单独一个组件：换卡时附件上传的占位和结果仍写回发起上传的那张卡 */
+function DeskBox({
+  card,
+  path,
+  draft,
+  setDraft,
+  onBusyDelta,
+  need,
+  box,
+  review,
+  onSubmit,
+  onEdit,
+}: {
+  card: number;
+  path: string | null;
+  draft: string;
+  setDraft: Dispatch<SetStateAction<string>>;
+  onBusyDelta: (delta: number) => void;
+  need: number;
+  box: RefObject<HTMLTextAreaElement | null>;
+  review: boolean;
+  onSubmit: () => void;
+  onEdit: () => void;
+}) {
+  // 上传用的 ref 跟着这张卡：换卡后旧的上传完成时不会去聚焦、调整当前那张卡的意见框
+  const ta = useRef<HTMLTextAreaElement>(null);
+  const setRef = useCallback((el: HTMLTextAreaElement | null) => {
+    const prev = ta.current;
+    ta.current = el;
+    if (el) box.current = el;
+    else if (box.current === prev) box.current = null;
+  }, [box]);
+  const attach = useAttach({ board: path, card, setValue: setDraft, textarea: ta, onBusyDelta });
+  return (
+    <div className={cx('rv-composer', attach.over && 'drop-on')}>
+      <textarea
+        ref={setRef}
+        className={cx('textarea rv-box', need > 0 && 'need')}
+        style={need ? { ['--n' as string]: need } : undefined}
+        rows={isMobile() ? 2 : 3}
+        placeholder={review ? '意见：打回时必须写，作为评论发出（R）。通过时写了也会一起发出' : '回复 agent 的问题，作为评论发出，再把卡片放回去'}
+        value={draft}
+        onChange={e => {
+          setDraft(e.target.value);
+          onEdit();
+        }}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+        {...attach.handlers}
+      />
+      <button className="comment-attach rv-attach" type="button" aria-label="添加附件" title="附件：也可以直接粘贴截图（≤ 10 MB）" onClick={attach.pick}>
+        <Icon name="clip" />
+      </button>
+      {attach.fileInput}
     </div>
   );
 }

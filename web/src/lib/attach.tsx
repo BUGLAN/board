@@ -40,6 +40,8 @@ interface Opts {
   card: number | null;
   setValue: Dispatch<SetStateAction<string>>;
   textarea: RefObject<HTMLTextAreaElement | null>;
+  /** 每次上传开始、结束时通知调用方（+1 / -1）：复盘台按卡片分别记上传中的数量 */
+  onBusyDelta?: (delta: number) => void;
 }
 
 export function useAttach(o: Opts) {
@@ -48,6 +50,10 @@ export function useAttach(o: Opts) {
   const [busy, setBusy] = useState(0);
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const bump = (delta: number) => {
+    setBusy(b => Math.max(0, b + delta));
+    latest.current.onBusyDelta?.(delta);
+  };
 
   /** 在光标处插入（单独成行），光标移到插入内容之后 */
   const insert = (text: string) => {
@@ -96,7 +102,7 @@ export function useAttach(o: Opts) {
     if (!ok.length) return;
     const marks = ok.map(f => `![上传中：${f.name.replace(/[[\]]/g, ' ')}…](#upload-${++seq})`);
     insert(marks.join('\n'));
-    setBusy(b => b + ok.length);
+    bump(ok.length);
     await Promise.all(
       ok.map(async (f, i) => {
         try {
@@ -106,7 +112,7 @@ export function useAttach(o: Opts) {
           replace(marks[i], '');
           toastError(e);
         } finally {
-          setBusy(b => b - 1);
+          bump(-1);
         }
       }),
     );
