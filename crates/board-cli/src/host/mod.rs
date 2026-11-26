@@ -365,6 +365,16 @@ struct Host<'a> {
     local_models: BTreeMap<String, board_core::hosts::LocalModels>,
     /// 正在后台问身份和模型的：agent 标识 → 线程
     auth_jobs: HashMap<String, std::thread::JoinHandle<(board_core::hosts::AgentAuth, board_core::hosts::LocalModels)>>,
+    /// 额度：还没报上去的（跑卡时 agent 推来的、按「刷新」查到或没查到的），随下一次上报带上
+    quota_out: Vec<board_core::hosts::QuotaReport>,
+    /// 额度：每个在跑的派发最近一次读到的额度文件（变了才报）
+    quota_seen: HashMap<i64, board_core::hosts::Quota>,
+    /// 额度：正在后台查的（agent 标识 → 线程）
+    quota_jobs: HashMap<String, std::thread::JoinHandle<std::result::Result<board_core::hosts::Quota, String>>>,
+    /// 额度：已经处理过的「刷新」请求时间（agent 标识 → 请求时间），同一个请求不查第二次
+    quota_done: HashMap<String, i64>,
+    /// 额度：上次读额度文件的时间
+    quota_read: Instant,
     /// 同步配置（机器详情与配置同步重构）：正在后台做的（回应的请求序号，启动时自己写的那一次为空）
     sync_job: Option<(Option<i64>, std::thread::JoinHandle<SyncOut>)>,
     /// 做完了、还没报上去的结果（连不上服务端时下一轮再报）
@@ -510,6 +520,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         auth_ver: BTreeMap::new(),
         local_models: BTreeMap::new(),
         auth_jobs: HashMap::new(),
+        quota_out: vec![],
+        quota_seen: HashMap::new(),
+        quota_jobs: HashMap::new(),
+        quota_done: HashMap::new(),
+        quota_read: Instant::now(),
         agent_latest: None,
         next_agent_check: Instant::now(),
         agent_job: None,
@@ -612,7 +627,13 @@ impl Host<'_> {
             agents: self
                 .agents
                 .iter()
-                .map(|a| HostAgent { auth: self.auth.get(&a.id).cloned(), local_models: self.local_models.get(&a.id).cloned(), ..a.report(self.agent_now.get(&a.id)) })
+                .map(|a| HostAgent {
+                    auth: self.auth.get(&a.id).cloned(),
+                    local_models: self.local_models.get(&a.id).cloned(),
+                    // 会按「刷新」查额度：内置的 Claude Code、Codex
+                    quota_probe: a.builtin.is_some() && board_core::hosts::QUOTA_PROBE_AGENTS.iter().any(|(id, _)| *id == a.id),
+                    ..a.report(self.agent_now.get(&a.id))
+                })
                 .collect(),
             envs: self.envs.iter().map(Env::report).collect(),
             workspace: Some(self.ws.clone()),
@@ -629,6 +650,7 @@ impl Host<'_> {
             rescan_skills: true,
             local_skills: Some(self.local_skills.clone()),
             res: self.res.latest(),
+            quotas: self.quota_out.clone(),
         }
     }
 
@@ -766,9 +788,12 @@ impl Host<'_> {
             if now >= next_beat {
                 next_beat = now + every;
                 fetch = false;
+                let quotas = self.quota_out.len();
                 match self.beat(false) {
                     Ok(w) => {
                         self.connected();
+                        // 报上去了的额度不再带（上报期间不会有新的：都在这个循环里加）
+                        self.quota_out.drain(..quotas);
                         self.set_work(w);
                         self.last_err.clear();
                         self.ask_error = None;
@@ -796,6 +821,10 @@ impl Host<'_> {
             self.poll_selftest();
             // 身份（#667）：启动时、agent 版本变了、自检时在后台问一次，问到了马上上报
             if self.poll_auth() {
+                next_beat = Instant::now();
+            }
+            // 额度：跑卡时 agent 推来的、人点「刷新」查到的，有新的马上上报
+            if self.poll_quota() {
                 next_beat = Instant::now();
             }
             // agent 版本每天在后台查一次；安装/更新在后台跑，不占会话位

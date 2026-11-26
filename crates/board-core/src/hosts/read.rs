@@ -609,6 +609,9 @@ impl<'a> R<'a> {
             let run = h.run.get(&a.id);
             a.quota = run.and_then(|r| r.quota.clone());
             a.quota_until = run.and_then(|r| r.quota_until).filter(|t| *t > now);
+            // 刷新额度：人点的时间、上次没查到的原因
+            a.quota_ask = run.and_then(|r| r.quota_ask);
+            a.quota_fail = run.and_then(|r| r.quota_fail.clone());
         }
         info.ops = self.host_ops(h.id)?;
         info.token = self.host_token(h, now)?;

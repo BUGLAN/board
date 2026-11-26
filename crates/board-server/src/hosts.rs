@@ -168,6 +168,21 @@ pub(crate) async fn sync(State(s): State<AppState>, Extension(caller): Extension
 }
 
 #[derive(Deserialize)]
+pub(crate) struct QuotaBody {
+    agent: String,
+}
+
+/// 界面上「刷新额度」：让这台机器的 board host 查一次这个 agent 的额度（不花额度），查完随上报带回
+pub(crate) async fn quota_ask(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Path(name): Path<String>, Json(v): Json<Value>) -> ApiResult<HostInfo> {
+    crate::auth::human(&caller).map_err(ApiError)?;
+    let b: QuotaBody = parse(v)?;
+    let client = client_of(&h);
+    let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_quota_ask(&name, b.agent.trim()))).await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
 pub(crate) struct LsBody {
     #[serde(default)]
     path: String,

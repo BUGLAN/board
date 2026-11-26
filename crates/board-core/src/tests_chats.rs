@@ -36,6 +36,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>, chats: Option<Vec<i64>>
         rescan_skills: true,
         local_skills: None,
         res: None,
+        quotas: vec![],
     }
 }
 

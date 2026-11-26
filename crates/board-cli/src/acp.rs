@@ -63,7 +63,7 @@
 //! 重置时间）写进去，board host 随派发结束上报。
 
 use crate::envs::Env;
-use board_core::hosts::{AgentAuth, LocalModel, LocalModels, Quota, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN};
+use board_core::hosts::{AgentAuth, LocalModel, LocalModels, Quota, QuotaWindow, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN, WINDOW_FIVE_HOUR, WINDOW_SEVEN_DAY};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -90,6 +90,9 @@ const SETTLE_MAX: Duration = Duration::from_secs(10);
 const RECHECK: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(200);
 
+/// 查额度（`--usage`）最多等多久：起 agent、开会话、跑一条本地命令
+pub const USAGE_LIMIT: Duration = Duration::from_secs(90);
+
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_PROTOCOL: i32 = 2;
 pub const EXIT_LIMIT: i32 = 3;
@@ -102,7 +105,7 @@ pub const EXTRA_TURNS: u32 = 3;
 
 static TERM: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>] | --auth only) [--auth subscription] [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] [--quota-file <文件>] -- <ACP 入口命令> [参数…]";
+const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>] | --auth only | --usage <本地命令>) [--auth subscription] [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] [--quota-file <文件>] -- <ACP 入口命令> [参数…]";
 
 /// 开会话前要不要问身份（`--auth`，#667）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,6 +142,9 @@ pub(crate) struct Opts {
     pub quota_file: Option<PathBuf>,
     /// 开会话前问身份（`--auth subscription | only`）
     pub auth: AuthMode,
+    /// 查额度（`--usage /usage`、`--usage /status`）：开会话、发这条本地命令（不调模型、不花额度），读出两个窗口，
+    /// 写一行 `{"usage": …}` 到标准输出就退出
+    pub usage: Option<String>,
     /// 机器对话（`--chat <状态文件>`）：提示词从标准输入一条一条来，每一轮结束不退出；会话标识、这一轮的状态写进这个文件
     pub chat: Option<PathBuf>,
     /// 对话：接回这个 ACP 会话（`--resume`）
@@ -157,7 +163,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     let mut i = 0;
     while i < head.len() {
         let k = head[i].as_str();
-        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit" | "--quota-file" | "--auth") {
+        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit" | "--quota-file" | "--auth" | "--usage") {
             return Err(format!("不认识的参数 {k}。{USAGE}"));
         }
         let v = head.get(i + 1).ok_or_else(|| format!("{k} 后面要有值。{USAGE}"))?;
@@ -176,6 +182,11 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         None => 0,
     };
     let chat = m.get("--chat").filter(|x| !x.trim().is_empty()).map(PathBuf::from);
+    let usage = match m.get("--usage").map(|x| x.trim()) {
+        None => None,
+        Some(x) if x.starts_with('/') && x.len() > 1 && !x.contains(char::is_whitespace) => Some(x.to_string()),
+        Some(x) => return Err(format!("--usage 要写一条本地命令（/usage、/status）：{x}")),
+    };
     let auth = match m.get("--auth").map(|x| x.trim()) {
         None => AuthMode::Skip,
         Some("subscription") => AuthMode::Subscription,
@@ -191,13 +202,14 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         env: need("--env")?,
         env_prog: m.get("--env-prog").cloned().unwrap_or_default(),
         cwd: PathBuf::from(need("--cwd")?),
-        prompt_file: if chat.is_some() || matches!(auth, AuthMode::Only | AuthMode::Probe) { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
+        prompt_file: if chat.is_some() || usage.is_some() || matches!(auth, AuthMode::Only | AuthMode::Probe) { m.get("--prompt-file").map(PathBuf::from).unwrap_or_default() } else { PathBuf::from(need("--prompt-file")?) },
         mode: m.get("--mode").cloned().filter(|x| !x.trim().is_empty()),
         sets,
         provider_file: m.get("--provider-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         extra_turns,
         quota_file: m.get("--quota-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         auth,
+        usage,
         resume: m.get("--resume").map(|x| x.trim().to_string()).filter(|x| !x.is_empty()),
         idle_exit,
         chat,
@@ -306,6 +318,10 @@ pub(crate) struct Client {
     pub ready: bool,
     /// 对话：接回会话的结果（给 board host 看的一句话）；开了新会话时说明为什么
     pub note: Option<String>,
+    /// 查额度（`--usage`）：本地命令的名字（不带 `/`）；开会话后 agent 公布的命令里没有它就不发
+    usage_cmd: Option<String>,
+    /// 查额度：agent 回的文字
+    pub usage_text: String,
 }
 
 impl Client {
@@ -344,7 +360,16 @@ impl Client {
             replaying: false,
             ready: false,
             note: None,
+            usage_cmd: None,
+            usage_text: String::new(),
         }
+    }
+
+    /// 查额度（`--usage`）：开会话后发这条本地命令，收下它回的文字
+    pub(crate) fn with_usage(mut self, cmd: &str) -> Client {
+        self.prompt = cmd.to_string();
+        self.usage_cmd = Some(cmd.trim_start_matches('/').to_string());
+        self
     }
 
     /// 机器对话：提示词由 [`Client::ask`] 一条一条发；有 `resume` 时先接回这个会话
@@ -567,6 +592,7 @@ impl Client {
             (Some(method), None) => {
                 if method == "session/update" {
                     self.on_usage(&v["params"]);
+                    self.on_usage_text(&v["params"]);
                     if self.proto == Proto::V2 {
                         self.on_update(&v["params"]);
                     }
@@ -760,6 +786,13 @@ impl Client {
                     return vec![];
                 };
                 self.session = Some(s.to_string());
+                // 查额度：agent 公布了命令表、里面却没有这条本地命令（旧版 agent）时不发，免得被当成提示词交给模型、花额度
+                if let (Some(cmd), Some(list)) = (&self.usage_cmd, r["availableCommands"].as_array()) {
+                    if !list.iter().any(|c| c["name"].as_str() == Some(cmd.as_str())) {
+                        self.outcome = Some(Outcome::Failed(format!("这个版本的 agent 没有 /{cmd} 命令，查不了额度")));
+                        return vec![];
+                    }
+                }
                 // 开会话时带的初始值（#666）：回应里是实际用的值，和要的不一样就是设不上，出错结束、不按默认跑
                 if let Some(why) = initial_mismatch(r, &self.initial) {
                     self.outcome = Some(Outcome::Failed(why));
@@ -823,6 +856,18 @@ impl Client {
         }
     }
 
+    /// 查额度：收下这个会话里 agent 说的话（本地命令的输出）
+    fn on_usage_text(&mut self, params: &Value) {
+        if self.usage_cmd.is_none() || params["sessionId"].as_str() != self.session.as_deref() {
+            return;
+        }
+        if let Some((kind, _, text)) = chunk(&json!({ "method": "session/update", "params": params })) {
+            if kind == "agent_message_chunk" {
+                self.usage_text += &text;
+            }
+        }
+    }
+
     /// agent 回的这一轮出错（`error` 是 ACP 的错误对象）：额度用完时是 [`Outcome::Quota`]，[`Client::quota`] 记上用完和
     /// 重置时间；别的照旧是 [`Outcome::Failed`]
     fn turn_error(&mut self, error: &Value, why: String) -> Outcome {
@@ -864,9 +909,135 @@ fn rate_of(v: &Value) -> Option<Quota> {
     let window = v["rateLimitType"].as_str().unwrap_or_default().to_string();
     let unified = &v["unifiedWindows"][window.as_str()];
     let num = |k: &str| v[k].as_f64().or_else(|| unified[k].as_f64());
-    let resets_at = num("resetsAt").filter(|t| *t > 0.0).map(|t| if t < 1e11 { (t * 1000.0) as i64 } else { t as i64 });
+    let resets_at = reset_ms(num("resetsAt"));
     let used = num("utilization").filter(|u| u.is_finite() && *u >= 0.0).map(|u| if u <= 1.0 { (u * 100.0).round() as i64 } else { u.round() as i64 });
-    Some(Quota { status: status.to_string(), window, used, resets_at, ..Default::default() })
+    // 5 小时、本周两个窗口：`unifiedWindows` 里的 utilization 总是比例（用超了会大于 1）
+    let windows = [WINDOW_FIVE_HOUR, WINDOW_SEVEN_DAY]
+        .into_iter()
+        .filter_map(|k| {
+            let w = &v["unifiedWindows"][k];
+            let used = w["utilization"].as_f64().filter(|u| u.is_finite() && *u >= 0.0).map(|u| (u * 100.0).round() as i64);
+            w.is_object().then(|| QuotaWindow { key: k.into(), used, resets_at: reset_ms(w["resetsAt"].as_f64()), status: w["status"].as_str().unwrap_or_default().into() })
+        })
+        .collect();
+    Some(Quota { status: status.to_string(), window, used, resets_at, windows, ..Default::default() })
+}
+
+/// 重置时间：Unix 秒（看着像毫秒的照用）→ 毫秒
+fn reset_ms(t: Option<f64>) -> Option<i64> {
+    t.filter(|t| *t > 0.0).map(|t| if t < 1e11 { (t * 1000.0) as i64 } else { t as i64 })
+}
+
+/* ------------------------------ 查额度（`--usage`） ------------------------------ */
+
+/// 本地命令查到的额度文字 → 5 小时、本周两个窗口。认的行（只认这两个窗口，按模型的周额度不要）：
+/// - Claude Code 的 `/usage`：「Current session: 43% used · resets Nov 25 at 10:59pm (Europe/Berlin)」
+///   「Current week (all models): 58% used · resets Nov 27 at 5:59pm (Europe/Berlin)」
+/// - Codex（codex-acp）的 `/status`：「**codex 5h limit:** 88% left (resets 15:30)」「**codex Weekly limit:** 14% left (resets 15:30 on 3 Dec)」
+///
+/// 时间按本机时区读（agent 和 board acp 在同一台机器上）。一个窗口都认不出时为 None
+fn usage_of_text(text: &str, now: chrono::DateTime<chrono::Local>) -> Option<Quota> {
+    let mut windows: Vec<QuotaWindow> = vec![];
+    for line in text.lines() {
+        let l = line.replace("**", "").to_lowercase();
+        let key = if l.contains("current session") || l.contains("5h limit") || l.contains("5-hour limit") {
+            WINDOW_FIVE_HOUR
+        } else if l.contains("current week (all models)") || l.contains("weekly limit") || l.contains("weekly · all models") {
+            WINDOW_SEVEN_DAY
+        } else {
+            continue;
+        };
+        if windows.iter().any(|w| w.key == key) {
+            continue;
+        }
+        let Some(used) = pct_of(&l) else { continue };
+        let resets_at = l.find("resets ").and_then(|i| l[i + "resets ".len()..].split(['(', ')']).next()).and_then(|r| reset_at(r, now));
+        windows.push(QuotaWindow { key: key.into(), used: Some(used), resets_at, status: String::new() });
+    }
+    windows.sort_by_key(|w| w.key != WINDOW_FIVE_HOUR);
+    let first = windows.first()?.clone();
+    Some(Quota { window: first.key, used: first.used, resets_at: first.resets_at, windows, ..Default::default() })
+}
+
+/// 「43% used」→ 43；「88% left」→ 12
+fn pct_of(l: &str) -> Option<i64> {
+    for (pat, left) in [("% used", false), ("% left", true)] {
+        if let Some(i) = l.find(pat) {
+            let start = l[..i].rfind(|c: char| !(c.is_ascii_digit() || c == '.')).map_or(0, |j| j + 1);
+            let n = l[start..i].parse::<f64>().ok()?.round() as i64;
+            return Some(if left { 100 - n } else { n }.max(0));
+        }
+    }
+    None
+}
+
+/// 重置时间的文字 → 毫秒时间戳（本机时区）：「nov 25 at 10:59pm」「10:59pm」「5pm」「15:30」「15:30 on 3 dec」「15:30 on dec 3」
+/// 「15:30 on 12月3日」。只有时刻的是今天的，已经过了就当明天的；有月日没年份、算出来已经过去一天以上的当明年的
+fn reset_at(s: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64> {
+    use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Timelike};
+    const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let (mut time, mut month, mut day, mut year): (Option<NaiveTime>, Option<u32>, Option<u32>, Option<i32>) = (None, None, None, None);
+    for tok in s.replace([',', '·'], " ").split_whitespace() {
+        match tok {
+            "at" | "on" => {}
+            "pm" => time = time.map(|t| if t.hour() < 12 { t + chrono::Duration::hours(12) } else { t }),
+            "am" => time = time.map(|t| if t.hour() == 12 { t - chrono::Duration::hours(12) } else { t }),
+            _ if tok.contains('月') => {
+                let (m, d) = tok.split_once('月')?;
+                month = m.parse().ok();
+                day = d.trim_end_matches('日').parse().ok();
+            }
+            _ => {
+                if let Some(t) = clock_of(tok) {
+                    time = Some(t);
+                } else if let Some(m) = MONTHS.iter().position(|m| tok.starts_with(m)) {
+                    month = Some(m as u32 + 1);
+                } else if let Ok(n) = tok.trim_end_matches(|c: char| c.is_alphabetic()).parse::<u32>() {
+                    if n >= 1000 {
+                        year = Some(n as i32);
+                    } else if (1..=31).contains(&n) {
+                        day = Some(n);
+                    }
+                }
+            }
+        }
+    }
+    let time = time?;
+    let local = |d: NaiveDate| chrono::Local.from_local_datetime(&d.and_time(time)).earliest().map(|t| t.timestamp_millis());
+    let now_ms = now.timestamp_millis();
+    match (month, day) {
+        (Some(m), Some(d)) => {
+            let ms = local(NaiveDate::from_ymd_opt(year.unwrap_or(now.year()), m, d)?)?;
+            if year.is_none() && ms < now_ms - 24 * 3600 * 1000 {
+                return local(NaiveDate::from_ymd_opt(now.year() + 1, m, d)?);
+            }
+            Some(ms)
+        }
+        _ => {
+            let ms = local(now.date_naive())?;
+            Some(if ms < now_ms { ms + 24 * 3600 * 1000 } else { ms })
+        }
+    }
+}
+
+/// 一个时刻：「10:59pm」「5pm」「15:30」「10:59」（后面单独的 am / pm 另算）
+fn clock_of(tok: &str) -> Option<chrono::NaiveTime> {
+    let (body, pm) = match (tok.strip_suffix("pm"), tok.strip_suffix("am")) {
+        (Some(b), _) => (b, Some(true)),
+        (_, Some(b)) => (b, Some(false)),
+        _ => (tok, None),
+    };
+    let (h, m) = match body.split_once(':') {
+        Some((h, m)) => (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?),
+        None if pm.is_some() => (body.parse::<u32>().ok()?, 0),
+        None => return None,
+    };
+    let h = match pm {
+        Some(true) if h < 12 => h + 12,
+        Some(false) if h == 12 => 0,
+        _ => h,
+    };
+    chrono::NaiveTime::from_hms_opt(h, m, 0)
 }
 
 /// 这一轮的错误是不是额度用完；是的话返回记上用完、重置时间的额度（`seen` 是之前 `usage_update` 带的）。
@@ -1243,6 +1414,7 @@ pub fn main(args: &[String]) -> i32 {
     on_signals();
     let code = match o.chat.clone() {
         Some(state) => run_chat(&o, &state),
+        None if o.usage.is_some() => run_usage(&o),
         None if matches!(o.auth, AuthMode::Only | AuthMode::Probe) => run_auth(&o),
         None => run(&o),
     };
@@ -1362,6 +1534,79 @@ fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Option<ChildStdin>, mpsc
 
 /// 列模型（`--auth probe`）最多用多久（问完身份之后算）：Claude Code 每切一个模型要等它重读配置
 pub const PROBE_LIMIT: Duration = Duration::from_secs(150);
+
+/// 把额度写进 `--quota-file`：先写临时文件再换上，board host 在派发期间读它，读不到写了一半的
+fn write_quota(o: &Opts, q: Option<&Quota>) {
+    let (Some(f), Some(q)) = (&o.quota_file, q) else { return };
+    let tmp = f.with_extension("quota-tmp");
+    if let Err(e) = std::fs::write(&tmp, serde_json::to_string(q).unwrap_or_default()).and_then(|_| std::fs::rename(&tmp, f)) {
+        eprintln!("✗ board acp：写不了额度文件 {}：{e}", f.display());
+    }
+}
+
+/// `--usage <本地命令>`：握手、开会话、发这条本地命令（Claude Code 的 `/usage`、Codex 的 `/status`：agent 自己答，
+/// 不调模型、不花额度），读出 5 小时、本周两个窗口，关掉会话。帧不写日志，标准输出只有一行 `{"usage": 额度}`；
+/// 查不到时 `{"usage": null, "error": 原因}`，退出码都是 0
+fn run_usage(o: &Opts) -> i32 {
+    let cmd = o.usage.clone().unwrap_or_default();
+    let say = |q: Option<&Quota>, why: Option<String>| log(&json!({ "usage": q, "error": why }).to_string());
+    let (mut child, mut stdin, rx) = match spawn_agent(o) {
+        Ok(x) => x,
+        Err(code) => {
+            say(None, Some(format!("启动 {} 失败", o.prog)));
+            return code;
+        }
+    };
+    let quiet = |stdin: &mut Option<ChildStdin>, frames: Vec<Value>| {
+        for f in frames {
+            if let Some(w) = stdin.as_mut() {
+                if writeln!(w, "{f}").and_then(|_| w.flush()).is_err() {
+                    *stdin = None;
+                }
+            }
+        }
+    };
+    let cwd = o.cwd.display().to_string();
+    let mut client = Client::new(&cwd, "", None).with_usage(&cmd);
+    quiet(&mut stdin, client.start());
+    let started = Instant::now();
+    let end = loop {
+        if let Some(out) = client.outcome.clone() {
+            break out;
+        }
+        if TERM.load(Ordering::SeqCst) {
+            break Outcome::Failed("被停止".into());
+        }
+        if started.elapsed() >= USAGE_LIMIT {
+            break Outcome::Failed(format!("{} 秒内没查完", USAGE_LIMIT.as_secs()));
+        }
+        match rx.recv_timeout(TICK) {
+            Ok(Some(line)) => {
+                let t = line.trim();
+                if let Some(v) = t.starts_with('{').then(|| serde_json::from_str::<Value>(t).ok()).flatten().filter(Value::is_object) {
+                    let reply = client.on_frame(&v);
+                    quiet(&mut stdin, reply);
+                }
+            }
+            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break Outcome::Failed("agent 退出了".into()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    };
+    quiet(&mut stdin, client.close());
+    drop(stdin);
+    let _ = wait(&mut child, GRACE);
+    match end {
+        Outcome::Stopped(_) => match usage_of_text(&client.usage_text, chrono::Local::now()) {
+            Some(q) => say(Some(&q), None),
+            None => {
+                let first: String = client.usage_text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("没有输出").chars().take(120).collect();
+                say(None, Some(format!("{cmd} 的输出里没有额度：{first}")));
+            }
+        },
+        Outcome::Failed(why) | Outcome::Quota(why) => say(None, Some(why)),
+    }
+    0
+}
 
 /// `--auth only`（#667）：握手、问身份，不开会话；身份写成一行 JSON（[`AgentAuth`]）到标准输出，退出码 0。
 /// `--auth probe`（#666）：问完身份再列模型，写一行 `{"auth": …, "models": …}`。
@@ -1489,6 +1734,8 @@ fn run(o: &Opts) -> i32 {
     let mut cancel_at: Option<Instant> = None;
     // agent 进程已经退出的时间：它留下的子进程可能还拿着标准输出，读不到 EOF；退出后再收一会儿剩下的输出就收尾
     let mut gone_at: Option<Instant> = None;
+    // 已经写进额度文件的额度
+    let mut written: Option<Quota> = None;
     loop {
         if gone_at.is_none() && child.try_wait().ok().flatten().is_some() {
             gone_at = Some(Instant::now());
@@ -1533,6 +1780,11 @@ fn run(o: &Opts) -> i32 {
                         }
                         let reply = client.on_frame(&v);
                         send(&mut stdin, reply);
+                        // 额度变了马上写进额度文件：board host 跑卡期间读它、随上报带上（差不多实时）
+                        if client.quota != written {
+                            written = client.quota.clone();
+                            write_quota(o, written.as_ref());
+                        }
                     }
                     // 不是协议帧（agent 不该往标准输出写别的）：原样记下
                     None if !t.is_empty() => {
@@ -1568,10 +1820,9 @@ fn run(o: &Opts) -> i32 {
     send(&mut stdin, client.close());
     drop(stdin);
     let status = wait(&mut child, GRACE);
-    if let (Some(f), Some(q)) = (&o.quota_file, &client.quota) {
-        if let Err(e) = std::fs::write(f, serde_json::to_string(q).unwrap_or_default()) {
-            eprintln!("✗ board acp：写不了额度文件 {}：{e}", f.display());
-        }
+    // 结束时再写一次（额度用完时记上了用完和重置时间）
+    if client.quota != written {
+        write_quota(o, client.quota.as_ref());
     }
     match &client.outcome {
         Some(Outcome::Failed(why)) => {
@@ -2422,6 +2673,17 @@ mod tests {
             "unifiedWindows": { "five_hour": { "status": "allowed", "resetsAt": 1795676400, "utilization": 0.3 } } })));
         let q = c.quota.clone().unwrap();
         assert_eq!((q.window.as_str(), q.used, q.resets_at), ("five_hour", Some(30), Some(1_795_676_400_000)));
+        // 两个窗口都记下（2026-11-25 一次真实派发推来的样子）；用超了（utilization 大于 1）照比例算
+        let mut c = working(true);
+        c.on_frame(&usage("s1", json!({ "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1795676400,
+            "unifiedWindows": { "five_hour": { "status": "allowed", "resetsAt": 1795676400, "utilization": 0.39 },
+                "seven_day": { "status": "allowed_warning", "resetsAt": 1795831200, "utilization": 1.02 },
+                "seven_day_overage_included": { "resetsAt": 1795831200, "utilization": 0.03 } } })));
+        let w: Vec<(String, Option<i64>, Option<i64>, String)> = c.quota.clone().unwrap().windows.into_iter().map(|w| (w.key, w.used, w.resets_at, w.status)).collect();
+        assert_eq!(w, vec![
+            ("five_hour".into(), Some(39), Some(1_795_676_400_000), "allowed".into()),
+            ("seven_day".into(), Some(102), Some(1_795_831_200_000), "allowed_warning".into()),
+        ]);
         // 一时的 429：状态 allowed，文字也不是额度用完
         let mut c = working(true);
         let err = json!({ "code": -32603, "message": "API Error: 429 overloaded", "data": { "errorKind": "rate_limit", "rateLimit": { "status": "allowed" } } });
@@ -2684,6 +2946,72 @@ mod tests {
         // 别的帧（agent 改的文件里也可能有 email 字段）：原样
         let other = json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "update": { "sessionUpdate": "tool_call", "rawInput": { "email": "b@example.com" } } } });
         assert!(matches!(without_account(&other), std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// 查额度的文字：Claude Code 的 `/usage`（2026-11-25 本机实测的原文）、Codex 的 `/status`（codex-acp 2.12 的格式）
+    #[test]
+    fn usage_text_gives_two_windows() {
+        let now = chrono::Local.with_ymd_and_hms(2026, 11, 25, 21, 0, 0).unwrap();
+        let at = |y, m, d, h, mi| chrono::Local.with_ymd_and_hms(y, m, d, h, mi, 0).unwrap().timestamp_millis();
+        let claude = "You are currently using your subscription to power your Claude Code usage\n\n\
+            Current session: 43% used · resets Nov 25 at 10:59pm (Europe/Berlin)\n\
+            Current week (all models): 58% used · resets Nov 27 at 5:59pm (Europe/Berlin)\n\
+            Current week (Fable): 3% used · resets Nov 27 at 5:59pm (Europe/Berlin)\n\n\
+            What's contributing to your usage?\n  94%  Start fresh when you switch tasks · run /clear";
+        let q = usage_of_text(claude, now).unwrap();
+        let w: Vec<(&str, Option<i64>, Option<i64>)> = q.windows.iter().map(|w| (w.key.as_str(), w.used, w.resets_at)).collect();
+        assert_eq!(w, vec![("five_hour", Some(43), Some(at(2026, 11, 25, 22, 59))), ("seven_day", Some(58), Some(at(2026, 11, 27, 17, 59)))]);
+        assert_eq!((q.window.as_str(), q.used), ("five_hour", Some(43)), "顶层跟着 5 小时（旧界面看它）");
+        let codex = "**Model:** gpt-5.2  \n**Account:** dev@example.com (Plus)  \n\n**codex 5h limit:** 88% left (resets 23:30)  \n**codex Weekly limit:** 14% left (resets 09:15 on 3 Dec)";
+        let w: Vec<(String, Option<i64>, Option<i64>)> = usage_of_text(codex, now).unwrap().windows.into_iter().map(|w| (w.key, w.used, w.resets_at)).collect();
+        assert_eq!(w, vec![("five_hour".into(), Some(12), Some(at(2026, 11, 25, 23, 30))), ("seven_day".into(), Some(86), Some(at(2026, 12, 3, 9, 15)))]);
+        // 没有额度的输出（中转、API key）
+        assert_eq!(usage_of_text("**Limits:** data not available yet", now), None);
+        assert_eq!(usage_of_text("", now), None);
+    }
+
+    #[test]
+    fn reset_times_in_words() {
+        let now = chrono::Local.with_ymd_and_hms(2026, 11, 25, 21, 0, 0).unwrap();
+        let at = |y, m, d, h, mi| chrono::Local.with_ymd_and_hms(y, m, d, h, mi, 0).unwrap().timestamp_millis();
+        assert_eq!(reset_at("nov 25 at 10:59pm", now), Some(at(2026, 11, 25, 22, 59)));
+        assert_eq!(reset_at("10:59pm", now), Some(at(2026, 11, 25, 22, 59)));
+        // 只有时刻、已经过了：明天的
+        assert_eq!(reset_at("9am", now), Some(at(2026, 11, 26, 9, 0)));
+        assert_eq!(reset_at("12:30 am", now), Some(at(2026, 11, 26, 0, 30)));
+        assert_eq!(reset_at("15:30 on dec 3", now), Some(at(2026, 12, 3, 15, 30)));
+        assert_eq!(reset_at("15:30 on 12月3日", now), Some(at(2026, 12, 3, 15, 30)));
+        // 跨年：1 月的是明年
+        assert_eq!(reset_at("jan 2 at 1:00am", now), Some(at(2027, 1, 2, 1, 0)));
+        assert_eq!(reset_at("dec 1, 2026 at 12:00am", now), Some(at(2026, 12, 1, 0, 0)));
+        assert_eq!(reset_at("soon", now), None);
+    }
+
+    /// 查额度（`--usage`）：开会话后发这条本地命令（不带配置、不切模式），收下 agent 说的话；公布的命令里没有它就不发
+    #[test]
+    fn usage_mode_sends_only_the_local_command() {
+        let o = parse(&s(&["--env", "direct", "--cwd", "/w", "--usage", "/usage", "--", "x"])).unwrap();
+        assert_eq!(o.usage.as_deref(), Some("/usage"));
+        assert!(parse(&s(&["--env", "direct", "--cwd", "/w", "--usage", "usage", "--", "x"])).unwrap_err().contains("--usage"));
+        let init = json!({ "protocolVersion": 2, "capabilities": {} });
+        let cmds = |names: &[&str]| json!({ "sessionId": "s1", "availableCommands": names.iter().map(|n| json!({ "name": n })).collect::<Vec<_>>() });
+        let mut c = Client::new("/w", "", None).with_usage("/usage");
+        c.start();
+        assert_eq!(c.on_frame(&reply(0, init.clone()))[0]["method"], "session/new");
+        let f = c.on_frame(&reply(1, cmds(&["context", "usage"])));
+        assert_eq!((f[0]["method"].as_str(), f[0]["params"]["prompt"][0]["text"].as_str()), (Some("session/prompt"), Some("/usage")));
+        let say = |text: &str| json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s1", "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": text } } } });
+        c.on_frame(&say("Current session: 43% used"));
+        c.on_frame(&say(" · resets 10:59pm\n"));
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "end_turn" })));
+        assert_eq!(c.outcome, Some(Outcome::Stopped("end_turn".into())));
+        assert_eq!(c.usage_text, "Current session: 43% used · resets 10:59pm\n");
+        // 旧版 agent：公布的命令里没有，不发（免得当成提示词交给模型、花额度）
+        let mut c = Client::new("/w", "", None).with_usage("/usage");
+        c.start();
+        c.on_frame(&reply(0, init));
+        assert!(c.on_frame(&reply(1, cmds(&["context"]))).is_empty());
+        assert_eq!(c.outcome, Some(Outcome::Failed("这个版本的 agent 没有 /usage 命令，查不了额度".into())));
     }
 
     #[test]

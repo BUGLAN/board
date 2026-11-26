@@ -239,6 +239,12 @@ export interface HostAgent {
   quota?: AgentQuota | null;
   /** 额度用完：这台机器上它的本机配置角色暂停接单到这个时间（毫秒），到点自动恢复，点「恢复」提前恢复 */
   quota_until?: number | null;
+  /** 人点「刷新额度」的时间（毫秒）：比 quota.at、quota_fail.at 都新时是「正在查」 */
+  quota_ask?: number | null;
+  /** 最近一次查额度没查到 */
+  quota_fail?: { at: number; why: string } | null;
+  /** 这台机器的 board host 会按「刷新」查这个 agent 的额度（旧版 board host 不会） */
+  quota_probe?: boolean;
   /** agent 自己用的身份（#667）：board host 启动时、版本变了、自检时问的；只有 Claude Code、Codex 有 */
   auth?: AgentAuth | null;
   /** 本机配置下账号能用的模型和每个模型的强度（#666），和身份一起问的；只有 Claude Code、Codex 有 */
@@ -295,6 +301,19 @@ export interface AgentQuota {
   text?: string;
   /** 服务端收到的时间（毫秒） */
   at: number;
+  /** 订阅账号的两个窗口：5 小时（five_hour）、本周（seven_day）。跑卡时 agent 推的、点「刷新」查到的 */
+  windows?: QuotaWindow[];
+}
+
+/** 额度的一个窗口 */
+export interface QuotaWindow {
+  key: 'five_hour' | 'seven_day' | string;
+  /** 用了百分之几 */
+  used?: number | null;
+  /** 什么时候重置（毫秒） */
+  resetsAt?: number | null;
+  /** Claude 报的这个窗口的状态：allowed / allowed_warning / rejected */
+  status?: string;
 }
 
 /** 一个内置 agent 在这台机器上的安装和更新状态 */

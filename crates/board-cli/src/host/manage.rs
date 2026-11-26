@@ -270,6 +270,105 @@ impl Host<'_> {
         }
     }
 
+    /// 额度：返回有没有新的要报（有就马上上报）。
+    /// - 跑卡时：board acp 一看到 agent 推的额度就写进这次派发的额度文件，这里读到变了就记下来
+    /// - 人点「刷新」：取到的任务里某个 agent 的 `quota_ask` 比上次查到（或没查到）的都新、这里也还没处理过，就在后台跑
+    ///   `board acp --usage <本地命令>`（Claude Code 的 `/usage`、Codex 的 `/status`，不调模型、不花额度），查完记下来
+    pub(super) fn poll_quota(&mut self) -> bool {
+        let mut changed = false;
+        let push = |out: &mut Vec<board_core::hosts::QuotaReport>, r: board_core::hosts::QuotaReport| {
+            // 同一个 agent 只留最新的一条
+            out.retain(|x| x.agent != r.agent);
+            out.push(r);
+        };
+        // 额度文件每 2 秒读一次
+        let read_files = self.quota_read.elapsed() >= Duration::from_secs(2);
+        if read_files {
+            self.quota_read = Instant::now();
+        }
+        for r in self.runs.iter().filter(|_| read_files) {
+            let Some(q) = r.quota() else { continue };
+            if self.quota_seen.get(&r.d.id) != Some(&q) {
+                self.quota_seen.insert(r.d.id, q.clone());
+                push(&mut self.quota_out, board_core::hosts::QuotaReport { agent: r.d.agent.clone(), quota: Some(q), error: None });
+                changed = true;
+            }
+        }
+        let alive: HashSet<i64> = self.runs.iter().map(|r| r.d.id).collect();
+        self.quota_seen.retain(|id, _| alive.contains(id));
+        // 查完的
+        let done: Vec<String> = self.quota_jobs.iter().filter(|(_, h)| h.is_finished()).map(|(id, _)| id.clone()).collect();
+        for id in done {
+            let Some(h) = self.quota_jobs.remove(&id) else { continue };
+            let got = h.join().unwrap_or_else(|_| Err("查额度的线程崩了".into()));
+            match &got {
+                Ok(_) => self.say(format!("{} {} 的额度查到了", self.p.dim("·"), id)),
+                Err(e) => self.say(format!("{} {} 的额度没查到：{e}", self.p.yellow("!"), id)),
+            }
+            let (quota, error) = match got {
+                Ok(q) => (Some(q), None),
+                Err(e) => (None, Some(e)),
+            };
+            push(&mut self.quota_out, board_core::hosts::QuotaReport { agent: id, quota, error });
+            changed = true;
+        }
+        // 新的「刷新」请求：10 分钟以前点的（这台机器那时不在线）不再查
+        let asks: Vec<(String, i64)> = self
+            .work
+            .as_ref()
+            .map(|w| {
+                w.host
+                    .agents
+                    .iter()
+                    .filter_map(|a| {
+                        let ask = a.quota_ask?;
+                        let seen = a.quota.as_ref().map_or(0, |q| q.at).max(a.quota_fail.as_ref().map_or(0, |f| f.at));
+                        (ask > seen && w.now - ask < 10 * 60 * 1000).then(|| (a.id.clone(), ask))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (id, ask) in asks {
+            if self.quota_jobs.contains_key(&id) || self.quota_done.get(&id).is_some_and(|t| *t >= ask) {
+                continue;
+            }
+            self.quota_done.insert(id.clone(), ask);
+            let Some(cmd) = board_core::hosts::QUOTA_PROBE_AGENTS.iter().find(|(a, _)| *a == id).map(|(_, c)| c.to_string()) else { continue };
+            match self.usage_command(&id, &cmd) {
+                Ok((c, log)) => {
+                    let pids = self.selftest_pids.clone();
+                    let limit = crate::acp::USAGE_LIMIT + Duration::from_secs(30);
+                    self.quota_jobs.insert(id, std::thread::spawn(move || selftest::probe_usage(c, &log, limit, &pids)));
+                }
+                Err(e) => {
+                    push(&mut self.quota_out, board_core::hosts::QuotaReport { agent: id, quota: None, error: Some(e) });
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// 查额度的命令：和派发一样的启动环境，工作目录是临时目录；日志写到临时目录里
+    fn usage_command(&self, id: &str, cmd: &str) -> std::result::Result<(Command, PathBuf), String> {
+        let spec = self.agents.iter().find(|a| a.id == id && a.builtin.is_some()).ok_or_else(|| format!("这台机器上没有 {id}"))?;
+        let used = self.work.as_ref().and_then(|w| w.host.agents.iter().find(|a| a.id == id).cloned());
+        let check = used
+            .as_ref()
+            .and_then(|u| u.env.as_deref())
+            .and_then(|e| spec.checks.iter().find(|c| c.env == e))
+            .or_else(|| spec.default_check())
+            .ok_or_else(|| format!("本机没找到 {} 的命令", spec.name))?;
+        if check.prog.is_none() || check.missing.is_some() {
+            return Err(format!("本机没找到 {} 的命令", spec.name));
+        }
+        let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
+        let tmp = std::env::temp_dir().join(format!("board-usage-{}", self.name));
+        let _ = std::fs::create_dir_all(&tmp);
+        let c = self.acp_command(spec, check, &env, &tmp, Path::new(""), 0, None, &["--usage".to_string(), cmd.to_string()])?;
+        Ok((c, tmp.join(format!("{id}.log"))))
+    }
+
     /// 身份（#667）和本机账号能用的模型（#666）：收下问完的；会报身份的 agent（[`board_core::agentdef::SUBSCRIPTION_AGENTS`]）找到了命令、版本和上次问的
     /// 时候不一样（启动时、更新了、自检清掉了）就在后台再问一次（`board acp --auth probe`：身份和账号能用的模型，不发提示词、不花 token）。
     /// 返回身份有没有变（变了马上上报）

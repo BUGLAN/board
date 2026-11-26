@@ -17,6 +17,7 @@ import { usePollHosts } from '../hosts/bits';
 import { GitCredSection } from '../hosts/GitCred';
 import { McpSection } from '../hosts/Mcp';
 import { ProvidersSection } from '../hosts/Providers';
+import { SubscriptionsSection } from '../hosts/Subscriptions';
 import { RunLimits } from '../hosts/Sched';
 import { Division } from '../profiles/Division';
 import { SharedConfig } from '../hosts/Shared';
@@ -34,7 +35,13 @@ export function AgentPage() {
   usePollHosts(tab === 'agent');
 
   const body: Record<SecId, ReactNode> = {
-    providers: <ProvidersSection />,
+    // 模型供应商这一页：上面是各台机器报的官方订阅账号，下面是共用的供应商
+    providers: (
+      <div className="ag-providers">
+        <SubscriptionsSection />
+        <ProvidersSection />
+      </div>
+    ),
     mcp: <McpSection hosts={hosts} />,
     skills: <SharedConfig hosts={hosts} />,
     git: <GitCredSection hosts={hosts} />,

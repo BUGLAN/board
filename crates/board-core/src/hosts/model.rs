@@ -59,6 +59,16 @@ pub struct HostAgent {
     /// 服务端发出去时才有：额度用完，本机配置的角色在这台机器上暂停接单到这个时间（毫秒）；到点自动恢复，人点「恢复」提前恢复
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_until: Option<i64>,
+    /// 服务端发出去时才有：人点了「刷新额度」的时间（毫秒）。board host 看到比上次做过的新就查一次（[`QUOTA_PROBE_AGENTS`]）；
+    /// 比 `quota.at`、`quota_fail.at` 都新时界面画成「正在查」
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_ask: Option<i64>,
+    /// 服务端发出去时才有：最近一次查额度没查到（原因、时间）；之后查到了就清掉
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_fail: Option<QuotaFail>,
+    /// board host 会按请求查这个 agent 的额度（`board acp --usage`）：board host 上报。旧版 board host 不报，界面上的「刷新」置灰
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quota_probe: bool,
     /// agent 自己用的身份（#667）：board host 启动时、agent 版本变了、自检时用 `board acp --auth-only` 问一次上报。
     /// 只有 Claude Code、Codex 会报；没问过、旧版 board host 为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +187,35 @@ pub struct AgentRun {
     /// 拿它和现在比），人点「恢复」时清掉
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_until: Option<i64>,
+    /// 人点「刷新额度」的时间：board host 拿到后查一次
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_ask: Option<i64>,
+    /// 最近一次查额度没查到
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_fail: Option<QuotaFail>,
+}
+
+/// 查额度没查到
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaFail {
+    /// 服务端收到的时间（毫秒）
+    pub at: i64,
+    pub why: String,
+}
+
+/// 会按请求查额度的 agent：Claude Code 发本地命令 `/usage`、Codex 发 `/status`，都不调模型、不花额度
+pub const QUOTA_PROBE_AGENTS: &[(&str, &str)] = &[("claude", "/usage"), ("codex", "/status")];
+
+/// board host 上报的一次额度：跑卡时 agent 推来的（差不多实时），或者按「刷新」查到的
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaReport {
+    pub agent: String,
+    /// 看到的额度；没查到时为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Quota>,
+    /// 按「刷新」查、没查到：原因
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// agent 自己用的身份（#667）：ACP 的 `auth/status`（Authentication State Query RFD）或适配器推的
@@ -307,7 +346,33 @@ pub struct Quota {
     /// 服务端收到的时间（毫秒）；board acp 写的时候为 0
     #[serde(default)]
     pub at: i64,
+    /// 订阅账号的两个窗口：5 小时（`five_hour`）、本周（`seven_day`）。Claude 跑的时候推的
+    /// `_claude/rateLimit.unifiedWindows` 里有；点「刷新」查的（Claude 的 `/usage`、Codex 的 `/status`）也有
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<QuotaWindow>,
 }
+
+/// 额度的一个窗口
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaWindow {
+    /// [`WINDOW_FIVE_HOUR`] 或 [`WINDOW_SEVEN_DAY`]
+    pub key: String,
+    /// 用了百分之几
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<i64>,
+    /// 什么时候重置（毫秒时间戳）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// Claude 报的这个窗口的状态：`allowed`、`allowed_warning`、`rejected`；查到的没有
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
+}
+
+/// 5 小时窗口
+pub const WINDOW_FIVE_HOUR: &str = "five_hour";
+/// 本周窗口
+pub const WINDOW_SEVEN_DAY: &str = "seven_day";
 
 /// 额度用完、没取到重置时间时，本机配置的角色暂停多久（毫秒）
 pub const QUOTA_PAUSE_DEFAULT: i64 = 60 * 60 * 1000;

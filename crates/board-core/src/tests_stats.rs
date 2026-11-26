@@ -99,6 +99,7 @@ fn host_report(running: Vec<i64>) -> HostReport {
         rescan_skills: true,
         local_skills: None,
         res: None,
+        quotas: vec![],
     }
 }
 

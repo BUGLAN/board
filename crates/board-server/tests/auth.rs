@@ -1164,6 +1164,7 @@ fn agent_check_generates_the_name_from_machine_settings() {
         rescan_skills: false,
         local_skills: None,
         res: None,
+        quotas: vec![],
     };
     board_core::Store::open(&s.db).unwrap().write(board_core::now_ms(), Origin::cli(), |w| w.host_beat(&rep, Some(host_info.id))).unwrap();
     let check = |token: &str, body: Value| send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &format!("Bearer {token}"))], Some(body));

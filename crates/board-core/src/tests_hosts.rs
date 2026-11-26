@@ -64,6 +64,7 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
         rescan_skills: true,
         local_skills: None,
         res: None,
+        quotas: vec![],
     }
 }
 
@@ -5108,6 +5109,7 @@ fn quota_exhausted_releases_the_card_and_pauses_local_roles_until_reset() {
         used: Some(100),
         text: "You've hit your session limit · resets 3pm".into(),
         at: 0,
+        windows: vec![],
     };
     let d = quota_end(&mut s, T0 + 2 * S, d.id, &q);
     assert_eq!(d.result.as_deref(), Some("quota"));
@@ -5256,6 +5258,58 @@ fn quota_pauses_every_machine_on_the_same_account() {
         texts.extend(ops(&s, h, at));
     }
     assert!(texts.iter().all(|t| !t.to_lowercase().contains("example.com")), "{texts:?}");
+}
+
+/// 官方订阅的额度：board host 上报的（跑卡时推来的、按「刷新」查到的）记成这台机器上这个 agent 最近一次的额度，时间按
+/// 服务端收到的算；没查到的记原因，之后查到了清掉。上报额度不暂停接单
+#[test]
+fn reported_quotas_are_kept_with_the_server_time() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    beat(&mut s, T0, &rep).unwrap();
+    let w = |key: &str, used: i64| crate::hosts::QuotaWindow { key: key.into(), used: Some(used), resets_at: Some(T0 + 3600 * 1000), status: String::new() };
+    let q = crate::hosts::Quota { window: "five_hour".into(), used: Some(43), windows: vec![w("five_hour", 43), w("seven_day", 58)], ..Default::default() };
+    rep.quotas = vec![crate::hosts::QuotaReport { agent: "claude".into(), quota: Some(q), error: None }];
+    beat(&mut s, T0 + S, &rep).unwrap();
+    let a = claude_agent(&s, "mbp", T0 + S);
+    let got = a.quota.clone().unwrap();
+    assert_eq!((got.at, got.windows.len(), got.windows[1].used), (T0 + S, 2, Some(58)));
+    assert_eq!(a.quota_until, None, "上报额度不暂停");
+    // 没查到：记原因，额度留着
+    rep.quotas = vec![crate::hosts::QuotaReport { agent: "claude".into(), quota: None, error: Some("90 秒内没查完".into()) }];
+    beat(&mut s, T0 + 2 * S, &rep).unwrap();
+    let a = claude_agent(&s, "mbp", T0 + 2 * S);
+    assert_eq!(a.quota_fail, Some(crate::hosts::QuotaFail { at: T0 + 2 * S, why: "90 秒内没查完".into() }));
+    assert_eq!(a.quota.map(|q| q.at), Some(T0 + S));
+    // 之后查到了：清掉原因；不带额度的上报不动它
+    rep.quotas = vec![crate::hosts::QuotaReport { agent: "claude".into(), quota: Some(got), error: None }];
+    beat(&mut s, T0 + 3 * S, &rep).unwrap();
+    rep.quotas = vec![];
+    beat(&mut s, T0 + 4 * S, &rep).unwrap();
+    let a = claude_agent(&s, "mbp", T0 + 4 * S);
+    assert_eq!((a.quota_fail, a.quota.map(|q| q.at)), (None, Some(T0 + 3 * S)));
+}
+
+/// 「刷新额度」：记下请求时间，随机器信息发给 board host（它据此查一次）；机器要在线、agent 要会查、board host 要是新版
+#[test]
+fn quota_refresh_is_asked_of_an_online_new_host() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    beat(&mut s, T0, &rep).unwrap();
+    let ask = |s: &mut Store, at: i64, agent: &str| s.write(at, Origin::ui(None), |w| w.host_quota_ask("mbp", agent));
+    // 旧版 board host（不报 quota_probe）
+    let e = ask(&mut s, T0, "claude").unwrap_err();
+    assert!(e.message.contains("版本太旧"), "{}", e.message);
+    rep.agents[0].quota_probe = true;
+    beat(&mut s, T0 + S, &rep).unwrap();
+    let e = ask(&mut s, T0 + S, "mycli").unwrap_err();
+    assert!(e.message.contains("不会报额度"), "{}", e.message);
+    let h = ask(&mut s, T0 + 2 * S, "claude").unwrap();
+    assert_eq!(h.agents.iter().find(|a| a.id == "claude").and_then(|a| a.quota_ask), Some(T0 + 2 * S));
+    assert_eq!(s.read(|r| r.host_work("mbp", T0 + 2 * S)).unwrap().host.agents[0].quota_ask, Some(T0 + 2 * S), "board host 取任务时看得到");
+    // 离线
+    let e = ask(&mut s, T0 + 2 * S + crate::hosts::HOST_GAP_MS, "claude").unwrap_err();
+    assert!(e.message.contains("离线"), "{}", e.message);
 }
 
 /// Windows 机器的目录用 `\` 拼：服务端派生的路径和机器上报的一样，检查结果才对得上

@@ -31,6 +31,7 @@ fn report(running: Vec<i64>) -> HostReport {
         rescan_skills: false,
         local_skills: None,
         res: None,
+        quotas: vec![],
     }
 }
 

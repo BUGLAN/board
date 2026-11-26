@@ -510,6 +510,7 @@ fn host_rename_renames_the_machine_record() {
         rescan_skills: false,
         local_skills: None,
         res: None,
+        quotas: vec![],
     };
     // 令牌是「添加机器」给 mbp 建的机器令牌：只有它能登记新机器（#507）
     st.conn().execute("UPDATE auth_tokens SET host = 'mbp' WHERE id = 1", []).unwrap();

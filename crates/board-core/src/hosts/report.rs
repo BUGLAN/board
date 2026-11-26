@@ -59,6 +59,9 @@ pub struct HostReport {
     /// 资源（PRD §10.12「资源」）：后台最近一次采样；旧版 board host 不带
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub res: Option<crate::hostres::HostRes>,
+    /// 上次上报之后看到的额度：跑卡时 agent 推来的、按「刷新」查到（或没查到）的；没有新的时为空
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotas: Vec<QuotaReport>,
 }
 
 /// 发给一台 board host 的任务：设置、在跑的派发（含停止请求）、排队的派发（按创建先后）
@@ -424,6 +427,10 @@ impl<'a> W<'a> {
                 }
             }
         }
+        // 额度：跑卡时 agent 推来的、按「刷新」查到（或没查到）的
+        if !rep.quotas.is_empty() {
+            self.note_quota_reports(&name, &rep.quotas)?;
+        }
         // 掉线后回来（PRD §9.1「掉线后接回」）：它报着还在跑、服务端已经按「机器掉线」结束的派发，卡片还没被别人领走就接回
         for id in &rep.running {
             self.dispatch_revive(*id, &name, token)?;
@@ -475,6 +482,53 @@ impl<'a> W<'a> {
         // 这台机器上线了、空出位置了：等着的「任意机器」派发挑一遍机器，分给它的随这次的任务一起发回去
         self.assign_any()?;
         self.read().host_work(&name, now)
+    }
+
+    /// board host 上报的额度：查到的记成这台机器上这个 agent 最近一次的额度（时间按服务端收到的算），清掉上次没查到的原因；
+    /// 没查到的记下原因。不暂停接单（额度用完的暂停只看派发结束时的，[`W::note_quota`]）
+    pub(super) fn note_quota_reports(&mut self, name: &str, reports: &[QuotaReport]) -> Result<()> {
+        let Some(h) = self.host_row(name)? else { return Ok(()) };
+        let mut run = h.run.clone();
+        for r in reports {
+            let e = run.entry(r.agent.clone()).or_default();
+            match (&r.quota, &r.error) {
+                (Some(q), _) => {
+                    let mut q = q.clone();
+                    q.at = self.now;
+                    q.text = q.text.chars().take(300).collect();
+                    e.quota = Some(q);
+                    e.quota_fail = None;
+                }
+                (None, Some(why)) => e.quota_fail = Some(QuotaFail { at: self.now, why: why.chars().take(300).collect() }),
+                (None, None) => {}
+            }
+        }
+        if run != h.run {
+            self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+            self.touch_hosts();
+        }
+        Ok(())
+    }
+
+    /// 人点「刷新额度」：记下请求时间，这台机器的 board host 取到任务就查一次（Claude Code 发 `/usage`、Codex 发 `/status`，
+    /// 不调模型、不花额度），查完随上报带回。机器要在线、这个 agent 要会查（[`QUOTA_PROBE_AGENTS`]、board host 报了 `quota_probe`）
+    pub fn host_quota_ask(&mut self, name: &str, agent: &str) -> Result<HostInfo> {
+        let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let a = h.resolved().into_iter().find(|a| a.id == agent).ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{agent}」")))?;
+        if !h.online(self.now) {
+            return Err(BoardError::usage(format!("{name} 离线：上线后才能查额度")));
+        }
+        if !QUOTA_PROBE_AGENTS.iter().any(|(id, _)| *id == agent) {
+            return Err(BoardError::usage(format!("{} 不会报额度", a.name)));
+        }
+        if !a.quota_probe {
+            return Err(BoardError::usage(format!("{name} 的 board 版本太旧，升级后才能查额度")));
+        }
+        let mut run = h.run.clone();
+        run.entry(agent.to_string()).or_default().quota_ask = Some(self.now);
+        self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+        self.touch_hosts();
+        self.read().host(name, self.now)
     }
 
     /// 机器的运行设置（hosts.run）里去掉已经移除的内置 agent 那一项；这台机器上有同名的自定义 agent 时留着（#484）

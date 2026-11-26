@@ -43,6 +43,7 @@ fn host_patch_accepts_workspace_from_old_and_new_clients() {
         rescan_skills: false,
         local_skills: None,
         res: None,
+        quotas: vec![],
     };
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, None)).unwrap();
     let base = format!("{}/api/hosts/mbp", s.url);

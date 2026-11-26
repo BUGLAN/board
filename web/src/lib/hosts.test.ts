@@ -437,6 +437,12 @@ describe('额度（#668）', () => {
     expect(quotaWords({ status: 'allowed_warning', window: 'five_hour', used: 91, resetsAt: at(25, 18), at: now }, now)).toBe('5 小时窗口用了 91% · 18:00 重置');
     expect(quotaWords({ status: 'allowed', window: 'seven_day_opus', used: 40, resetsAt: at(28, 9, 5), at: now }, now)).toBe('7 天 · Opus窗口用了 40% · 11-28 09:05 重置');
     expect(quotaWords({ status: 'allowed', at: now }, now)).toBe('额度还能用');
+    // 带着两个窗口：两个都写
+    const windows = [
+      { key: 'five_hour', used: 43, resetsAt: at(25, 23) },
+      { key: 'seven_day', used: 58, resetsAt: at(27, 18) },
+    ];
+    expect(quotaWords({ status: 'allowed', window: 'five_hour', used: 43, windows, at: now }, now)).toBe('5 小时用了 43% · 本周用了 58%');
   });
   it('用完：写什么时候恢复，没有时间就不写', () => {
     expect(quotaWords({ exhausted: true, status: 'rejected', window: 'five_hour', used: 100, resetsAt: at(26, 2), at: now }, now)).toBe('额度用完 · 11-26 02:00 恢复');

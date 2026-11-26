@@ -1075,6 +1075,7 @@ mod tests {
             rescan_skills: true,
             local_skills: None,
             res: None,
+            quotas: vec![],
         };
         s.write(at, Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
     }

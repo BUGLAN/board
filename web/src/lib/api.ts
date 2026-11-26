@@ -296,6 +296,8 @@ export const api = {
   putGit: (c: { host: string; username: string; token: string; commitName: string; commitEmail: string }) => req<GitCred>('POST', '/api/git', c),
   removeGit: () => req('DELETE', '/api/git'),
   syncHost: (name: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/sync`),
+  /** 「刷新额度」：让这台机器查一次这个 agent 的额度（不花额度），查完随它的上报带回 */
+  quotaAsk: (name: string, agent: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/quota`, { agent }),
   /** 照另一台机器配：dry 只列出要变哪些，确认后再不带 dry 调一次写进去 */
   copyHost: (name: string, from: string, dry: boolean) => req<HostCopy>('POST', `/api/hosts/${q(name)}/copy`, { from, dry }),
   /** 列那台机器上一个文件夹的子文件夹（服务端转给它的 board host，最多等 20 秒）；空路径是最上面一层 */

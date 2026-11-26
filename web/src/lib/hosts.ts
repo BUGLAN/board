@@ -189,10 +189,13 @@ export function authWords(a: AgentAuth): string {
   return email ? `${words} · ${email}` : words;
 }
 
-/** 最近一次看到的额度，一句话（#668）：「5 小时窗口用了 91% · 15:00 重置」「额度用完 · 15:00 恢复」 */
+/** 最近一次看到的额度，一句话（#668）：「5 小时窗口用了 91% · 15:00 重置」「额度用完 · 15:00 恢复」；
+ *  带着两个窗口时「5 小时用了 43% · 本周用了 58%」 */
 export function quotaWords(q: AgentQuota, now: number): string {
   const reset = q.resetsAt ? whenWords(q.resetsAt, now) : null;
   if (q.exhausted || q.status === 'rejected') return `额度用完${reset ? ` · ${reset} 恢复` : ''}`;
+  const wins = (q.windows ?? []).filter(w => w.used != null && (w.key === 'five_hour' || w.key === 'seven_day'));
+  if (wins.length) return wins.map(w => `${w.key === 'five_hour' ? '5 小时' : '本周'}用了 ${w.used}%`).join(' · ');
   const win = q.window ? `${QUOTA_WINDOWS[q.window] ?? q.window}窗口` : '额度';
   const used = q.used != null ? `用了 ${q.used}%` : '还能用';
   return `${win}${used}${reset ? ` · ${reset} 重置` : ''}`;

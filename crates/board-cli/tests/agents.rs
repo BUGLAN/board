@@ -112,6 +112,7 @@ fn report_win(instance: &str) -> HostReport {
         rescan_skills: false,
         local_skills: None,
         res: None,
+        quotas: vec![],
     }
 }
 

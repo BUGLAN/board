@@ -56,6 +56,12 @@ set -- "$(printf '%s\n' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')"
 # 这一轮正常结束：回 prompt 的响应（board acp 拿到 end_turn 以 0 退出）
 end() { echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"; exit 0; }
 upd() { echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":$1}}"; }
+# 查额度（board acp --usage /usage）：像 Claude Code 那样本地答额度的文字，不跑 agent
+# （文字里的换行是 JSON 的 \n：用 printf '%s\n' 原样打，sh 的 echo 会把它变成真换行）
+case "$1" in /usage)
+  printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Current session: 43% used · resets 10:59pm (Europe/Berlin)\nCurrent week (all models): 58% used · resets Nov 27 at 5:59pm (Europe/Berlin)"}}}}'
+  end ;;
+esac
 # 自检问的那一句：答出 skill 的名字；mode 是 nologin 时像没登录的 Claude Code 那样报错退出
 case "$1" in *不要执行任何命令*)
   if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = "nologin" ]; then echo "Not logged in · Please run /login"; exit 1; fi
@@ -124,6 +130,13 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo "working"
     echo "boom"
     exit 3 ;;
+  rate)
+    # 跑卡时像 Claude Code 那样推额度（5 小时、本周两个窗口），等测试放行（$FAKE_DIR/go）再交审：board host 在派发期间就要报上去
+    upd '{"sessionUpdate":"usage_update","used":1,"size":2,"_meta":{"_claude/rateLimit":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1795676400,"unifiedWindows":{"five_hour":{"status":"allowed","resetsAt":1795676400,"utilization":0.39},"seven_day":{"status":"allowed","resetsAt":1795831200,"utilization":0.57}}}}}'
+    n=0; while [ ! -f "$FAKE_DIR/go" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done
+    env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
+    echo "交审了"
+    end ;;
   quota)
     # 卡片 #668：像 Codex 那样额度用完，session/prompt 回错（data 里 codex_error_info）
     echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":{\"message\":\"You've hit your usage limit. Try again later.\",\"codex_error_info\":\"usage_limit_exceeded\"}}}"
@@ -755,6 +768,41 @@ fn quota_exhausted_is_reported_and_the_card_goes_back() {
     let a = h["agents"].as_array().unwrap().iter().find(|a| a["quota"].is_object()).unwrap_or_else(|| panic!("{h}")).clone();
     assert_eq!(a["quota"]["exhausted"], true, "{a}");
     assert!(a["quota_until"].as_i64().is_some(), "{a}");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 官方订阅的额度：跑卡时 agent 推的额度，board host 在派发期间就报上去（不等派发结束）；人点「刷新」，board host 用
+/// `board acp --usage /usage` 查一次（假 agent 像 Claude Code 那样本地答额度文字），查到的两个窗口随上报带回
+#[test]
+fn quota_is_reported_while_running_and_on_refresh() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    let claude = || {
+        let ws = rig.workspace();
+        let h = ws["hosts"].as_array().and_then(|h| h.iter().find(|x| x["name"] == "mbp").cloned()).unwrap_or(Value::Null);
+        h["agents"].as_array().and_then(|a| a.iter().find(|a| a["id"] == "claude").cloned()).unwrap_or(Value::Null)
+    };
+    wait_until("mbp 上线、报会查额度", Duration::from_secs(20), || claude()["quota_probe"] == true);
+    rig.mode("rate");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("跑卡时就报上额度", Duration::from_secs(30), || claude()["quota"]["windows"].as_array().is_some_and(|w| w.len() == 2));
+    assert_eq!(rig.show(1)["column"], "doing", "派发还在跑");
+    let q = claude()["quota"].clone();
+    assert_eq!((q["windows"][0]["used"].as_i64(), q["windows"][1]["used"].as_i64()), (Some(39), Some(57)), "{q}");
+    std::fs::write(rig.fake.parent().unwrap().join("go"), "").unwrap();
+    wait_until("#1 交审", Duration::from_secs(20), || ended(&rig.show(1), "已交审"));
+    // 点「刷新」
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_quota_ask("mbp", "claude")).unwrap();
+    }
+    wait_until("刷新查到额度", Duration::from_secs(40), || claude()["quota"]["windows"][0]["used"] == 43);
+    let a = claude();
+    assert_eq!(a["quota"]["windows"][1]["used"], 58, "{a}");
+    assert!(a["quota_fail"].is_null(), "{a}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }

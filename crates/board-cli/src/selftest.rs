@@ -129,6 +129,29 @@ pub fn probe_agent(cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> (b
         .unwrap_or_else(|| failed("没问出来".into()))
 }
 
+/// 查一个 agent 的额度：跑 `board acp --usage <本地命令>`（拼好的命令），读它写到标准输出的那一行 `{"usage": …, "error": …}`。
+/// 跑不起来、超时、没写出来时返回原因。最多等 `limit`
+pub fn probe_usage(cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Result<board_core::hosts::Quota, String> {
+    #[derive(serde::Deserialize)]
+    struct Line {
+        usage: Option<board_core::hosts::Quota>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+    match run_limited(cmd, log, limit, pids) {
+        Outcome::Spawn(e) => return Err(format!("启动失败：{e}")),
+        Outcome::Timeout => return Err(format!("{} 秒内没查完", limit.as_secs())),
+        Outcome::Exit(..) => {}
+    }
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let line = text.lines().rev().find_map(|l| serde_json::from_str::<Line>(l.trim()).ok().filter(|x| x.usage.is_some() || x.error.is_some()));
+    match line {
+        Some(Line { usage: Some(q), .. }) => Ok(q),
+        Some(Line { error: Some(e), .. }) => Err(e),
+        _ => Err("没查出来".into()),
+    }
+}
+
 /// 一种接口列模型的地址、是不是 Anthropic 的写法
 fn probe_url(interface: &str, url: &str) -> Option<(String, bool)> {
     let base = board_core::providers::normalize_url(interface, url);
