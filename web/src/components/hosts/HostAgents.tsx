@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { agentHealth, lastTest } from '../../lib/hostDetail';
 import { skillHome } from '../../lib/agentMeta';
-import { envName, isLocalHost, missWord, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps } from '../../lib/hosts';
+import { envName, isLocalHost, missWord, quotaWords, selftestBusy, selftestLive, selftestState, selftestWhole, since, skillGaps, whenWords } from '../../lib/hosts';
 import { installSkill, localHost, shell } from '../../lib/platform';
 import { metaOf } from '../../lib/providers';
 import type { HostAgent, HostInfo, ProviderView } from '../../lib/types';
@@ -156,6 +156,8 @@ function AgentCard({
   const mine = ask.is(`one:${a.id}`) || ask.is(`test:${a.id}`) || selftestLive(h, now).some(x => x.agent === a.id);
   const testing = mine || ask.is('all') || selftestBusy(h, now, a.id);
   const failed = [`env:${a.id}`, `resume:${a.id}`].some(k => sync[k] === 'failed');
+  // 额度用完、本机登录的角色暂停中（#668）：到点自动恢复，这时不再另画一行额度
+  const quotaPaused = !a.tripped && a.quota_until != null && a.quota_until > now;
   return (
     <article className={cx('hd-agent', !a.found && 'missing', a.found && !hr.ok && 'warn', failed && 'hp-rollback')}>
       <header>
@@ -218,6 +220,24 @@ function AgentCard({
             恢复
           </button>
         </div>
+      )}
+      {quotaPaused && (
+        <div className="hd-why">
+          <span>额度用完，本机登录的角色暂停接单到 {whenWords(a.quota_until ?? now, now)}，到点自动恢复；用供应商的角色照常。</span>
+          <button className={cx('btn sm', sync[`resume:${a.id}`] === 'saving' && 'is-busy')} type="button" onClick={() => save({ resume: a.id })}>
+            恢复
+          </button>
+        </div>
+      )}
+      {a.quota && !quotaPaused && (
+        <Tip text={a.quota.text ?? ''}>
+          <div className="hd-conf muted">
+            <Icon name="timer" />
+            <span>
+              {quotaWords(a.quota, now)} · {since(a.quota.at, now)}
+            </span>
+          </div>
+        </Tip>
       )}
       {a.found && <Editor h={h} a={a} save={save} sync={sync} def={def} testing={testing} mine={mine} ask={ask} />}
     </article>

@@ -330,3 +330,34 @@ read l; exit 0
     assert_eq!(code, 130, "out:\n{out}\nerr:\n{err}");
     assert!(err.contains("got: ") && err.contains("session/cancel"), "{err}");
 }
+
+/// 额度用完（#668）：usage_update 带着额度（rejected），这一轮以 rate_limit 出错 → 退出码 4，标准错误写明什么时候恢复，
+/// 看到的额度写进 `--quota-file`（board host 随派发结束上报）
+#[test]
+fn usage_limit_exits_4_and_writes_the_quota_file() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":2,"info":{"name":"fake-v2"},"capabilities":{}}}'
+read l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+read l; echo '{"jsonrpc":"2.0","id":2,"result":{"messageId":"m1"}}'
+echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"running"}}}'
+echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":5,"size":200000,"_meta":{"_claude/rateLimit":{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour","utilization":1}}}}}'
+echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"idle","stopReason":"error","error":{"code":-32603,"message":"usage limit reached","data":{"errorKind":"rate_limit"}}}}}'
+read l; exit 0
+"#;
+    let fake = write(d.path(), "fake.sh", script);
+    let prompt = write(d.path(), "prompt.txt", "做卡");
+    let quota = d.path().join("1.quota");
+    let dir = d.path().display().to_string();
+    let c = Command::new(env!("CARGO_BIN_EXE_board"))
+        .args(["acp", "--env", "direct", "--cwd", &dir, "--prompt-file", &prompt, "--quota-file", &quota.display().to_string(), "--", "sh", &fake])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (code, out, err) = finish(c, Duration::from_secs(30));
+    assert_eq!(code, 4, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("✗ 额度用完，") && err.contains("这一轮出错：usage limit reached"), "{err}");
+    let q: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&quota).unwrap()).unwrap();
+    assert_eq!(q, serde_json::json!({ "exhausted": true, "resetsAt": 4102444800000i64, "status": "rejected", "window": "five_hour", "used": 100, "text": "usage limit reached", "at": 0 }));
+}

@@ -198,12 +198,12 @@ impl HostRow {
     pub(crate) fn profile(&self, id: &str) -> Option<&crate::profiles::Profile> {
         self.profiles.iter().find(|p| p.id == id)
     }
-    /// 这台机器能跑这个角色（[`crate::profiles::fit`]）
-    pub(crate) fn can_run(&self, profile: &str) -> bool {
-        self.profile(profile).is_some_and(|p| crate::profiles::fit(p, self).is_ok())
+    /// 这台机器现在能跑这个角色（[`crate::profiles::fit`]）
+    pub(crate) fn can_run(&self, profile: &str, now: i64) -> bool {
+        self.profile(profile).is_some_and(|p| crate::profiles::fit(p, self, now).is_ok())
     }
     /// 解析后的领取规则；一条规则也没有时为 None：自动领取不领卡
-    pub(super) fn claim_rules(&self) -> Option<Rules> {
+    pub(super) fn claim_rules(&self, now: i64) -> Option<Rules> {
         if self.rules.is_empty() {
             return None;
         }
@@ -215,7 +215,7 @@ impl HostRow {
                     op: r.op.clone(),
                     labels: r.labels.iter().map(|l| l.trim().to_lowercase()).collect(),
                     profile: r.profile.clone(),
-                    ok: self.can_run(&r.profile),
+                    ok: self.can_run(&r.profile, now),
                 })
                 .collect(),
         })
@@ -262,12 +262,12 @@ impl HostRow {
                 .rules
                 .iter()
                 .map(|x| ClaimRule {
-                    active: self.can_run(&x.profile),
+                    active: self.can_run(&x.profile, now),
                     agent: self.profile(&x.profile).map(|p| p.agent.clone()).unwrap_or_default(),
                     ..x.clone()
                 })
                 .collect(),
-            fits: self.profiles.iter().map(|p| match crate::profiles::fit(p, self) {
+            fits: self.profiles.iter().map(|p| match crate::profiles::fit(p, self, now) {
                 Ok(()) => crate::profiles::ProfileFit { profile: p.id.clone(), ok: true, why: String::new() },
                 Err(why) => crate::profiles::ProfileFit { profile: p.id.clone(), ok: false, why },
             }).collect(),
@@ -594,6 +594,10 @@ impl<'a> R<'a> {
         let mut info = h.info(now);
         for a in info.agents.iter_mut() {
             a.tripped = self.agent_tripped(h, &a.id)?;
+            // 额度（#668）：最近一次看到的；暂停时间已经过了的不发（到点自动恢复）
+            let run = h.run.get(&a.id);
+            a.quota = run.and_then(|r| r.quota.clone());
+            a.quota_until = run.and_then(|r| r.quota_until).filter(|t| *t > now);
         }
         info.ops = self.host_ops(h.id)?;
         info.token = self.host_token(h, now)?;
@@ -617,7 +621,7 @@ impl<'a> R<'a> {
         for r in info.rules.iter_mut() {
             r.missing = r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect();
         }
-        if let Some(rules) = h.claim_rules() {
+        if let Some(rules) = h.claim_rules(now) {
             for dir in info.dirs.iter() {
                 let Ok(board) = self.resolve(&dir.board) else { continue };
                 let flow = flow_of(self.conn, board.id)?;

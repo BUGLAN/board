@@ -158,6 +158,7 @@ pub fn result_words(r: &str) -> &'static str {
         "split" => "已拆解",
         "fine" => "不用拆",
         "nosplit" => "没拆出卡",
+        "quota" => "额度用完",
         _ => "已结束",
     }
 }
@@ -364,7 +365,7 @@ impl<'a> W<'a> {
         let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         let role = self.dispatch_profile(board, card, agent, profile)?;
         if let Some(p) = &role {
-            if let Err(why) = crate::profiles::fit(p, &h) {
+            if let Err(why) = crate::profiles::fit(p, &h, self.now) {
                 return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」跑不了角色「{}」：{why}", p.name))
                     .with_detail(json!({ "host": host, "profile": p.id })));
             }
@@ -580,7 +581,7 @@ impl<'a> W<'a> {
         let mut why_role: Vec<String> = vec![];
         for h in &able {
             if let Some(p) = role {
-                if let Err(why) = crate::profiles::fit(p, h) {
+                if let Err(why) = crate::profiles::fit(p, h, self.now) {
                     why_role.push(format!("{}（{why}）", h.name));
                     continue;
                 }
@@ -658,7 +659,7 @@ impl<'a> W<'a> {
                 Some(h) if !h.online(now) => Some("离线了".to_string()),
                 Some(h) if h.paused => Some("暂停接单了".to_string()),
                 Some(h) if h.restarting() => Some("在等重启或升级".to_string()),
-                Some(h) if !d.profile.is_empty() && !h.can_run(&d.profile) => Some("跑不了这个角色了".to_string()),
+                Some(h) if !d.profile.is_empty() && !h.can_run(&d.profile, self.now) => Some("跑不了这个角色了".to_string()),
                 Some(h) => self.read().board_unfit(h, &board)?.map(|u| format!("接不了这块白板了（{}）", u.short())),
             };
             if let Some(why) = why {
@@ -687,7 +688,7 @@ impl<'a> W<'a> {
                 if c.free <= 0 || self.read().board_unfit(h, &board)?.is_some() {
                     continue;
                 }
-                if !d.profile.is_empty() && !h.can_run(&d.profile) {
+                if !d.profile.is_empty() && !h.can_run(&d.profile, self.now) {
                     continue;
                 }
                 let a = if d.any_agent { h.default_agent() } else { h.resolved().into_iter().find(|a| a.id == d.agent && a.found) };
@@ -774,7 +775,7 @@ impl<'a> W<'a> {
             Some(name) => {
                 let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
                 if let Some(p) = &role {
-                    if let Err(why) = crate::profiles::fit(p, &h) {
+                    if let Err(why) = crate::profiles::fit(p, &h, self.now) {
                         return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{name}」跑不了角色「{}」：{why}", p.name)));
                     }
                 }

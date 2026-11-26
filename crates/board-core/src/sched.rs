@@ -274,7 +274,7 @@ impl R<'_> {
             rules: rules
                 .into_iter()
                 .map(|r| ClaimRule {
-                    active: hosts.iter().any(|h| h.can_run(&r.profile)),
+                    active: hosts.iter().any(|h| h.can_run(&r.profile, now)),
                     agent: profiles.iter().find(|p| p.id == r.profile).map(|p| p.agent.clone()).unwrap_or_default(),
                     missing: r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect(),
                     ..r

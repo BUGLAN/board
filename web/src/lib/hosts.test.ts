@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf } from './hosts';
+import { agentIdFor, agentIdOf, agentMark, agentMarkOf, agentUsable, agentWhy, blockOf, dispatchRoute, missWord, boardHosts, boardTakers, hostWords, dirFresh, hostDirFor, hostLoad, hostNameError, inSession, installCommand, isLocalHost, RESULT, resultOf, SELFTEST_STALE_MS, selftestBusy, selftestLive, selftestState, selftestWhole, queueReason, sessionGroups, sessionQueue, sessionRunning, sessionSlots, skillGaps, sourceOf, quotaWords, whenWords } from './hosts';
 import type { Dispatch, HostAgent, HostInfo, Status, Workspace } from './types';
 
 const agent = (id: string, x: Partial<HostAgent> = {}): HostAgent => ({ id, name: id, version: '1', found: true, ...x });
@@ -427,5 +427,23 @@ describe('dispatchRoute（#498：人从任意没被领取的状态派发）', ()
     expect(dispatchRoute(flow, 'doing')).toBeNull();
     expect(dispatchRoute(flow, 'review', 'claude/x')).toBeNull();
     expect(dispatchRoute(flow, 'gone')).toBeNull();
+  });
+});
+
+describe('额度（#668）', () => {
+  const now = new Date(2026, 10, 25, 16, 0).getTime();
+  const at = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m).getTime();
+  it('Claude：窗口、用了多少、什么时候重置；今天的只写时刻', () => {
+    expect(quotaWords({ status: 'allowed_warning', window: 'five_hour', used: 91, resetsAt: at(25, 18), at: now }, now)).toBe('5 小时窗口用了 91% · 18:00 重置');
+    expect(quotaWords({ status: 'allowed', window: 'seven_day_opus', used: 40, resetsAt: at(28, 9, 5), at: now }, now)).toBe('7 天 · Opus窗口用了 40% · 11-28 09:05 重置');
+    expect(quotaWords({ status: 'allowed', at: now }, now)).toBe('额度还能用');
+  });
+  it('用完：写什么时候恢复，没有时间就不写', () => {
+    expect(quotaWords({ exhausted: true, status: 'rejected', window: 'five_hour', used: 100, resetsAt: at(26, 2), at: now }, now)).toBe('额度用完 · 11-26 02:00 恢复');
+    expect(quotaWords({ exhausted: true, at: now }, now)).toBe('额度用完');
+  });
+  it('时间点：同一天只写时刻', () => {
+    expect(whenWords(at(25, 23, 59), now)).toBe('23:59');
+    expect(whenWords(at(26, 0, 1), now)).toBe('11-26 00:01');
   });
 });

@@ -6,6 +6,8 @@ use super::*;
 pub(super) struct Tail<'a> {
     pub(super) lines: &'a [String],
     pub(super) events: &'a [String],
+    /// board acp 看到的额度（#668）；旧版 board host 不报
+    pub(super) quota: Option<&'a Quota>,
 }
 
 impl Tail<'_> {
@@ -273,7 +275,7 @@ impl<'a> W<'a> {
                 None => Some(format!("机器「{}」已被移除", d.host)),
                 Some(h) if h.paused => Some(format!("机器「{}」暂停接单", h.name)),
                 // 规则被删光：做完当前这张就结束，排着的取消
-                Some(h) if h.claim_rules().is_none() => Some(format!("机器「{}」已经没有领取规则", h.name)),
+                Some(h) if h.claim_rules(self.now).is_none() => Some(format!("机器「{}」已经没有领取规则", h.name)),
                 Some(_) => None,
             }
         };
@@ -300,7 +302,7 @@ impl<'a> W<'a> {
         for id in queue {
             let q = self.drow(id)?;
             // 开会话之后角色被删掉、或者不再能在这台机器上跑（改了「只在这些机器上跑」）：这张也不再交给它，取消排队、卡片回到可领取状态
-            if !q.profile.is_empty() && !h.can_run(&q.profile) {
+            if !q.profile.is_empty() && !h.can_run(&q.profile, self.now) {
                 self.close_row(&q, "canceled", None)?;
                 let back = self.unreserve(q.board, q.card, &Actor::system())?;
                 let text = format!("派发取消：这台机器不再跑「{}」（{}）{back}", q.profile_name, Self::dispatch_words(&q));
@@ -376,7 +378,7 @@ impl<'a> W<'a> {
     pub(super) fn session_peers(&self, h: &HostRow, board: &BoardRef, profile: &str, agent: &str) -> Result<usize> {
         let mut n = 0;
         for x in self.read().host_rows()? {
-            if x.id == h.id || !x.online(self.now) || !x.auto_active(self.now) || x.restarting() || !x.can_run(profile) {
+            if x.id == h.id || !x.online(self.now) || !x.auto_active(self.now) || x.restarting() || !x.can_run(profile, self.now) {
                 continue;
             }
             if self.sessions_on(&x)? >= x.max || self.read().board_unfit(&x, board)?.is_some() || self.read().agent_tripped(&x, agent)? {
@@ -494,6 +496,29 @@ impl<'a> W<'a> {
             self.touch_hosts();
         }
         Ok(())
+    }
+
+    /// 记下 board acp 看到的额度（#668），作为这台机器上这个 agent 最近一次的额度。额度用完时这台机器上这个 agent 的
+    /// 本机登录角色暂停接单到重置时间（取不到时 1 小时后），记一条操作；返回暂停到什么时候（没用完时为 None）
+    pub(super) fn note_quota(&mut self, d: &DRow, q: &Quota) -> Result<Option<i64>> {
+        let Some(h) = self.host_row(&d.host)?.filter(|h| h.id == d.host_id) else { return Ok(None) };
+        let mut q = q.clone();
+        q.at = self.now;
+        q.text = q.text.chars().take(300).collect();
+        let until = q.exhausted.then(|| q.resets_at.filter(|t| *t > self.now).unwrap_or(self.now + QUOTA_PAUSE_DEFAULT));
+        let mut run = h.run.clone();
+        let e = run.entry(d.agent.clone()).or_default();
+        e.quota = Some(q);
+        if let Some(u) = until {
+            e.quota_until = Some(u);
+        }
+        self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
+        if let Some(u) = until {
+            let text = format!("{} 的额度用完，本机登录的角色暂停接单到 {}，到点自动恢复", d.agent_label, crate::store::when_words(u, self.now));
+            self.host_op(h.id, "board", &text)?;
+        }
+        self.touch_hosts();
+        Ok(until)
     }
 
     /// 动态里的「mbp · Claude Code · mbp/opus-5.5，手动」；有启动环境时「mbp · Codex · Git Bash · mbp/gpt-5，手动」
@@ -647,7 +672,7 @@ impl<'a> W<'a> {
             return Ok(None);
         }
         // 规则按这台机器筛过：「由这些机器做」里明确排除了这台机器的 agent，它的卡这台机器不领
-        let cached = h.claim_rules();
+        let cached = h.claim_rules(self.now);
         let Some(rules) = cached.as_ref().map(|r| h.routes(r)) else { return Ok(None) };
         // 这一段接单从什么时候开始（进入接单时段后第一次来领时记下）
         let since = match h.round_at {
@@ -736,6 +761,13 @@ impl<'a> W<'a> {
     /// 同 [`W::dispatch_end`]，另外带上最后几个事件的文字（runlog.rs `RunEvent::line`）：异常退出、超时的评论里写它们，
     /// 原始输出的最后 20 行折叠在后面。旧版 board host 不报事件，评论照旧写「日志最后 20 行」
     pub fn dispatch_end_with(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], events: &[String], how: EndHow, why: Option<&str>) -> Result<Dispatch> {
+        self.dispatch_end_full(id, exit_code, tail, events, how, why, None)
+    }
+
+    /// 同 [`W::dispatch_end_with`]，另外带上 board acp 看到的额度（#668）：记成这台机器上这个 agent 最近一次的额度；
+    /// 额度用完（`exhausted`）时结果记「额度用完」，不算异常退出，卡片放回领取前的状态，本机登录的角色暂停接单到重置时间
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_end_full(&mut self, id: i64, exit_code: Option<i64>, tail: &[String], events: &[String], how: EndHow, why: Option<&str>, quota: Option<&Quota>) -> Result<Dispatch> {
         let mut d = self.drow(id)?;
         // 进程退出时 board host 可能还不知道会话已经换到下一张（board next）：结算这个会话正在跑的那一张
         if d.state == "done" {
@@ -758,12 +790,18 @@ impl<'a> W<'a> {
                 EndHow::HostExit => Finish::HostExit,
                 EndHow::Timeout => Finish::Timeout(why.map(str::trim).filter(|w| !w.is_empty())),
             };
-            self.finish(&d, exit_code, &Tail { lines: tail, events }, f)?;
+            self.finish(&d, exit_code, &Tail { lines: tail, events, quota }, f)?;
         }
         self.read().dispatch(id)
     }
 
     pub(super) fn finish(&mut self, d: &DRow, exit_code: Option<i64>, tail: &Tail, how: Finish) -> Result<()> {
+        // 额度（#668）：先记下；这一轮因为额度用完结束（agent 自己退出、没人停）时本机登录的角色暂停到重置时间
+        let paused = match tail.quota {
+            Some(q) => self.note_quota(d, q)?,
+            None => None,
+        };
+        let quota = paused.filter(|_| matches!(how, Finish::Exit) && d.stop_by.is_none());
         // 超时按异常退出的规则处理，但原因写在评论里，结果记「超时」
         let because = match how {
             Finish::Timeout(why) => Some(why.map(str::to_string).unwrap_or_else(|| "board host 按机器的兜底设置在超时后停止了它".into())),
@@ -778,7 +816,7 @@ impl<'a> W<'a> {
             _ => d.stop_by.clone(),
         };
         if d.split() {
-            return self.finish_split(d, &actor, exit_code, tail, how, because, stop_by);
+            return self.finish_split(d, &actor, exit_code, tail, how, because, stop_by, quota);
         }
         let row: Option<(String, Option<String>)> = self
             .tx
@@ -787,6 +825,31 @@ impl<'a> W<'a> {
         let board = self.board_of(d.board)?;
         let flow = flow_of(self.tx, d.board)?;
         let result = match &row {
+            // 额度用完、卡片仍由这个名字持有：不是 agent 的问题，卡片放回领取前的状态最上面，别的机器接着做
+            Some((col, Some(holder))) if *holder == name && quota.is_some() => {
+                let claimed_from: Option<String> = self
+                    .tx
+                    .query_row("SELECT claimed_from FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![d.board, d.card], |r| r.get(0))
+                    .optional()?
+                    .flatten();
+                let start = flow.back_to(claimed_from.as_deref()).clone();
+                self.place(d.board, d.card, Some(col), &start.key, At::Top)?;
+                self.clear_claim(d.board, d.card, "release")?;
+                self.log_move(d.board, d.card, "release", col, &start.key, &actor, &flow)?;
+                let until = quota.unwrap_or(self.now);
+                let mut text = format!(
+                    "{} 上 {} 的额度用完，{} 恢复：卡片回到「{}」最上面，别的机器可以接着做",
+                    d.host,
+                    d.agent_label,
+                    crate::store::when_words(until, self.now),
+                    start.name
+                );
+                if let Some(t) = tail.quota.map(|q| q.text.trim()).filter(|t| !t.is_empty()) {
+                    text += &format!("（{t}）");
+                }
+                self.track(d.board, d.card, &actor, "release", &text)?;
+                "quota"
+            }
             // 卡片仍由这个名字持有：发 final，沿连线移到「错误」节点（没有时去需要人处理的状态），评论原因。
             // 这几步尽力而为：规则拒绝（例如刚好被超时释放）不影响记下派发的结果
             Some((col, Some(holder))) if *holder == name => {
@@ -879,7 +942,7 @@ impl<'a> W<'a> {
     /// 拆解结束（PRD §9.1）：卡片在任何情况下都不动。退出码 0 时按这次派发期间建了几张「拆自」是这条的卡记「已拆解」或「没拆出卡」；
     /// 退出码非 0（或 board host 上没有进程）记「异常退出」，人停止、board host 退出、超时记「已停止」，都在这一条上评论原因
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn finish_split(&mut self, d: &DRow, actor: &Actor, exit_code: Option<i64>, tail: &Tail, how: Finish, because: Option<String>, stop_by: Option<String>) -> Result<()> {
+    pub(super) fn finish_split(&mut self, d: &DRow, actor: &Actor, exit_code: Option<i64>, tail: &Tail, how: Finish, because: Option<String>, stop_by: Option<String>, quota: Option<i64>) -> Result<()> {
         let since = d.started_at.unwrap_or(self.now);
         let made: i64 = self.tx.query_row(
             "SELECT COUNT(*) FROM cards WHERE board = ?1 AND split_from = ?2 AND created_at >= ?3",
@@ -895,6 +958,10 @@ impl<'a> W<'a> {
                 Some("拆解的 agent 异常退出（board host 上没有这次派发的 agent 进程：board host 重启过，或开始派发时连接中断）".to_string()),
             ),
             (Finish::Exit, None) if exit_code == Some(0) => (if made > 0 { "split" } else { "fine" }, None),
+            (Finish::Exit, None) if quota.is_some() => (
+                "quota",
+                Some(format!("{} 上 {} 的额度用完，{} 恢复：这次拆解没做完", d.host, d.agent_label, crate::store::when_words(quota.unwrap_or(self.now), self.now))),
+            ),
             (Finish::Exit, None) => {
                 let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into());
                 ("crashed", Some(format!("拆解的 agent 异常退出（退出码 {code}）{}", tail.words())))

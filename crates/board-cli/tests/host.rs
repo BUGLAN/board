@@ -116,6 +116,11 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo "working"
     echo "boom"
     exit 3 ;;
+  quota)
+    # 卡片 #668：像 Codex 那样额度用完，session/prompt 回错（data 里 codex_error_info）
+    echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":{\"message\":\"You've hit your usage limit. Try again later.\",\"codex_error_info\":\"usage_limit_exceeded\"}}}"
+    read -r l
+    exit 0 ;;
   leak)
     # 像 agent 执行 env、报错时带出请求头那样，把令牌和其他密钥打到标准输出/标准错误
     echo "BOARD_TOKEN=$BOARD_TOKEN"
@@ -714,6 +719,34 @@ fn end_response_failure_is_retried_with_real_exit_code() {
     assert!(texts.iter().any(|t| t.contains("退出码 3") && t.contains("boom")), "要按真实退出码结束：{texts:?}");
     assert!(!texts.iter().any(|t| t.contains("没有找到 agent 进程")), "不能按「找不到进程」结束：{texts:?}");
     assert!(rig.dispatch_log(id).iter().any(|l| l == "boom"), "日志最后 20 行要上报");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// 卡片 #668：agent 报额度用完 → board acp 退出码 4、写额度文件 → board host 随结束上报 → 服务端记「额度用完」，
+/// 卡片回到待办，这台机器上这个 agent 暂停到 1 小时后（没有重置时间），机器信息里带着最近一次的额度
+#[test]
+fn quota_exhausted_is_reported_and_the_card_goes_back() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let host = rig.host("mbp");
+    wait_until("mbp 上线", Duration::from_secs(20), || {
+        rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    rig.mode("quota");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("#1 额度用完", Duration::from_secs(20), || ended(&rig.show(1), "额度用完"));
+    let c = rig.show(1);
+    assert_eq!((c["column"].as_str(), c["holder"].as_str()), (Some("todo"), None), "{c}");
+    let texts = activity(&c);
+    assert!(texts.iter().any(|t| t.starts_with("mbp 上 ") && t.contains("的额度用完，") && t.contains("You've hit your usage limit")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("退出码 4")), "{texts:?}");
+    let ws = rig.workspace();
+    let h = ws["hosts"].as_array().unwrap().iter().find(|x| x["name"] == "mbp").unwrap().clone();
+    let a = h["agents"].as_array().unwrap().iter().find(|a| a["quota"].is_object()).unwrap_or_else(|| panic!("{h}")).clone();
+    assert_eq!(a["quota"]["exhausted"], true, "{a}");
+    assert!(a["quota_until"].as_i64().is_some(), "{a}");
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
 }

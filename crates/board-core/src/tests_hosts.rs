@@ -4936,6 +4936,119 @@ fn agent_pauses_after_three_crashes_in_a_row_until_resumed() {
     assert!(!tripped(&s, t2 + 3 * S));
 }
 
+/* ---------------- 额度用完（#668） ---------------- */
+
+fn quota_end(s: &mut Store, at: i64, id: i64, q: &crate::hosts::Quota) -> Dispatch {
+    s.write(at, Origin::cli(), |w| w.dispatch_end_full(id, Some(4), &[], &[], EndHow::Exit, None, Some(q))).unwrap()
+}
+
+fn claude_agent(s: &Store, host: &str, at: i64) -> HostAgent {
+    s.read(|r| r.host(host, at)).unwrap().agents.into_iter().find(|a| a.id == "claude").unwrap()
+}
+
+/// 一台机器上一个角色能不能跑：（能不能，原因）
+fn fit_on(s: &Store, host: &str, at: i64, profile: &str) -> (bool, String) {
+    let h = s.read(|r| r.host(host, at)).unwrap();
+    let f = h.fits.iter().find(|f| f.profile == profile).unwrap();
+    (f.ok, f.why.clone())
+}
+
+/// 额度用完：派发结果「额度用完」，卡片回到待办、动态写明恢复时间，别的机器能接；这台机器上这个 agent 的本机登录角色
+/// 暂停到重置时间（自动领取不领、手动派发被拒），到点自动恢复；用供应商的角色、别的机器不受影响；机器详情带上额度
+#[test]
+fn quota_exhausted_releases_the_card_and_pauses_local_roles_until_reset() {
+    let mut s = store();
+    two_hosts(&mut s);
+    beat(&mut s, T0, &switching(rep_mbp())).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
+    let lc = label(&mut s, "claude");
+    let c = new_card(&mut s, T0, "C");
+    tag(&mut s, c, lc);
+    rules(&mut s, &[("claude", "claude")], None).unwrap();
+    let local = s.read(|r| r.profiles()).unwrap().into_iter().find(|p| p.agent == "claude").unwrap();
+    let viar = put_role(&mut s, T0, role("中转", "claude", "relay", "model-a", "")).unwrap();
+    beat(&mut s, T0 + S, &switching(rep_mbp())).unwrap();
+    let d = s.write(T0 + S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", Some(1))).unwrap().unwrap();
+    assert_eq!(d.card, c);
+    let reset = T0 + 3 * 3600 * 1000;
+    let q = crate::hosts::Quota {
+        exhausted: true,
+        resets_at: Some(reset),
+        status: "rejected".into(),
+        window: "five_hour".into(),
+        used: Some(100),
+        text: "You've hit your session limit · resets 3pm".into(),
+        at: 0,
+    };
+    let d = quota_end(&mut s, T0 + 2 * S, d.id, &q);
+    assert_eq!(d.result.as_deref(), Some("quota"));
+    let cd = card(&s, c);
+    assert_eq!((cd.card.column.as_str(), cd.card.holder.as_deref()), ("todo", None));
+    let texts: Vec<&str> = cd.activity.iter().map(|a| a.text.as_str()).collect();
+    assert!(
+        texts.iter().any(|t| t.starts_with("mbp 上 Claude Code 的额度用完，") && t.contains("恢复：卡片回到「待办」最上面") && t.contains("You've hit your session limit")),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|t| t.starts_with("派发结束：额度用完")), "{texts:?}");
+    // 本机登录的角色在 mbp 上暂停；用供应商的照常；desk 上照常
+    let (ok, why) = fit_on(&s, "mbp", T0 + 3 * S, &local.id);
+    assert!(!ok && why.starts_with("额度用完，") && why.ends_with(" 恢复"), "{why}");
+    assert_eq!(fit_on(&s, "mbp", T0 + 3 * S, &viar.id), (true, String::new()));
+    assert!(fit_on(&s, "desk", T0 + 3 * S, &local.id).0);
+    let a = claude_agent(&s, "mbp", T0 + 3 * S);
+    assert_eq!((a.quota_until, a.tripped), (Some(reset), false));
+    assert_eq!(a.quota.map(|q| (q.exhausted, q.used, q.window, q.at)), Some((true, Some(100), "five_hour".to_string(), T0 + 2 * S)));
+    assert!(host(&s, T0 + 3 * S).ops.iter().any(|o| o.text.starts_with("Claude Code 的额度用完，本机登录的角色暂停接单到")));
+    // mbp 不再领交给本机登录角色的卡，desk 接着做
+    assert_eq!(pull2(&mut s, T0 + 4 * S, &switching(rep_mbp())), None);
+    assert_eq!(pull2(&mut s, T0 + 4 * S, &rep_desk()), Some(c));
+    // 手动派发到 mbp 被拒，写明原因
+    let c2 = new_card(&mut s, T0, "C2");
+    let e = s
+        .write(T0 + 5 * S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, c2, "mbp", None, Some(&local.name), &Actor::human())
+        })
+        .unwrap_err();
+    assert!(e.message.contains("额度用完"), "{}", e.message);
+    // 到重置时间自动恢复
+    assert_eq!(fit_on(&s, "mbp", reset + S, &local.id), (true, String::new()));
+    assert_eq!(claude_agent(&s, "mbp", reset + S).quota_until, None);
+}
+
+/// 额度用完不算异常退出（不计入连续异常退出）；没有重置时间时暂停 1 小时；人点「恢复」提前恢复
+#[test]
+fn quota_without_reset_pauses_an_hour_is_not_a_crash_and_can_be_resumed() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    lead_round(&mut s);
+    crash_once(&mut s, T0);
+    crash_once(&mut s, T0 + 10 * S);
+    let t = T0 + 20 * S;
+    let c = new_card(&mut s, t, "Q");
+    let d = dispatch(&mut s, t, c, "mbp", None).unwrap();
+    let d = begin(&mut s, t + S, d.id).unwrap();
+    let q = crate::hosts::Quota { exhausted: true, text: "You've hit your usage limit. Try again later.".into(), ..Default::default() };
+    assert_eq!(quota_end(&mut s, t + 2 * S, d.id, &q).result.as_deref(), Some("quota"));
+    assert_eq!(card(&s, c).card.column, "todo");
+    // 前面两次异常退出 + 额度用完：没有暂停接单；额度用完打断连续，再异常退出一次也不暂停
+    assert!(!tripped(&s, t + 3 * S));
+    crash_once(&mut s, t + 10 * S);
+    assert!(!tripped(&s, t + 13 * S));
+    // 没有重置时间：暂停 1 小时；规则交给本机登录角色的卡不领
+    assert_eq!(claude_agent(&s, "mbp", t + 13 * S).quota_until, Some(t + 2 * S + crate::hosts::QUOTA_PAUSE_DEFAULT));
+    let next = new_card_tagged(&mut s, "T");
+    beat(&mut s, t + 14 * S, &report("mbp", "i1", vec![])).unwrap();
+    s.write(t + 14 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
+    assert!(pull(&mut s, t + 14 * S).is_none());
+    // 人点「恢复」：提前恢复，照常领
+    let p = HostPatch { resume: Some("claude".into()), ..Default::default() };
+    s.write(t + 15 * S, Origin::ui(None), |w| w.host_update_as("mbp", &p, "lan")).unwrap();
+    assert_eq!(claude_agent(&s, "mbp", t + 15 * S).quota_until, None);
+    assert!(host(&s, t + 15 * S).ops[0].text.contains("恢复了 Claude Code 接单"));
+    assert_eq!(pull(&mut s, t + 16 * S).map(|d| d.card), Some(next));
+}
+
 /// Windows 机器的目录用 `\` 拼：服务端派生的路径和机器上报的一样，检查结果才对得上
 #[test]
 fn windows_dirs_keep_their_reported_status() {

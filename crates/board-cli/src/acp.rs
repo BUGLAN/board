@@ -39,9 +39,18 @@
 //!
 //! 退出码：`end_turn` 0（续满了卡片还在手里也是 0，board host 按卡片还由它持有记成异常退出）；被取消、收到 SIGTERM 130；
 //! `max_tokens`、`max_turn_requests`、`refusal` 3；握手失败、协议错误、v2 这一轮出错（`stopReason: error`）2；
-//! 这一轮还没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。
+//! 这一轮因为订阅账号的额度用完出错 4（见下）；这一轮还没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。
+//!
+//! 额度（#668）：只用跑的时候顺带拿到的，不另外去查。Claude Code（`claude-agent-acp` 0.107.3）的 `usage_update` 在
+//! `_meta["_claude/rateLimit"]` 里带 Agent SDK 的 `rate_limit_info`（状态、窗口、已用比例、重置时间）；额度用完时这一轮以
+//! 出错结束，错误的 `data` 是 `{errorKind: "rate_limit", rateLimit}`，文字以 SDK 的 `USAGE_LIMIT_ERROR_PREFIXES` 开头。
+//! Codex（`codex-acp` 2.7.0）不往 ACP 上发额度；用完时这一轮以出错结束，`data` 是 `{message, codexErrorInfo: "usageLimitExceeded"}`
+//! （Zed 那一版 codex-acp 是 `session/prompt` 回错、`codex_error_info: "usage_limit_exceeded"`，也认），重置时间只在文字里
+//! （「Try again at 3:15 PM.」，本机时区）。认出额度用完时退出码 4；带了 `--quota-file` 时把最近一次看到的额度（和是不是用完、
+//! 重置时间）写进去，board host 随派发结束上报。
 
 use crate::envs::Env;
+use board_core::hosts::Quota;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -69,6 +78,8 @@ const TICK: Duration = Duration::from_millis(200);
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_PROTOCOL: i32 = 2;
 pub const EXIT_LIMIT: i32 = 3;
+/// 这一轮因为订阅账号的额度用完结束（#668）
+pub const EXIT_QUOTA: i32 = 4;
 pub const EXIT_CANCELLED: i32 = 130;
 
 /// 做卡的派发最多续几轮（board host 传 `--extra-turns`）
@@ -76,7 +87,7 @@ pub const EXTRA_TURNS: u32 = 3;
 
 static TERM: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>]) [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] -- <ACP 入口命令> [参数…]";
+const USAGE: &str = "用法：board acp --env <启动环境> [--env-prog <程序>] --cwd <目录> (--prompt-file <文件> | --chat <状态文件> [--resume <会话>] [--idle-exit <秒>]) [--provider-file <文件>] [--mode <模式>] [--set <选项>=<值>]… [--extra-turns <次数>] [--quota-file <文件>] -- <ACP 入口命令> [参数…]";
 
 /// 对话模式（`--chat`）：多久没有新消息就收尾退出（board host 下一条消息来时再启动、接回会话）
 pub const CHAT_IDLE_EXIT: u64 = 10 * 60;
@@ -95,6 +106,8 @@ pub(crate) struct Opts {
     pub provider_file: Option<PathBuf>,
     /// 这一轮结束时名字还持有卡片，最多再续几轮（`--extra-turns`，0 = 不续）
     pub extra_turns: u32,
+    /// 结束时把看到的额度写进这个文件（`--quota-file`，board host 读了随派发结束上报）
+    pub quota_file: Option<PathBuf>,
     /// 机器对话（`--chat <状态文件>`）：提示词从标准输入一条一条来，每一轮结束不退出；会话标识、这一轮的状态写进这个文件
     pub chat: Option<PathBuf>,
     /// 对话：接回这个 ACP 会话（`--resume`）
@@ -113,7 +126,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
     let mut i = 0;
     while i < head.len() {
         let k = head[i].as_str();
-        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit") {
+        if !matches!(k, "--env" | "--env-prog" | "--cwd" | "--prompt-file" | "--provider-file" | "--mode" | "--set" | "--extra-turns" | "--chat" | "--resume" | "--idle-exit" | "--quota-file") {
             return Err(format!("不认识的参数 {k}。{USAGE}"));
         }
         let v = head.get(i + 1).ok_or_else(|| format!("{k} 后面要有值。{USAGE}"))?;
@@ -145,6 +158,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Opts, String> {
         sets,
         provider_file: m.get("--provider-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         extra_turns,
+        quota_file: m.get("--quota-file").filter(|x| !x.trim().is_empty()).map(PathBuf::from),
         resume: m.get("--resume").map(|x| x.trim().to_string()).filter(|x| !x.is_empty()),
         idle_exit,
         chat,
@@ -183,6 +197,8 @@ pub(crate) enum Outcome {
     Stopped(String),
     /// 握手、prompt 出错，v2 这一轮出错（原因）
     Failed(String),
+    /// 这一轮因为订阅账号的额度用完出错（原因；额度见 [`Client::quota`]）
+    Quota(String),
 }
 
 /// 客户端的状态：收一帧、给出要发的帧。不碰进程和文件，单元测试直接喂帧
@@ -206,6 +222,8 @@ pub(crate) struct Client {
     pub proto: Proto,
     /// v2：最近一次报的后台工作有几项；`None` 是 agent 不报（不知道有没有），不是没有
     pub background: Option<usize>,
+    /// 最近一次看到的额度（Claude 的 `usage_update` 带的）；额度用完时 `exhausted`，带上重置时间
+    pub quota: Option<Quota>,
     /// 对话模式：配置切完后不发提示词，等 [`Client::ask`]
     chat: bool,
     /// 对话：要接回的会话
@@ -239,6 +257,7 @@ impl Client {
             prompting: false,
             proto: Proto::V1,
             background: None,
+            quota: None,
             chat: false,
             resume: None,
             pending_resume: None,
@@ -393,8 +412,11 @@ impl Client {
             (Some(method), Some(id)) => vec![answer(method, id, &v["params"])],
             // 通知：记日志；v2 的 `state_update` 还决定这一轮在不在干活
             (Some(method), None) => {
-                if method == "session/update" && self.proto == Proto::V2 {
-                    self.on_update(&v["params"]);
+                if method == "session/update" {
+                    self.on_usage(&v["params"]);
+                    if self.proto == Proto::V2 {
+                        self.on_update(&v["params"]);
+                    }
                 }
                 vec![]
             }
@@ -426,7 +448,7 @@ impl Client {
                     self.note = Some(format!("接不回之前的会话（{msg}）：开了新会话，之前的对话它不记得了"));
                     return self.new_session();
                 }
-                Pending::Prompt => self.outcome = Some(Outcome::Failed(format!("session/prompt 失败：{msg}"))),
+                Pending::Prompt => self.outcome = Some(self.turn_error(e, format!("session/prompt 失败：{msg}"))),
             }
             return vec![];
         }
@@ -493,13 +515,124 @@ impl Client {
         }
         match u["state"].as_str() {
             Some("idle") => match u["stopReason"].as_str() {
-                Some("error") => self.outcome = Some(Outcome::Failed(format!("这一轮出错：{}", error_text(&u["error"])))),
+                Some("error") => self.outcome = Some(self.turn_error(&u["error"], format!("这一轮出错：{}", error_text(&u["error"])))),
                 Some(reason) => self.outcome = Some(Outcome::Stopped(reason.to_string())),
                 None => {}
             },
             _ => self.outcome = None,
         }
     }
+
+    /// `usage_update`：Claude 在 `_meta["_claude/rateLimit"]` 里带额度（#668），记下最近一次的。子会话报的也算（同一个账号）
+    fn on_usage(&mut self, params: &Value) {
+        let u = &params["update"];
+        if u["sessionUpdate"].as_str() != Some("usage_update") {
+            return;
+        }
+        if let Some(q) = rate_of(&u["_meta"]["_claude/rateLimit"]) {
+            self.quota = Some(q);
+        }
+    }
+
+    /// agent 回的这一轮出错（`error` 是 ACP 的错误对象）：额度用完时是 [`Outcome::Quota`]，[`Client::quota`] 记上用完和
+    /// 重置时间；别的照旧是 [`Outcome::Failed`]
+    fn turn_error(&mut self, error: &Value, why: String) -> Outcome {
+        match quota_of(error, self.quota.as_ref(), chrono::Local::now()) {
+            Some(q) => {
+                self.quota = Some(q);
+                Outcome::Quota(why)
+            }
+            None => Outcome::Failed(why),
+        }
+    }
+}
+
+/* ------------------------------ 额度（#668） ------------------------------ */
+
+/// 额度用完的报错文字以这些开头：Claude Agent SDK 的 `USAGE_LIMIT_ERROR_PREFIXES`（0.3.331），Codex 的「You've hit your
+/// usage limit」也以第一个开头
+const USAGE_LIMIT_PREFIXES: &[&str] = &[
+    "You've hit your",
+    "You've reached your",
+    "You're out of usage credits",
+    "Your org is out of usage · add funds to continue",
+    "Your org is out of usage · contact your admin",
+    "Your seat type doesn't include usage credits",
+    "Your seat type doesn't include usage",
+    "Your usage allocation has been disabled by your admin",
+    "Your group's usage limit is set to $0",
+    "Fable 5 requires usage credits",
+    "You're out of extra usage",
+    "Your seat type doesn't include extra usage",
+];
+
+/// Agent SDK 的 `rate_limit_info`（`{status, resetsAt, rateLimitType, utilization, …}`）→ 额度；不是对象、没有状态时为 None。
+/// `resetsAt` 是 Unix 秒（看着像毫秒的照用），`utilization` 是 0–1 的比例（大于 1 的当百分数）
+fn rate_of(v: &Value) -> Option<Quota> {
+    let status = v["status"].as_str().filter(|s| !s.is_empty())?;
+    let resets_at = v["resetsAt"].as_f64().filter(|t| *t > 0.0).map(|t| if t < 1e11 { (t * 1000.0) as i64 } else { t as i64 });
+    let used = v["utilization"].as_f64().filter(|u| u.is_finite() && *u >= 0.0).map(|u| if u <= 1.0 { (u * 100.0).round() as i64 } else { u.round() as i64 });
+    Some(Quota {
+        status: status.to_string(),
+        window: v["rateLimitType"].as_str().unwrap_or_default().to_string(),
+        used,
+        resets_at,
+        ..Default::default()
+    })
+}
+
+/// 这一轮的错误是不是额度用完；是的话返回记上用完、重置时间的额度（`seen` 是之前 `usage_update` 带的）。
+/// 认的是：Claude 的 `data.errorKind` 为 `rate_limit` 且额度状态是 `rejected`（一时的 429 是 `allowed`，不算）；
+/// Codex 的 `data.codexErrorInfo` 为 `usageLimitExceeded`（Zed 版：`codex_error_info` 为 `usage_limit_exceeded`）；
+/// 或者报错文字以 [`USAGE_LIMIT_PREFIXES`] 开头。
+/// 重置时间先用额度信息里的，没有时从「Try again at …」里读（Codex，本机时区）
+fn quota_of(error: &Value, seen: Option<&Quota>, now: chrono::DateTime<chrono::Local>) -> Option<Quota> {
+    let data = &error["data"];
+    let texts: Vec<&str> = [error["message"].as_str(), data["message"].as_str(), data.as_str()].into_iter().flatten().map(str::trim).filter(|t| !t.is_empty()).collect();
+    let rate = rate_of(&data["rateLimit"]).or_else(|| seen.cloned());
+    let rejected = rate.as_ref().is_some_and(|r| r.status == "rejected");
+    let claude = data["errorKind"].as_str() == Some("rate_limit") && rejected;
+    let codex = data["codexErrorInfo"].as_str() == Some("usageLimitExceeded") || data["codex_error_info"].as_str() == Some("usage_limit_exceeded");
+    let words = texts.iter().any(|t| USAGE_LIMIT_PREFIXES.iter().any(|p| t.starts_with(p)));
+    if !(claude || codex || words) {
+        return None;
+    }
+    // 给人看的原文：最长的那段（Claude 是 message，Codex 是 data.message；message 有时只是「Internal error」）
+    let text = texts.iter().max_by_key(|t| t.chars().count()).map(|t| t.to_string()).unwrap_or_default();
+    let mut q = rate.filter(|_| rejected).unwrap_or_default();
+    q.exhausted = true;
+    if q.resets_at.is_none() {
+        q.resets_at = texts.iter().find_map(|t| try_again_at(t, now));
+    }
+    q.text = text.chars().take(300).collect();
+    Some(q)
+}
+
+/// Codex 的「… Try again at 3:15 PM.」「… or try again at Nov 26th, 2026 3:15 PM.」→ 毫秒时间戳（本机时区，和 Codex
+/// 写的时候一样）。只有时刻的是今天的，已经过了就当明天的
+fn try_again_at(text: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64> {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
+    let lower = text.to_ascii_lowercase();
+    let at = lower.find("try again at ")? + "try again at ".len();
+    let rest = text.get(at..)?.trim();
+    let rest = rest.split_once(". ").map_or(rest, |(a, _)| a).trim_end_matches('.').trim();
+    let local = |n: NaiveDateTime| chrono::Local.from_local_datetime(&n).earliest().map(|t| t.timestamp_millis());
+    if let Ok(t) = NaiveTime::parse_from_str(rest, "%I:%M %p") {
+        let today = now.date_naive().and_time(t);
+        let ms = local(today)?;
+        return Some(if ms < now.timestamp_millis() { ms + 24 * 3600 * 1000 } else { ms });
+    }
+    // 「Nov 26th, 2026 3:15 PM」：去掉日子后面的 st / nd / rd / th
+    let (date, time) = rest.split_once(", ").and_then(|(md, yt)| yt.split_once(' ').map(|(y, t)| (format!("{} {y}", md.trim_end_matches(char::is_alphabetic)), t.to_string())))?;
+    let d = NaiveDate::parse_from_str(&date, "%b %d %Y").ok()?;
+    let t = NaiveTime::parse_from_str(&time, "%I:%M %p").ok()?;
+    local(d.and_time(t))
+}
+
+/// 毫秒时间戳 → 本机时间「11-26 15:15」（写进日志给人看）
+fn local_words(ms: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(ms).earliest().map(|t| t.format("%m-%d %H:%M").to_string()).unwrap_or_default()
 }
 
 /// 回答 agent 的请求：权限自动允许；其他方法没有（没声明的能力）
@@ -595,6 +728,7 @@ pub(crate) fn exit_for(o: &Outcome) -> i32 {
         Outcome::Stopped(r) if r == "cancelled" => EXIT_CANCELLED,
         Outcome::Stopped(_) => EXIT_LIMIT,
         Outcome::Failed(_) => EXIT_PROTOCOL,
+        Outcome::Quota(_) => EXIT_QUOTA,
     }
 }
 
@@ -905,10 +1039,20 @@ fn run(o: &Opts) -> i32 {
     send(&mut stdin, client.close());
     drop(stdin);
     let status = wait(&mut child, GRACE);
+    if let (Some(f), Some(q)) = (&o.quota_file, &client.quota) {
+        if let Err(e) = std::fs::write(f, serde_json::to_string(q).unwrap_or_default()) {
+            eprintln!("✗ board acp：写不了额度文件 {}：{e}", f.display());
+        }
+    }
     match &client.outcome {
         Some(Outcome::Failed(why)) => {
             eprintln!("✗ {why}");
             EXIT_PROTOCOL
+        }
+        Some(Outcome::Quota(why)) => {
+            let when = client.quota.as_ref().and_then(|q| q.resets_at).map(|t| format!("，{} 恢复", local_words(t))).unwrap_or_default();
+            eprintln!("✗ 额度用完{when}：{why}");
+            EXIT_QUOTA
         }
         // 人点停止、board host 退出：不管 agent 停在哪一步
         _ if TERM.load(Ordering::SeqCst) => EXIT_CANCELLED,
@@ -1072,7 +1216,7 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
         }
         // 握手、开会话就失败了：说明原因，退出
         if !client.ready {
-            if let Some(Outcome::Failed(why)) = &client.outcome {
+            if let Some(Outcome::Failed(why) | Outcome::Quota(why)) = &client.outcome {
                 failed = Some(why.clone());
                 break;
             }
@@ -1151,7 +1295,7 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
                 st.busy = false;
                 st.stop = Some(match out {
                     Outcome::Stopped(r) => r.clone(),
-                    Outcome::Failed(why) => {
+                    Outcome::Failed(why) | Outcome::Quota(why) => {
                         eprintln!("✗ {why}");
                         "error".to_string()
                     }
@@ -1709,6 +1853,107 @@ mod tests {
         assert_eq!(exit_for(&Outcome::Stopped("max_tokens".into())), 3);
         assert_eq!(exit_for(&Outcome::Stopped("refusal".into())), 3);
         assert_eq!(exit_for(&Outcome::Failed("x".into())), 2);
+    }
+
+    fn usage(session: &str, rate: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": { "sessionUpdate": "usage_update", "used": 10, "size": 200000, "_meta": { "_claude/rateLimit": rate } } } })
+    }
+
+    /// 走到这一轮开始干活：v2（Claude Code）或 v1（Codex）
+    fn working(v2: bool) -> Client {
+        let mut c = Client::new("/w", "p", None);
+        c.start();
+        c.on_frame(&reply(0, json!({ "protocolVersion": if v2 { 2 } else { 1 } })));
+        c.on_frame(&reply(1, json!({ "sessionId": "s1" })));
+        if v2 {
+            c.on_frame(&reply(2, json!({ "messageId": "m1" })));
+            c.on_frame(&state("s1", json!({ "state": "running" })));
+        }
+        c
+    }
+
+    /// 额度（#668）：Claude 跑的时候 usage_update 带的额度记下来；额度用完（errorKind rate_limit、状态 rejected）退出码 4，
+    /// 带上重置时间；一时的 429（状态 allowed）照旧算出错
+    #[test]
+    fn claude_usage_limit_is_its_own_outcome() {
+        let mut c = working(true);
+        c.on_frame(&usage("s1", json!({ "status": "allowed_warning", "resetsAt": 1795000000, "rateLimitType": "five_hour", "utilization": 0.91 })));
+        let q = c.quota.clone().unwrap();
+        assert_eq!((q.status.as_str(), q.window.as_str(), q.used, q.resets_at, q.exhausted), ("allowed_warning", "five_hour", Some(91), Some(1_795_000_000_000), false));
+        let rate = json!({ "status": "rejected", "resetsAt": 1795003600, "rateLimitType": "five_hour", "utilization": 1.0 });
+        let err = json!({ "code": -32603, "message": "You've hit your session limit · resets 3pm", "data": { "errorKind": "rate_limit", "rateLimit": rate } });
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "error", "error": err })));
+        assert!(matches!(c.outcome, Some(Outcome::Quota(ref w)) if w.contains("You've hit your session limit")), "{:?}", c.outcome);
+        assert_eq!(exit_for(c.outcome.as_ref().unwrap()), EXIT_QUOTA);
+        let q = c.quota.clone().unwrap();
+        assert_eq!((q.exhausted, q.resets_at, q.used, q.text.as_str()), (true, Some(1_795_003_600_000), Some(100), "You've hit your session limit · resets 3pm"));
+        // 一时的 429：状态 allowed，文字也不是额度用完
+        let mut c = working(true);
+        let err = json!({ "code": -32603, "message": "API Error: 429 overloaded", "data": { "errorKind": "rate_limit", "rateLimit": { "status": "allowed" } } });
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "error", "error": err })));
+        assert!(matches!(c.outcome, Some(Outcome::Failed(_))), "{:?}", c.outcome);
+        assert_eq!(c.quota, None);
+        // 没带 data、只有文字（旧版适配器）：照样认；重置时间用之前 usage_update 报的 rejected
+        let mut c = working(true);
+        c.on_frame(&usage("s1", json!({ "status": "rejected", "resetsAt": 1795007200 })));
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "error", "error": { "code": -32603, "message": "You've reached your weekly limit" } })));
+        assert!(matches!(c.outcome, Some(Outcome::Quota(_))));
+        assert_eq!(c.quota.as_ref().and_then(|q| q.resets_at), Some(1_795_007_200_000));
+    }
+
+    /// Codex：Zed 版（v1）session/prompt 回错、data 里 codex_error_info；codex-acp 2.7.0（v2）这一轮以 error 结束、data 里
+    /// codexErrorInfo。重置时间从「try again at」读
+    #[test]
+    fn codex_usage_limit_reads_the_reset_time_from_the_text() {
+        let mut c = working(false);
+        let text = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Nov 26th, 2099 3:15 PM.";
+        let err = json!({ "code": -32603, "message": "Internal error", "data": { "message": text, "codex_error_info": "usage_limit_exceeded" } });
+        c.on_frame(&json!({ "jsonrpc": "2.0", "id": 2, "error": err }));
+        assert!(matches!(c.outcome, Some(Outcome::Quota(ref w)) if w.starts_with("session/prompt 失败：Internal error")), "{:?}", c.outcome);
+        let q = c.quota.clone().unwrap();
+        let want = chrono::Local.with_ymd_and_hms(2099, 11, 26, 15, 15, 0).unwrap().timestamp_millis();
+        assert_eq!((q.exhausted, q.resets_at, q.text.as_str(), q.status.as_str()), (true, Some(want), text, ""));
+        // codex-acp 2.7.0（v2）：这一轮以 error 结束，data 里是 codexErrorInfo
+        let mut c = working(true);
+        let err = json!({ "code": -32603, "message": "Internal error", "data": { "message": "You've hit your usage limit. Try again later.", "codexErrorInfo": "usageLimitExceeded" } });
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "error", "error": err })));
+        assert!(matches!(c.outcome, Some(Outcome::Quota(_))), "{:?}", c.outcome);
+        assert_eq!(c.quota.as_ref().map(|q| (q.exhausted, q.resets_at)), Some((true, None)));
+        let mut c = working(true);
+        let err = json!({ "code": -32603, "message": "Internal error", "data": { "message": "rate limited, retrying failed", "codexErrorInfo": "rateLimitExceeded" } });
+        c.on_frame(&state("s1", json!({ "state": "idle", "stopReason": "error", "error": err })));
+        assert!(matches!(c.outcome, Some(Outcome::Failed(_))), "一时的限流不算：{:?}", c.outcome);
+        // 别的出错不算
+        let mut c = working(false);
+        c.on_frame(&json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -32603, "message": "Internal error", "data": { "message": "stream disconnected", "codex_error_info": "response_stream_disconnected" } } }));
+        assert!(matches!(c.outcome, Some(Outcome::Failed(_))));
+        assert_eq!(c.quota, None);
+    }
+
+    use chrono::TimeZone;
+
+    #[test]
+    fn try_again_at_reads_codex_times() {
+        let now = chrono::Local.with_ymd_and_hms(2026, 11, 25, 16, 0, 0).unwrap();
+        let at = |y, m, d, h, mi| chrono::Local.with_ymd_and_hms(y, m, d, h, mi, 0).unwrap().timestamp_millis();
+        assert_eq!(try_again_at("You've hit your usage limit. Try again at 5:30 PM.", now), Some(at(2026, 11, 25, 17, 30)));
+        // 只有时刻、已经过了：明天的
+        assert_eq!(try_again_at("You've hit your usage limit. Try again at 9:05 AM.", now), Some(at(2026, 11, 26, 9, 5)));
+        assert_eq!(try_again_at("… or try again at Dec 1st, 2026 12:00 AM.", now), Some(at(2026, 12, 1, 0, 0)));
+        assert_eq!(try_again_at("… or try again at Nov 22nd, 2026 11:45 PM.", now), Some(at(2026, 11, 22, 23, 45)));
+        assert_eq!(try_again_at("You've hit your usage limit. Try again later.", now), None);
+        assert_eq!(try_again_at("boom", now), None);
+        // 没有重置时间：额度用完，时间为空（服务端按 1 小时算）
+        let e = json!({ "message": "Internal error", "data": { "message": "You've hit your usage limit. Try again later.", "codex_error_info": "usage_limit_exceeded" } });
+        let q = quota_of(&e, None, now).unwrap();
+        assert_eq!((q.exhausted, q.resets_at), (true, None));
+    }
+
+    #[test]
+    fn quota_file_is_an_option() {
+        let o = parse(&s(&["--env", "direct", "--cwd", "/w", "--prompt-file", "/p", "--quota-file", "/q", "--", "x"])).unwrap();
+        assert_eq!(o.quota_file, Some(PathBuf::from("/q")));
+        assert_eq!(opts(0).quota_file, None);
     }
 
     fn piece(kind: &str, text: &str) -> Value {

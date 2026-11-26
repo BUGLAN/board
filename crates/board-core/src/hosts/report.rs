@@ -454,7 +454,7 @@ impl<'a> W<'a> {
                     }
                 }
             } else {
-                self.finish(&d, None, &Tail { lines: &[], events: &[] }, Finish::Missing)?;
+                self.finish(&d, None, &Tail { lines: &[], events: &[], quota: None }, Finish::Missing)?;
             }
         }
         // 机器对话：这一轮在跑、消息已经交给它，它却没报这个对话的进程（board host 重启过、进程没了）

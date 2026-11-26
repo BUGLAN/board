@@ -235,8 +235,30 @@ export interface HostAgent {
   run_env?: string | null;
   /** 这个 agent 在这台机器上连续异常退出、已经暂停接单：点「恢复」才继续 */
   tripped?: boolean;
+  /** 最近一次派发里看到的本机账号额度（#668）；没看到过、旧版服务端没有 */
+  quota?: AgentQuota | null;
+  /** 额度用完：这台机器上它的本机登录角色暂停接单到这个时间（毫秒），到点自动恢复，点「恢复」提前恢复 */
+  quota_until?: number | null;
   /** 安装方式、最新版本、更新状态（内置 agent 才有；旧版 board host 没有） */
   manage?: AgentManage | null;
+}
+
+/** 订阅账号的额度（#668）：board acp 在派发里顺带看到的。Claude 带窗口、已用比例、重置时间；Codex 只在用完时报 */
+export interface AgentQuota {
+  /** 这一轮因为额度用完结束 */
+  exhausted?: boolean;
+  /** 什么时候恢复（毫秒） */
+  resetsAt?: number | null;
+  /** Claude 报的状态：allowed / allowed_warning / rejected */
+  status?: string;
+  /** 窗口：five_hour、seven_day、seven_day_opus… */
+  window?: string;
+  /** 这个窗口用了百分之几 */
+  used?: number | null;
+  /** 额度用完时 agent 的报错原文 */
+  text?: string;
+  /** 服务端收到的时间（毫秒） */
+  at: number;
 }
 
 /** 一个内置 agent 在这台机器上的安装和更新状态 */
@@ -719,7 +741,7 @@ export interface HostToken {
   shared?: string[];
 }
 
-export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'fine' | 'nosplit';
+export type DispatchResult = 'review' | 'stuck' | 'crashed' | 'stopped' | 'timeout' | 'canceled' | 'lost' | 'unclaimed' | 'split' | 'fine' | 'nosplit' | 'quota';
 
 /** 一条领取规则：卡片的标签满足条件就由这个 agent 做 */
 export interface ClaimRule {

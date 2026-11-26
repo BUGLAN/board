@@ -307,6 +307,9 @@ pub(crate) struct EndBody {
     /// 最后 10 个事件的文字（异常退出评论里用）；旧版 board host 没有
     #[serde(default)]
     events: Vec<String>,
+    /// board acp 看到的额度（#668）；旧版 board host 没有
+    #[serde(default)]
+    quota: Option<board_core::hosts::Quota>,
 }
 
 fn exit() -> EndHow {
@@ -331,7 +334,7 @@ async fn end_inner(s: AppState, token: Option<i64>, id: i64, v: Value) -> ApiRes
         .db(move |st| {
             st.write(now_ms(), Origin::cli(), |w| {
                 w.read().dispatch_owned_by(id, token)?;
-                w.dispatch_end_with(id, b.exit_code, &b.tail, &b.events, b.how, b.why.as_deref())
+                w.dispatch_end_full(id, b.exit_code, &b.tail, &b.events, b.how, b.why.as_deref(), b.quota.as_ref())
             })
         })
         .await?;

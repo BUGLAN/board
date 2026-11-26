@@ -223,6 +223,20 @@ pub fn hhmm(ms: i64) -> String {
     }
 }
 
+/// 本地时间：和 `now` 同一天时「HH:MM」，不是同一天时「MM-DD HH:MM」（动态、原因里写什么时候）
+pub fn when_words(ms: i64, now: i64) -> String {
+    use chrono::TimeZone;
+    let at = |t: i64| match chrono::Local.timestamp_millis_opt(t) {
+        chrono::LocalResult::Single(x) | chrono::LocalResult::Ambiguous(x, _) => Some(x),
+        chrono::LocalResult::None => None,
+    };
+    match (at(ms), at(now)) {
+        (Some(a), Some(n)) if a.date_naive() == n.date_naive() => a.format("%H:%M").to_string(),
+        (Some(a), _) => a.format("%m-%d %H:%M").to_string(),
+        _ => "--:--".into(),
+    }
+}
+
 /// 标识：小写字母、数字和 `-`，以字母或数字开头，最长 32 个字符
 pub fn valid_key(key: &str) -> bool {
     let b = key.as_bytes();

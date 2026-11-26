@@ -321,10 +321,16 @@ impl<'a> W<'a> {
         if let Some(id) = p.resume.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
             let a = h.agents.iter().find(|a| a.id == id).ok_or_else(|| BoardError::usage(format!("机器「{name}」上没有 agent「{id}」")))?;
-            // 没暂停的不用恢复（重复点、别的窗口已经点过）：不记操作
-            if self.read().agent_tripped(&h, id)? {
+            // 没暂停的不用恢复（重复点、别的窗口已经点过）：不记操作。连续异常退出从现在重新数；额度用完的暂停（#668）提前结束
+            let tripped = self.read().agent_tripped(&h, id)?;
+            let quota = h.run.get(id).and_then(|r| r.quota_until).is_some_and(|t| t > self.now);
+            if tripped || quota {
                 let mut run = h.run.clone();
-                run.entry(id.to_string()).or_default().resumed_at = Some(self.now);
+                let e = run.entry(id.to_string()).or_default();
+                if tripped {
+                    e.resumed_at = Some(self.now);
+                }
+                e.quota_until = None;
                 self.tx.execute("UPDATE hosts SET run = ?2 WHERE id = ?1", params![h.id, serde_json::to_string(&run).unwrap_or_default()])?;
                 self.host_op(h.id, by, &format!("恢复了 {} 接单", a.name))?;
             }

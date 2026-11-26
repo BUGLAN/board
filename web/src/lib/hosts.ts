@@ -6,9 +6,9 @@ import dshIcon from '../assets/agents/dsh.png';
 import codexIcon from '../assets/agents/codex.svg';
 import type { AgentMotion } from './agent-motion';
 import { ALL_DAY, winWords } from './sched';
-import type { BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, Status, Workspace } from './types';
+import type { AgentQuota, BoardInfo, Dispatch, DispatchResult, HostAgent, HostBlock, HostDir, HostInfo, SelfTestAsk, Status, Workspace } from './types';
 import { metaColor, skillHome } from './agentMeta';
-import { agentColor, agentGlyph } from './util';
+import { agentColor, agentGlyph, hhmm } from './util';
 
 /** agent 标记：已知的几种用它们自己的 logo（取自各自的应用和官网）和主色；其他按标识取两个字母和颜色 */
 export interface AgentMark {
@@ -88,6 +88,8 @@ export const RESULT: Record<DispatchResult, { label: string; color: string }> = 
   fine: { label: '不用拆', color: 'var(--text-3)' },
   // 旧版服务端记的结果，照样显示
   nosplit: { label: '没拆出卡', color: 'var(--warn)' },
+  // 订阅账号的额度用完（#668）：不算异常退出，卡片回到待办
+  quota: { label: '额度用完', color: 'var(--warn)' },
 };
 
 /** 拆解「未整理」里的条目的派发（不领取、不移动它，PRD §9.1） */
@@ -154,6 +156,32 @@ export const blockOf = (ws: Workspace | null, host: string, path: string): HostB
 
 /** 能派给这个 agent：找到了命令，也没有因为连续异常退出暂停接单 */
 export const agentUsable = (a: HostAgent) => a.found && !a.tripped;
+
+/** 额度窗口的叫法（Agent SDK 的 rateLimitType） */
+const QUOTA_WINDOWS: Record<string, string> = {
+  five_hour: '5 小时',
+  seven_day: '7 天',
+  seven_day_opus: '7 天 · Opus',
+  seven_day_sonnet: '7 天 · Sonnet',
+  seven_day_overage_included: '7 天（含超额）',
+  overage: '超额用量',
+};
+
+/** 时间点：今天的写「15:00」，别的日子写「11-26 15:00」 */
+export function whenWords(t: number, now: number) {
+  const d = new Date(t);
+  const same = d.toDateString() === new Date(now).toDateString();
+  return same ? hhmm(t) : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hhmm(t)}`;
+}
+
+/** 最近一次看到的额度，一句话（#668）：「5 小时窗口用了 91% · 15:00 重置」「额度用完 · 15:00 恢复」 */
+export function quotaWords(q: AgentQuota, now: number): string {
+  const reset = q.resetsAt ? whenWords(q.resetsAt, now) : null;
+  if (q.exhausted || q.status === 'rejected') return `额度用完${reset ? ` · ${reset} 恢复` : ''}`;
+  const win = q.window ? `${QUOTA_WINDOWS[q.window] ?? q.window}窗口` : '额度';
+  const used = q.used != null ? `用了 ${q.used}%` : '还能用';
+  return `${win}${used}${reset ? ` · ${reset} 重置` : ''}`;
+}
 
 /** 没找到时的那几个字：装了 agent、启动环境里缺 ACP 入口要的命令时是「缺 Node.js（npx）」（#458），否则「没找到」 */
 export const missWord = (a: { missing?: string | null }) => (a.missing ? `缺 ${a.missing}` : '没找到');

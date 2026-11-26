@@ -1007,16 +1007,16 @@ fn ended_takes_the_timeout_reason_and_redacts() {
     let log = dir.path().join("9.log");
     std::fs::write(&log, "BOARD_TOKEN=secret-token\nboom\n").unwrap();
     let r = test_run(&log, None);
-    let e = ended_of(&r, Some(3), "exit", &["secret-token"]);
+    let e = ended_of(&r, Some(3), "exit", &["secret-token"], None);
     assert_eq!((e.id, e.code, e.how, e.why.as_deref()), (9, Some(3), "exit", None));
     assert!(e.tail.iter().all(|l| !l.contains("secret-token")), "{:?}", e.tail);
     // board host 退出时 agent 还活着：主进程退出后用调用方给的结果
-    let e = ended_of(&r, None, "host_exit", &[]);
+    let e = ended_of(&r, None, "host_exit", &[], None);
     assert_eq!((e.how, e.why.as_deref()), ("host_exit", None));
     // 兜底停止过：报「超时」，原因写清楚
     let mut r = r;
     r.timeout = Some("运行超过 30 分钟".into());
-    let e = ended_of(&r, None, "host_exit", &[]);
+    let e = ended_of(&r, None, "host_exit", &[], None);
     assert_eq!((e.how, e.why.as_deref()), ("timeout", Some("运行超过 30 分钟")));
 }
 

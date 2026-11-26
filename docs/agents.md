@@ -25,7 +25,8 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
      - 还持有，v2 的 `background` 不空：不收也不续，日志里写一行「⋯ 等后台」，等 agent 跑完自己接着做；每 30 秒再查一次卡片。
      - 还持有，后台为空或 agent 不报（v1 的 dsh、不报后台的 Codex，或者 agent 停下来问人、做到一半就总结）：在同一个会话里再发一条提示词续一轮，写明还持有哪张、后台命令在这一轮里等它跑完、按 board-skills 做完或交给人，最多续 3 轮，每次在日志里写一行「↻ 第 n 次续轮」。续满了还持有，写一行「✗ 续了 3 轮…」后照常收尾，`board host` 按卡片还在它手里记成异常退出。
    - 收尾：v2 先发 `session/close`，再关掉 agent 的标准输入，最多等 5 秒，还不退就结束它。agent 进程自己退出了也收尾（它留下的子进程拿着输出也不等）。
-   - 退出码：`end_turn` 0；被取消、收到 SIGTERM 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败（例如没登录）、协议错误、v2 这一轮出错（`stopReason: error`）2；这一轮没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。原因写进日志。
+   - 退出码：`end_turn` 0；被取消、收到 SIGTERM 130；`max_tokens`、`max_turn_requests`、`refusal` 3；握手失败（例如没登录）、协议错误、v2 这一轮出错（`stopReason: error`）2；这一轮因为订阅账号的额度用完出错 4（下一条）；这一轮没结束 agent 就退出了：agent 的退出码（它是 0 时记 1）。原因写进日志。
+   - **额度**（#668）：只用跑的时候顺带拿到的，不另外去查。Claude Code 的 `usage_update` 在 `_meta["_claude/rateLimit"]` 里带 Agent SDK 的 `rate_limit_info`（`status`、`rateLimitType`、`utilization`、`resetsAt`），记下最近一次的；这一轮出错、错误的 `data` 是 `{errorKind: "rate_limit", rateLimit}` 且状态是 `rejected` 时是额度用完（一时的 429 状态是 `allowed`，照旧算出错）。Codex（codex-acp）不往 ACP 上发额度，用完时这一轮出错、`data.codexErrorInfo` 是 `usageLimitExceeded`，重置时间只在文字里（「Try again at 3:15 PM.」，本机时区）。报错文字以 Agent SDK 的 `USAGE_LIMIT_ERROR_PREFIXES`（「You've hit your」等）开头的也算。`board host` 给每次派发带 `--quota-file <run 目录>/<派发 ID>.quota`，`board acp` 退出前把看到的额度写进去，`board host` 随派发结束上报（`quota`），服务端按 PRD §9.1「额度用完」处理。
    - 人点「停止」、`board host` 退出时它收到 SIGTERM：发 `session/cancel`，最多等 5 秒（之后照下面第 6 步结束进程树）。
 
    启动环境是「在哪种 shell 里启动」，按机器、按 agent 在机器详情里选（PRD §9.1）：
@@ -59,7 +60,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
    本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
 4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。手动启动的会话不用自己拼名字：`board check --agent <标识>` 由 Board 按这台机器的设置生成同样的名字（§3.2）。
-5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面。
+5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面。额度用完（上面第 3 步）是例外：记「额度用完」，不算异常退出，卡片回到领取前的可领取状态最上面，这台机器上这个 agent 的本机登录角色暂停到重置时间。
 6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
 
 ## 在一台新机器上装 `board`、接任务

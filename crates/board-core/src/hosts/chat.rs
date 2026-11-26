@@ -343,7 +343,7 @@ impl W<'_> {
             None => None,
         };
         if let Some(p) = &role {
-            if let Err(why) = crate::profiles::fit(p, &h) {
+            if let Err(why) = crate::profiles::fit(p, &h, self.now) {
                 return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」跑不了角色「{}」：{why}", p.name))
                     .with_detail(json!({ "host": host, "profile": p.id })));
             }

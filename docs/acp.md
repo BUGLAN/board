@@ -8,6 +8,8 @@
 > 2026-11-17 已切换：人决定不走下文「部分换」的路线，board host 只用 ACP 启动 agent，旧的「命令模板 + 各家 JSONL」删掉了。
 > dsh 用它自带的 `--profile acp`（下文写它没有 ACP 是当时没查到），Claude Code、Codex 用 ACP 组织维护的适配器（`npx -y` 固定版本）。
 > 现在怎么做见 [agents.md](agents.md)「board host 怎么启动 agent」「已经接入的」；下文是当时的调研，结论和路线不再适用。
+>
+> 2026-11-25 补记（#668）：订阅账号的额度用 ACP 上顺带来的信息认——claude-agent-acp 0.107.3 的 `usage_update` 在 `_meta["_claude/rateLimit"]` 带 Agent SDK 的 `rate_limit_info`，额度用完时这一轮的错误 `data` 是 `{errorKind: "rate_limit", rateLimit}`；codex-acp 2.7.0 不发额度，用完时错误 `data.codexErrorInfo` 是 `usageLimitExceeded`、重置时间只在文字里。`board acp` 认出时以退出码 4 结束、把额度写进 `--quota-file`，服务端记「额度用完」、不算异常退出，见 [agents.md](agents.md) 和 PRD §9.1「额度用完」。
 
 ## 结论
 

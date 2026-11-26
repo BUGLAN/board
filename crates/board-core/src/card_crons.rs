@@ -396,7 +396,7 @@ impl<'a> W<'a> {
             if target {
                 self.dispatch_target_check(board, h, None)?;
                 if let (Some(p), Some(row)) = (&role, self.host_row(h)?) {
-                    if let Err(why) = crate::profiles::fit(p, &row) {
+                    if let Err(why) = crate::profiles::fit(p, &row, self.now) {
                         return Err(BoardError::usage(format!("机器「{h}」跑不了角色「{}」：{why}", p.name)));
                     }
                 }
@@ -704,7 +704,7 @@ impl<'a> W<'a> {
             let found = |a: &crate::hosts::HostAgent| a.found && !read.agent_tripped(&h, &a.id).unwrap_or(false);
             match role {
                 Some(p) => {
-                    if crate::profiles::fit(p, &h).is_ok() && h.resolved().iter().any(|x| x.id == p.agent && found(x)) {
+                    if crate::profiles::fit(p, &h, self.now).is_ok() && h.resolved().iter().any(|x| x.id == p.agent && found(x)) {
                         out.push(h.name.clone());
                     }
                 }

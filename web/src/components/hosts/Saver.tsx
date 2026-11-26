@@ -16,7 +16,7 @@ const fieldOf = (p: HostPatch) =>
 /** 改一个 agent 的启动环境、恢复接单（当帧画出来） */
 const agentPatch = (a: HostAgent, p: HostPatch): HostAgent => {
   if (p.env?.agent === a.id) return { ...a, env: p.env.env };
-  if (p.resume === a.id) return { ...a, tripped: false };
+  if (p.resume === a.id) return { ...a, tripped: false, quota_until: null };
   return a;
 };
 

@@ -126,8 +126,9 @@ pub const LOGIN_FAILED: &str = "没有登录";
 const COLS: &str = "id, name, agent, provider, model, effort, note, only, sort, created_at";
 
 /// 一台机器能不能跑这个角色：只看角色和机器，不看在不在线、有没有空位、在不在接单时段（那些是「现在能不能开始」）。
-/// 跑不了时返回原因。登录、连不连得上供应商看最近一次自检（没自检过、旧版 board host 不报时当能跑）
-pub(crate) fn fit(p: &Profile, h: &HostRow) -> std::result::Result<(), String> {
+/// 跑不了时返回原因。登录、连不连得上供应商看最近一次自检（没自检过、旧版 board host 不报时当能跑）；本机登录的角色
+/// 还看这台机器上这个 agent 的额度用没用完（暂停到 `quota_until`，`now` 过了就自动恢复，#668）
+pub(crate) fn fit(p: &Profile, h: &HostRow, now: i64) -> std::result::Result<(), String> {
     if !p.only.is_empty() && !p.only.contains(&h.id) {
         return Err(format!("不在「{}」的机器里", p.name));
     }
@@ -143,6 +144,9 @@ pub(crate) fn fit(p: &Profile, h: &HostRow) -> std::result::Result<(), String> {
     if p.provider.is_empty() {
         if failed("agent", &p.agent).is_some_and(|i| i.why.as_deref().is_some_and(|w| w.starts_with(LOGIN_FAILED))) {
             return Err(format!("{name} 没登录（上次自检）：登录后重新自检"));
+        }
+        if let Some(until) = h.run.get(&p.agent).and_then(|r| r.quota_until).filter(|t| *t > now) {
+            return Err(format!("额度用完，{} 恢复", crate::store::when_words(until, now)));
         }
         return Ok(());
     }

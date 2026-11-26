@@ -53,6 +53,12 @@ pub struct HostAgent {
     /// 服务端发出去时才有：这个 agent 在这台机器上连续异常退出、已经暂停接单（PRD §9.1「能不能接」），人点「恢复」才继续
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tripped: bool,
+    /// 服务端发出去时才有：最近一次派发里看到的这个 agent 本机账号的额度（#668）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Quota>,
+    /// 服务端发出去时才有：额度用完，本机登录的角色在这台机器上暂停接单到这个时间（毫秒）；到点自动恢复，人点「恢复」提前恢复
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_until: Option<i64>,
     /// 安装、版本检查和更新状态（board host 上报；内置 agent 才有）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manage: Option<AgentManage>,
@@ -156,7 +162,46 @@ pub struct AgentRun {
     /// 人最近一次点「恢复」的时间：连续异常退出从这之后重新数（`fit.rs` 的 `agent_streak`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_at: Option<i64>,
+    /// 最近一次派发里看到的本机账号额度（#668）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Quota>,
+    /// 额度用完：这台机器上这个 agent 的本机登录角色暂停接单到这个时间（毫秒）。到点自动恢复（[`crate::profiles::fit`]
+    /// 拿它和现在比），人点「恢复」时清掉
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_until: Option<i64>,
 }
+
+/// 订阅账号的额度（#668）：`board acp` 在派发里顺带看到的，不主动去查。Claude Code 跑的时候 `usage_update` 的
+/// `_meta["_claude/rateLimit"]`（Agent SDK 的 `rate_limit_info`）带状态、窗口、已用比例、重置时间；Codex 只在额度用完时
+/// 报一条错，带不带重置时间看报错文字。board acp 写进 `--quota-file`，board host 随派发结束上报（`quota`）
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Quota {
+    /// 这一轮因为额度用完结束
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exhausted: bool,
+    /// 额度什么时候恢复（毫秒时间戳）；取不到时为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// Claude 报的状态：`allowed`、`allowed_warning`、`rejected`；Codex 没有
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
+    /// 哪个窗口：`five_hour`、`seven_day`、`seven_day_opus`…（Claude）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub window: String,
+    /// 这个窗口用了百分之几（Claude）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<i64>,
+    /// 额度用完时 agent 的报错原文
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    /// 服务端收到的时间（毫秒）；board acp 写的时候为 0
+    #[serde(default)]
+    pub at: i64,
+}
+
+/// 额度用完、没取到重置时间时，本机登录的角色暂停多久（毫秒）
+pub const QUOTA_PAUSE_DEFAULT: i64 = 60 * 60 * 1000;
 
 /// 一台机器的工作空间（PRD §9.1「工作空间」）：每台设备只配一个目录，每块白板在它里面的目录固定是
 /// `<工作空间>/<项目标识>/<白板标识>`，目录不存在时由 board host 建好（白板设了仓库地址时 `git clone`）

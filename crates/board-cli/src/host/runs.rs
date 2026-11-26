@@ -122,11 +122,22 @@ impl Run {
         }
     }
 
+    /// board acp 写的额度文件（`<派发 ID>.quota`，和配置文件放在一起）
+    pub(super) fn quota_file(&self) -> PathBuf {
+        self.conf.with_extension("quota")
+    }
+
+    /// board acp 看到的额度（#668）：没写（没看到、旧版）时为空
+    pub(super) fn quota(&self) -> Option<board_core::hosts::Quota> {
+        std::fs::read_to_string(self.quota_file()).ok().and_then(|t| serde_json::from_str(&t).ok())
+    }
+
     pub(super) fn cleanup(&self) {
         let _ = std::fs::remove_file(&self.conf);
         // 提示词文件（`<派发 ID>.prompt`，和配置文件放在一起）
         let _ = std::fs::remove_file(self.conf.with_extension("prompt"));
         let _ = std::fs::remove_file(&self.procfile);
+        let _ = std::fs::remove_file(self.quota_file());
         if let Some(p) = &self.pidfile {
             let _ = std::fs::remove_file(p);
         }
@@ -138,11 +149,16 @@ impl Run {
 /// 截断要在 agent 确实不在了之后：它还活着时换掉文件内容，下次写入会从旧位置接着写、中间留一段空洞。
 /// `how` 是给服务端的结果（`exit`、`host_exit`）；兜底停止过（`Run.timeout` 有值）的无论哪种都报 `timeout`，
 /// 原因照原样带上
-pub(super) fn ended_of(r: &Run, code: Option<i64>, how: &'static str, secrets: &[&str]) -> Ended {
+pub(super) fn ended_of(r: &Run, code: Option<i64>, how: &'static str, secrets: &[&str], quota: Option<board_core::hosts::Quota>) -> Ended {
     let tail = tail_lines(&r.log, TAIL, r.fmt).iter().map(|l| redact::redact(l, secrets)).collect();
     let _ = truncate_log(&r.log, LOG_HEAD, LOG_TAIL, LOG_MAX);
     let (how, why) = if r.timeout.is_some() { ("timeout", r.timeout.clone()) } else { (how, None) };
-    Ended { id: r.d.id, code, tail, events: recent_lines(r), how, why }
+    Ended { id: r.d.id, code, tail, events: recent_lines(r), how, why, quota }
+}
+
+/// 一次派发的额度文件（见 [`Run::quota_file`]）
+pub(super) fn quota_file_of(run: &Path, id: i64) -> PathBuf {
+    run.join(format!("{id}.quota"))
 }
 
 /// 一次派发收尾后给调用方打印用的信息
@@ -175,6 +191,8 @@ pub(super) struct Ended {
     pub(super) how: &'static str,
     /// how = timeout 时给人看的原因
     pub(super) why: Option<String>,
+    /// board acp 看到的额度（#668）
+    pub(super) quota: Option<board_core::hosts::Quota>,
 }
 
 /// 结束上报失败：派发不存在这类明确的 4xx 不用再试；其余错误（连不上、5xx 等）留到下一轮
@@ -562,12 +580,13 @@ impl Host<'_> {
     /// 兜底停止过（`Run.timeout` 有值）的无论哪种都报 `timeout`，原因照原样带上。
     pub(super) fn finish_run(&mut self, mut r: Run, code: Option<i64>, how: &'static str) -> RunSummary {
         r.kill_rest();
+        let quota = r.quota();
         r.cleanup();
         self.flush_log(&r, true);
         self.flush_events(&mut r, true);
         let secrets = self.secrets();
         let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
-        let ended = ended_of(&r, code, how, &secrets);
+        let ended = ended_of(&r, code, how, &secrets, quota);
         let tail = if ended.events.is_empty() { ended.tail.iter().rev().take(10).rev().cloned().collect() } else { ended.events.clone() };
         self.ended.push(ended);
         RunSummary {
@@ -635,7 +654,7 @@ impl Host<'_> {
     pub(super) fn report_ended(&mut self) {
         let ended = std::mem::take(&mut self.ended);
         for e in ended {
-            let body = json!({ "exitCode": e.code, "tail": e.tail, "events": e.events, "how": e.how, "why": e.why });
+            let body = json!({ "exitCode": e.code, "tail": e.tail, "events": e.events, "how": e.how, "why": e.why, "quota": e.quota });
             match self.rm().post::<Dispatch>(&format!("/api/dispatches/{}/end", e.id), body) {
                 Ok(d) => {
                     let res = d.result.as_deref().map(result_words).unwrap_or("还在跑");
@@ -776,7 +795,7 @@ impl Host<'_> {
                 self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
                 let log = self.logs.join(format!("{}.log", d.id));
                 let _ = std::fs::write(&log, format!("{msg}\n"));
-                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None });
+                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None, quota: None });
                 self.report_ended();
             }
         }
@@ -903,7 +922,11 @@ impl Host<'_> {
         std::fs::write(&prompt_file, &prompt).map_err(|e| format!("无法写 {}：{e}", prompt_file.display()))?;
         // 拆解不领卡：不续轮；做卡的这一轮结束时卡片还在手里就续（#454）
         let turns = if d.kind == board_core::hosts::KIND_SPLIT { 0 } else { crate::acp::EXTRA_TURNS };
-        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns, role.as_ref(), &[]).inspect_err(|_| {
+        // board acp 把这次看到的额度写在这里，结束时随派发上报（#668）
+        let quota_file = quota_file_of(&self.run, d.id);
+        let _ = std::fs::remove_file(&quota_file);
+        let more = ["--quota-file".to_string(), quota_file.display().to_string()];
+        let mut c = self.acp_command(spec, check, &env, &run_dir, &prompt_file, turns, role.as_ref(), &more).inspect_err(|_| {
             let _ = std::fs::remove_file(&prompt_file);
             if let Some(f) = role.as_ref().and_then(|r| r.provider_file.as_ref()) {
                 let _ = std::fs::remove_file(f);
