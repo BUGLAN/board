@@ -428,8 +428,10 @@ body.tile-moving .ct-pop, body.is-dragging .ct-pop { display: none; }
 .card.is-placeholder:not([data-landing]) { background-image: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--c) 8%, transparent) 0 6px, transparent 6px 12px) !important; }
 .card.is-placeholder[data-landing] > * { animation: lb-in .16s ease-out; }
 
+/* 拖拽 / 落位的幽灵属于页面内容层：z-index 要低于从 100 开始的遮罩、弹窗（.scrim 100、.drawer 110……），
+   和 .ib-fly 一样用 90。在卡片详情的「移动到」里换状态时，落位动画在遮罩下面播，不能盖住弹窗（default/main#671） */
 .drag-ghost {
-  position: fixed; left: 0; top: 0; z-index: 400; margin: 0; pointer-events: none;
+  position: fixed; left: 0; top: 0; z-index: 90; margin: 0; pointer-events: none;
   cursor: grabbing; will-change: transform;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 50%, var(--line-2)), var(--shadow-drag) !important;
 }
