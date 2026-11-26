@@ -591,11 +591,18 @@ impl<'a> W<'a> {
         let (mut name_model, _) = h.model_for(&d.agent);
         let mut name_effort = effort_of(&h.agents, &d.agent);
         if !d.profile.is_empty() {
-            if let Some(m) = d.model.clone().filter(|m| !m.is_empty()) {
+            let role_model = d.model.clone().filter(|m| !m.is_empty());
+            if let Some(m) = role_model.clone() {
                 name_model = m.clone();
                 run_model = Some(m);
             }
-            run_effort = d.effort.clone().filter(|e| !e.is_empty());
+            // 强度是角色的；本机配置、官方订阅既没设模型也没设强度时，会话用的是机器报的默认模型和它的默认强度（#666，
+            // 端到端实测名字只有 e2e/opus），这时照报的写
+            let role_effort = d.effort.clone().filter(|e| !e.is_empty());
+            let local = h.profile(&d.profile).is_some_and(|p| p.provider.is_empty() || p.provider == crate::profiles::SUBSCRIPTION);
+            if role_effort.is_some() || role_model.is_some() || !local {
+                run_effort = role_effort;
+            }
             name_effort = run_effort.clone().unwrap_or_default();
         }
         let name = self.free_agent_name(&d.agent, &h.name, &name_model, &name_effort)?;

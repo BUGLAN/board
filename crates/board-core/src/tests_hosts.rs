@@ -4992,6 +4992,21 @@ fn local_roles_follow_the_reported_model_table() {
         .unwrap();
     let d = begin(&mut s, T0 + 2 * S, d.id).unwrap();
     assert_eq!((d.name.as_deref(), d.model.as_deref(), d.effort.as_deref()), (Some("mbp/opus-max"), Some("opus"), Some("max")));
+    // 模型、强度都没设：名字、记录用报的默认强度（会话实际用的就是它）；设了模型没设强度的不猜
+    put_role(&mut s, T0, crate::profiles::Profile { only: vec![mbp], ..role("全默认", "claude", "", "", "") }).unwrap();
+    put_role(&mut s, T0, crate::profiles::Profile { only: vec![mbp], ..role("只设模型", "claude", "", "opus", "") }).unwrap();
+    for (p, want) in [("全默认", ("mbp/opus-high", Some("high"))), ("只设模型", ("mbp/opus", None))] {
+        let c = new_card(&mut s, T0, p);
+        let d = s
+            .write(T0 + 3 * S, Origin::ui(None), |w| {
+                let b = w.resolve(B)?;
+                w.dispatch_create(&b, c, "mbp", None, Some(p), &Actor::human())
+            })
+            .unwrap();
+        let d = begin(&mut s, T0 + 3 * S, d.id).unwrap();
+        assert_eq!((d.name.as_deref(), d.effort.as_deref()), (Some(want.0), want.1), "{p}");
+        end(&mut s, T0 + 4 * S, d.id, Some(0), &[]);
+    }
 }
 
 /* ---------------- 官方订阅（#667） ---------------- */
