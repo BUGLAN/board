@@ -10,6 +10,7 @@
 //!   「定时建卡「<名称>」建了这张卡」，放到「放到哪」指定的位置最下面。模板描述里引用的附件每次复制一份归到新卡，
 //!   模板自己的那份留着（附件清理时按模板描述的引用保留）。
 //! - **跳过**：这条上一次建的卡还没进终点状态、也没被删除时，这一次不建，结果记「跳过：上一张 #N 还没完成」。
+//!   上一张在「未整理」、并且有未删除的「拆自它」的卡时按已处理算（拆解不改原条目）；只是「稍后再做」的照旧跳过。
 //! - **派给机器**：选了一台（[`PICK_HOST`]）时，建出卡后马上派发到那台机器（和手动派发一样排队、占用卡片，来源记「定时建卡」，
 //!   机器离线、暂停接单时排队等它）；选了随机（[`PICK_RANDOM`]）时，到点在能接这块白板、在线、没暂停接单的机器里随机挑一台
 //!   （候选见 [`W::cron_host_candidates`]；都不在线时卡照样建，评论写明原因）。
@@ -25,7 +26,7 @@ use crate::hosts::SOURCE_SCHEDULE;
 use crate::model::*;
 use crate::store::{flow_of, R, W};
 use jiff::civil::DateTime;
-use jiff::tz::TimeZone;
+use jiff::tz::{AmbiguousOffset, TimeZone};
 use jiff::{Timestamp, ToSpan};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -252,6 +253,13 @@ fn local(at: i64, tz: &TimeZone) -> Option<DateTime> {
 /// 这一分钟（`at` 落在哪一分钟）按这条的时区对得上 cron 吗
 pub fn due_at(cron: &Cron, tz: &TimeZone, at: i64) -> bool {
     let Some(t) = local(at, tz) else { return false };
+    // 秋季切换的重复时刻只算第一次：当前偏移是后一个时不再到点
+    if let AmbiguousOffset::Fold { after, .. } = tz.to_ambiguous_timestamp(t).offset() {
+        let offset = Timestamp::from_millisecond(at).ok().map(|x| x.to_zoned(tz.clone()).offset());
+        if offset == Some(after) {
+            return false;
+        }
+    }
     cron.matches(t.minute() as u32, t.hour() as u32, t.day() as u32, t.month() as u32, t.weekday().to_sunday_zero_offset() as u32)
 }
 
@@ -274,8 +282,14 @@ pub fn next_at(cron: &Cron, tz: &TimeZone, after: i64) -> Option<i64> {
             t = t.checked_add(1.minute()).ok()?;
             continue;
         }
-        // 夏令时跳过的那一段本地时间不存在：按 jiff 的默认规则落到之后；结果早于 after 时（重复的那一段）接着找
-        let ms = tz.to_zoned(t).ok()?.timestamp().as_millisecond();
+        // 夏令时跳过的那一段本地时间不存在：按 jiff 的默认规则会落到之后，钟点变了就跳过；
+        // 重复的那一段按较早的一次算，不用再处理
+        let z = tz.to_zoned(t).ok()?;
+        if z.datetime() != t {
+            t = t.checked_add(1.minute()).ok()?;
+            continue;
+        }
+        let ms = z.timestamp().as_millisecond();
         if ms > after {
             return Some(ms);
         }
@@ -583,7 +597,13 @@ impl<'a> W<'a> {
                 .optional()?;
             let flow = flow_of(self.tx, board.id)?;
             if let Some((col, None)) = col {
-                if !flow.is_final(&col) {
+                let split = col == INBOX
+                    && self.tx.query_row(
+                        "SELECT COUNT(*) > 0 FROM cards WHERE board = ?1 AND split_from = ?2 AND deleted_at IS NULL",
+                        params![board.id, prev],
+                        |r| r.get::<_, bool>(0),
+                    )?;
+                if !flow.is_final(&col) && !split {
                     self.tx.execute(
                         "UPDATE card_crons SET ran_at = ?2, ran_card = NULL, ran_skip = ?3, ran_to = NULL, ran_err = NULL WHERE id = ?1",
                         params![c.id, self.now, prev],
@@ -897,6 +917,28 @@ mod tests {
     }
 
     #[test]
+    fn dst_gaps_are_skipped_and_folds_fire_only_once() {
+        let ny = TimeZone::get("America/New_York").unwrap();
+        let at = |s: &str| s.parse::<Timestamp>().unwrap().as_millisecond();
+
+        // 春季 02:30 不存在：不落到 03:30，下一天才到点
+        let spring = Cron::parse("30 2 * * *").unwrap();
+        let first = next_at(&spring, &ny, at("2024-03-10T06:00:00Z")).unwrap();
+        assert_eq!(Timestamp::from_millisecond(first).unwrap().to_string(), "2024-03-11T06:30:00Z");
+        assert!(due_at(&spring, &ny, first));
+        assert!(!due_at(&spring, &ny, at("2024-03-10T07:30:00Z")), "春天没有 02:30，03:30 不到点");
+
+        // 秋季 01:30 出现两次：只算第一次，第二次不到点，下一次是第二天
+        let fall = Cron::parse("30 1 * * *").unwrap();
+        let first = next_at(&fall, &ny, at("2024-11-03T04:00:00Z")).unwrap();
+        assert_eq!(Timestamp::from_millisecond(first).unwrap().to_string(), "2024-11-03T05:30:00Z");
+        assert!(due_at(&fall, &ny, first));
+        assert!(!due_at(&fall, &ny, at("2024-11-03T06:30:00Z")), "第二次 01:30 不到点");
+        let next = next_at(&fall, &ny, first).unwrap();
+        assert_eq!(Timestamp::from_millisecond(next).unwrap().to_string(), "2024-11-04T06:30:00Z");
+    }
+
+    #[test]
     fn create_checks_every_field() {
         let mut s = store();
         let bug = s.write(T0, Origin::ui(None), |w| w.create_label("default", "bug", None, false)).unwrap();
@@ -979,6 +1021,34 @@ mod tests {
         // 关掉开关：到点不建
         s.write(t1, Origin::ui(None), |w| w.card_cron_update(B, c.id, &CardCronPatch { on: Some(false), ..Default::default() })).unwrap();
         assert_eq!(due(&mut s, t1 + 10 * MIN), 0);
+    }
+
+    #[test]
+    fn inbox_split_counts_as_handled_but_later_still_skips() {
+        let mut s = store();
+        let c = create(&mut s, CardCronPatch { place: Some(INBOX.into()), ..patch("收集改进点", "* * * * *") }).unwrap();
+        let t1 = T0 + MIN;
+        let r = s.write(t1, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        let id = r.ran_card.expect("建了卡");
+        assert_eq!(*cols(&s)[INBOX].last().unwrap(), id);
+
+        // 只是「稍后再做」：上一张还留在未整理，照旧跳过
+        let r = s.write(t1 + MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        assert_eq!((r.ran_card, r.ran_skip), (None, Some(id)));
+
+        // 拆出一张子卡（拆解不移动原条目）：原条目已经处理过，下一次照常建卡
+        let child = s
+            .write(t1 + MIN, Origin::ui(None), |w| {
+                let b = w.resolve(B)?;
+                w.exec(&b, &Actor::human(), Cmd::New { title: "改进点".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: Some(id) }).map(|d| d.card.id)
+            })
+            .unwrap();
+        assert_eq!(card(&s, child).card.split_from, Some(id));
+        let r = s.write(t1 + 2 * MIN, Origin::ui(None), |w| w.card_cron_run(B, c.id)).unwrap();
+        assert_eq!(r.ran_skip, None);
+        let next = r.ran_card.expect("上一张已经拆解，应该建新卡");
+        assert_ne!(next, id);
+        assert_eq!(*cols(&s)[INBOX].last().unwrap(), next);
     }
 
     #[test]
