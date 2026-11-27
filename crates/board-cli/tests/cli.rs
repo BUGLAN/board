@@ -112,6 +112,33 @@ fn new_from_shows_split_relation() {
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
 }
 
+/// board boards 的未整理、稍后再做、已拆分和 board flow 的未整理张数使用同一口径
+#[test]
+fn boards_and_flow_count_inbox_consistently() {
+    let s = start();
+    let empty = s.run(ALPHA, &["boards"]).out;
+    assert!(empty.contains("未整理 0") && !empty.contains("未整理 0（"), "{empty}");
+    s.run(ALPHA, &["new", "原始需求", "--inbox"]);
+    s.run(ALPHA, &["new", "拆出的", "--inbox", "--from", "1"]);
+    s.run(ALPHA, &["new", "以后再看", "--inbox"]);
+    let mut store = board_core::Store::open(&s.db).unwrap();
+    store
+        .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
+            let b = w.resolve("default/main")?;
+            w.exec(&b, &board_core::Actor::human(), board_core::Cmd::Later { id: 3, on: true })?;
+            Ok(())
+        })
+        .unwrap();
+
+    let r = s.run(ALPHA, &["boards", "--json"]);
+    let c = &r.json()[0]["counts"];
+    assert_eq!((c["inbox"].as_i64(), c["later"].as_i64(), c["split"].as_i64()), (Some(1), Some(1), Some(1)), "{c}");
+    let r = s.run(ALPHA, &["boards"]);
+    assert!(r.out.contains("未整理 1（稍后再做 1 · 已拆分 1）"), "{}", r.out);
+    let r = s.run(ALPHA, &["flow"]);
+    assert!(r.out.contains("3 张  不属于工作流"), "{}", r.out);
+}
+
 #[test]
 fn ac12_identity_and_board_required() {
     let s = start();
@@ -430,6 +457,7 @@ fn new_with_images_and_files() {
         (vec!["new", "x", "--image", &fake], "USAGE"),
         (vec!["new", "x", "--file", &big], "USAGE"),
         (vec!["new", "", "--image", &p1], "EMPTY_TITLE"),
+        (vec!["new", "x", "--image", &p1, "--from", "abc"], "USAGE"),
     ] {
         let mut args = args;
         args.push("--json");
@@ -480,6 +508,15 @@ fn requires_login() {
     assert!(r.out.contains("board login") && r.out.contains("Agent → 访问令牌") && !r.out.contains("本地数据库"), "{}", r.out);
 
     assert!(!s.home.join(".board").exists(), "不应该在 HOME 下创建 ~/.board");
+}
+
+/// BOARD_DOWNLOAD 不能是任意 HTTP：中间人可以同时改压缩包和校验文件
+#[test]
+fn update_rejects_plain_http_download_sources() {
+    let s: Server = start();
+    let r = s.raw(&[("BOARD_DOWNLOAD", "http://example.com".into())], &["update", "--latest", "--json"]);
+    assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
+    assert!(r.json()["error"]["message"].as_str().unwrap().contains("BOARD_DOWNLOAD"), "{}{}", r.out, r.err);
 }
 
 /// board host rename（桌面端「设置 → 本机」保存机器名时调用）：服务端把机器记录原地改名，

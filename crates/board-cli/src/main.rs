@@ -419,7 +419,17 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
         let mut s = String::new();
         for (pr, b) in boards {
             let n = |k: &str| b.counts.get(k).copied().unwrap_or(0);
-            let mut parts = vec![format!("{INBOX_NAME} {}", n(INBOX))];
+            let extra: Vec<String> = [(LATER, "稍后再做"), (SPLIT, "已拆分")]
+                .into_iter()
+                .filter(|(k, _)| n(k) > 0)
+                .map(|(k, name)| format!("{name} {}", n(k)))
+                .collect();
+            let inbox = if extra.is_empty() {
+                format!("{INBOX_NAME} {}", n(INBOX))
+            } else {
+                format!("{INBOX_NAME} {}（{}）", n(INBOX), extra.join(" · "))
+            };
+            let mut parts = vec![inbox];
             parts.extend(b.statuses.iter().map(|st| format!("{} {}", st.name, n(&st.key))));
             s += &format!("{}{}{}\n", p.cyan(&pad(&b.path, w)), pad(&format!("{} / {}", pr.name, b.name), nw), p.dim(&parts.join(" · ")));
         }
@@ -644,6 +654,17 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                     with.push(id);
                 }
             }
+            let from = match a.value("--from") {
+                Some(raw) => Some(
+                    raw.trim()
+                        .trim_start_matches('#')
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| BoardError::usage(format!("--from：无效的 ID「{raw}」")))?,
+                ),
+                None => None,
+            };
             let mut body = text_arg(&a, "--body", "--body-file")?;
             // --image / --file：先在本地全部检查一遍（不存在、类型不支持、超过 10 MB 都在上传前拒绝，不建卡），
             // 再逐个上传成还没归属的附件，按参数顺序把它们的 Markdown 接在描述后面；建卡时服务端按引用把附件归到这张卡片
@@ -657,17 +678,6 @@ fn run(tokens: &[String], p: &Paint) -> Result<Output> {
                 let text = text.trim_end();
                 body = Some(format!("{text}{}{}", if text.is_empty() { "" } else { "\n\n" }, refs.join("\n\n")));
             }
-            let from = match a.value("--from") {
-                Some(raw) => Some(
-                    raw.trim()
-                        .trim_start_matches('#')
-                        .parse::<i64>()
-                        .ok()
-                        .filter(|n| *n >= 1)
-                        .ok_or_else(|| BoardError::usage(format!("--from：无效的 ID「{raw}」")))?,
-                ),
-                None => None,
-            };
             let d = be.exec(&path, &actor, Cmd::New {
                 title,
                 body,

@@ -85,6 +85,9 @@ impl Parser {
                         out.push(RunEvent { kind: "tool".into(), call: some_text(id), tool: Some(name), args: some_text(&arg), ..Default::default() });
                     }
                     out.extend(self.tool_done(u, id, &call));
+                    if logfmt::finished(u).is_some() {
+                        self.calls.done(id);
+                    }
                     out
                 }
                 "terminal_update" => {
@@ -148,16 +151,16 @@ impl Parser {
     }
 
     /// 工具做完了（completed / failed）时的结果事件。v2 命令的输出、退出码在它引用的终端里（终端名不写时和调用同名）
-    fn tool_done(&self, u: &Value, id: &str, call: &Value) -> Option<RunEvent> {
+    fn tool_done(&mut self, u: &Value, id: &str, call: &Value) -> Option<RunEvent> {
         let ok = logfmt::finished(u)?;
         let mut body = logfmt::tool_output(u);
         let mut code = logfmt::tool_code(u);
         let term = logfmt::terminal_of(call).unwrap_or_else(|| id.to_string());
-        if let Some((out, c)) = self.terms.get(&term) {
+        if let Some((out, c)) = self.terms.remove(&term) {
             if body.trim().is_empty() {
-                body = out.clone();
+                body = out;
             }
-            code = code.or(*c);
+            code = code.or(c);
         }
         let mut e = done(id, &body, ok);
         e.code = code;
@@ -331,5 +334,25 @@ mod tests {
         assert_eq!(out.lines().count(), OUT_LINES + 1);
         assert!(out.ends_with("…（共 50 行）"));
         assert!(done("t", &"x".repeat(OUT_MAX * 2), true).out.unwrap().chars().count() <= OUT_MAX);
+    }
+
+    /// 长时间派发里几千次工具调用都已结束：调用字段、开始标记和终端缓存都要释放
+    #[test]
+    fn finished_tool_calls_release_parser_memory() {
+        let mut p = Parser::new(Stream::Acp);
+        let upd = |u: String| format!(r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{u}}}}}"#);
+        for i in 0..10_000 {
+            let id = format!("t{i}");
+            p.feed(
+                &upd(format!(
+                    r#"{{"sessionUpdate":"tool_call_update","toolCallId":"{id}","kind":"execute","title":"ls","rawInput":{{"command":"ls"}},"content":[{{"type":"terminal","terminalId":"{id}"}}]}}"#
+                )),
+                i,
+            );
+            p.feed(&upd(format!(r#"{{"sessionUpdate":"terminal_output_chunk","terminalId":"{id}","data":""}}"#)), i);
+            p.feed(&upd(format!(r#"{{"sessionUpdate":"tool_call_update","toolCallId":"{id}","status":"completed"}}"#)), i);
+        }
+        assert_eq!(p.calls.len(), 0);
+        assert!(p.terms.is_empty());
     }
 }

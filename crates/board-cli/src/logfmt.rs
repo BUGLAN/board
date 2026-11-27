@@ -87,6 +87,7 @@ fn acp(v: &Value, calls: &mut Calls, out: &mut Vec<String>) {
             "agent_message_chunk" => text(&content_text(&u["content"]), &mut push),
             "agent_thought_chunk" => thinking(&content_text(&u["content"]), &mut push),
             "tool_call" | "tool_call_update" => {
+                let id = s(&u["toolCallId"]);
                 let call = calls.merge(u);
                 if calls.starts(u, &call) {
                     let (name, arg) = tool_of(&call);
@@ -98,6 +99,7 @@ fn acp(v: &Value, calls: &mut Calls, out: &mut Vec<String>) {
                     if !(body.trim().is_empty() && refs_terminal(&call)) {
                         push(result_line(&body, !ok));
                     }
+                    calls.done(id);
                 }
             }
             "terminal_update" => {
@@ -192,6 +194,17 @@ impl Calls {
             self.started.insert(id.to_string());
         }
         start
+    }
+
+    /// 调用结束后不再需要它的字段和「已经写过开始」的标记；长派发里几千次调用不能一直攒着
+    pub(crate) fn done(&mut self, id: &str) {
+        self.fields.remove(id);
+        self.started.remove(id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.fields.len().max(self.started.len())
     }
 }
 

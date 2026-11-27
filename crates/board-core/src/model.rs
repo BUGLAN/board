@@ -24,6 +24,8 @@ pub const INBOX: &str = "inbox";
 pub const INBOX_NAME: &str = "未整理";
 /// 「稍后再做」的计数键：`counts` 里单独算，不占 `inbox`（default/main#585）
 pub const LATER: &str = "later";
+/// 已拆分原条目的计数键：`counts` 里单独算，不占 `inbox`；和 `later` 重合的原条目只算在 `later` 里
+pub const SPLIT: &str = "split";
 
 /// 状态块在白板上的位置：12 栏网格里的起始栏 x、宽度 w，以及决定上下先后的 y
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -486,7 +488,7 @@ impl BoardRef {
 /* ------------------------------- 快照 ------------------------------- */
 
 /// 各状态的卡片数（键是状态标识，含 `inbox`；`later` 是「未整理」里收到「稍后再做」的条目，
-/// 不算在 `inbox` 里）
+/// `split` 是已经拆出卡片后隐藏的原条目，两者都不算在 `inbox` 里，也不重复计算）
 pub type Counts = BTreeMap<String, i64>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

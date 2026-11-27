@@ -4477,19 +4477,29 @@ fn new_from_records_split_relation_both_ways() {
 #[test]
 fn inbox_count_leaves_out_entries_already_split() {
     let mut s = store();
-    let inbox = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects.iter().flat_map(|p| p.boards.iter()).map(|b| b.counts[INBOX]).sum::<i64>();
+    let counts = |s: &Store| {
+        let b = s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].clone();
+        let inbox = b.counts[INBOX];
+        let later = b.counts[LATER];
+        let split = b.counts[SPLIT];
+        let flow = s.read(|r| {
+            let b = r.resolve(B)?;
+            Ok(r.board_snapshot(&b, T0, true)?.cols[INBOX].len() as i64)
+        }).unwrap();
+        (inbox, later, split, inbox + later + split, flow)
+    };
     let a = inbox_card(&mut s, T0, &Actor::human(), "原始需求", None).unwrap().card.id;
     inbox_card(&mut s, T0, &Actor::human(), "别的一条", None).unwrap();
-    assert_eq!(inbox(&s), 2);
+    assert_eq!(counts(&s), (2, 0, 0, 2, 2));
     let x = inbox_card(&mut s, T0 + S, &Actor::agent("mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap().card.id;
     let y = inbox_card(&mut s, T0 + S, &Actor::agent("mbp/opus-5.5"), "拆出来的二", Some(a)).unwrap().card.id;
-    assert_eq!(inbox(&s), 3, "原条目并进拆出的那组，不单独算");
+    assert_eq!(counts(&s), (3, 0, 1, 4, 4), "原条目并进拆出的那组，单独记在 split");
     exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: x, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
-    assert_eq!(inbox(&s), 2, "拆出的卡整理走了，原条目照样不算");
+    assert_eq!(counts(&s), (2, 0, 1, 3, 3), "拆出的卡整理走了，原条目照样不算");
     // 撤销拆解 = 删掉拆出的卡：原条目回来
     exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: x }).unwrap();
     exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: y }).unwrap();
-    assert_eq!(inbox(&s), 2);
+    assert_eq!(counts(&s), (2, 0, 0, 2, 2));
 }
 
 #[test]

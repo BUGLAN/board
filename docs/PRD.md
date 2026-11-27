@@ -309,7 +309,7 @@ Board 只管两件事：卡片在哪个状态、谁在做。agent 怎么干活�
 
 - 发版附件里有单独的 `board` 包：每个平台一个压缩包（`board-darwin-arm64.tar.gz`、`board-darwin-x64.tar.gz`、`board-linux-x64.tar.gz`、`board-linux-arm64.tar.gz`、`board-windows-x64.zip`，里面只有 `board` / `board.exe`），和 SHA-256 校验文件 `board-sha256.txt`。
 - 安装脚本：服务端在 `/install.sh`（macOS、Linux）和 `/install.ps1`（Windows）提供，不需要登录；脚本里写着服务端自己的版本号、对外地址和发版附件的地址（服务端的环境变量 `BOARD_DOWNLOAD` 可以换成镜像）。脚本按平台下载压缩包和校验文件，校验对不上就中止、不替换已有的 `board`；装到 `~/.local/bin`（Windows：`%LOCALAPPDATA%\Board\bin`，环境变量 `BOARD_INSTALL_DIR` 可改），这个目录不在 PATH 里时写进 shell 配置（Windows 写用户 PATH），只追加一次。带 `--token`（PowerShell：`-Token`）时接着 `board login`；带 `--name`、`--workspace`、`--dir` 时，加 `--service` 装成系统服务（`board host --install`，开机自动接任务），不加时给出前台运行的命令。「添加机器」弹窗生成的就是这样一行（§10.12）。
-- **`board update [--latest]`**：把单独安装的 `board` 原地升级到服务端的版本（`GET /api/health`，只要服务端地址、不要令牌）；`--latest` 升级到最新发版。下载、校验和安装脚本一样，校验对不上不替换；解压出的新 `board` 先核对 `--version`，再替换正在运行的这个文件（Windows 上把旧的改名成 `board.old.exe`，下次升级时删掉）。已经是这个版本时什么都不做。桌面端自带的 `board`（在 `.app` 里，或和 `board-desktop` 在同一个目录）跟着桌面端升级：拒绝执行，提示用桌面端的「检查更新」。本机有用这个文件运行的 `board host` 时提示重启它；远程「升级」（§9.1）由 `board host` 自己执行 `board update`，成功后自己重启。
+- **`board update [--latest]`**：把单独安装的 `board` 原地升级到服务端的版本（`GET /api/health`，只要服务端地址、不要令牌）；`--latest` 升级到最新发版。下载、校验和安装脚本一样，校验对不上不替换；`BOARD_DOWNLOAD` 只接受 HTTPS、`localhost` 的 HTTP 或本机目录，避免明文镜像同时换掉压缩包和校验文件。解压出的新 `board` 先核对 `--version`，再替换正在运行的这个文件（Windows 上把旧的改名成 `board.old-<进程号>.exe`，下次升级时尽量删掉），旧文件还被占用时连续升级也能继续。已经是这个版本时什么都不做。桌面端自带的 `board`（在 `.app` 里，或和 `board-desktop` 在同一个目录）跟着桌面端升级：拒绝执行，提示用桌面端的「检查更新」。本机有用这个文件运行的 `board host` 时提示重启它；远程「升级」（§9.1）由 `board host` 自己执行 `board update`，成功后自己重启。
 
 **`board skills <ls | push <目录>… | sync | rm <名称>>`**：skills 共用库（§10.16「共用配置」），访问令牌就能执行，不用 `--as`、`--board`。
 

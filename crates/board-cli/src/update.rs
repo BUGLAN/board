@@ -6,7 +6,7 @@
 //! - 桌面端自带的 board 跟着桌面端升级：拒绝执行，提示用桌面端的「检查更新」。
 //! - 本机有 `board host` 在跑时提示重启它（远程「升级」由 board host 自己执行 `board update` 后重启，不提示）。
 //! - 下载地址：`https://github.com/buglan/board/releases/download/v<版本>/…`（`--latest` 用 `releases/latest/download/…`）；
-//!   环境变量 `BOARD_DOWNLOAD` 换成别的地址或本机目录（镜像、测试用），和安装脚本一样。
+//!   环境变量 `BOARD_DOWNLOAD` 换成 HTTPS 地址、本机 HTTP（只认 localhost / 回环地址）或本机目录（镜像、测试用）。
 
 use crate::doctor::{HttpProbe, Probe, ProbeError};
 use crate::config;
@@ -14,6 +14,7 @@ use crate::output::{Output, Paint};
 use board_core::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -66,15 +67,53 @@ pub fn bundled_with_desktop(exe: &Path) -> bool {
     exe.parent().is_some_and(|d| d.join("board-desktop").is_file() || d.join("board-desktop.exe").is_file())
 }
 
-/// 下载地址的前缀：`BOARD_DOWNLOAD` 优先（网址或本机目录）；否则按版本号，没有版本号时是最新发版
-fn download_base(version: Option<&str>) -> String {
+/// 下载地址的前缀：`BOARD_DOWNLOAD` 优先（HTTPS、本机 HTTP 或本机目录）；否则按版本号，没有版本号时是最新发版
+fn download_base(version: Option<&str>) -> Result<String> {
     if let Some(b) = config::env("BOARD_DOWNLOAD") {
-        return b.trim_end_matches('/').to_string();
+        let b = b.trim_end_matches('/');
+        check_download_base(b)?;
+        return Ok(b.to_string());
     }
-    match version {
+    Ok(match version {
         Some(v) => format!("{RELEASES}/download/v{v}"),
         None => format!("{RELEASES}/latest/download"),
+    })
+}
+
+/// BOARD_DOWNLOAD 的下载来源：HTTPS、本机 HTTP（localhost / 回环地址）或本机目录。
+/// HTTP 只给本机测试用；允许任意 HTTP 等于让中间人同时改掉压缩包和校验文件。
+fn check_download_base(base: &str) -> Result<()> {
+    let no = || {
+        BoardError::usage(format!(
+            "BOARD_DOWNLOAD「{base}」不安全：只接受 https://、本机 http://（localhost 或回环地址）或本机目录"
+        ))
+    };
+    if let Some(rest) = base.strip_prefix("https://") {
+        return if authority(rest).is_empty() { Err(no()) } else { Ok(()) };
     }
+    if let Some(rest) = base.strip_prefix("http://") {
+        return if local_http(rest) { Ok(()) } else { Err(no()) };
+    }
+    if base.contains("://") {
+        return Err(no());
+    }
+    Ok(())
+}
+
+fn authority(rest: &str) -> &str {
+    rest.split(['/', '?', '#']).next().unwrap_or_default()
+}
+
+fn local_http(rest: &str) -> bool {
+    let hostport = authority(rest).rsplit('@').next().unwrap_or_default();
+    if hostport.is_empty() {
+        return false;
+    }
+    let host = match hostport.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => hostport.split(':').next().unwrap_or_default(),
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// 取一个附件：网址用 HTTP（跟随 GitHub 的跳转），其他当成本机目录
@@ -154,7 +193,7 @@ fn version_of(bin: &Path) -> Result<String> {
 }
 
 /// 用 new 原地替换 exe。macOS、Linux 直接改名覆盖（正在运行的进程不受影响）；
-/// Windows 上正在运行的 exe 不能覆盖、但能改名：先把它改成 board.old.exe，再把新的放进来，下次升级时删掉旧的
+/// Windows 上正在运行的 exe 不能覆盖、但能改名：先把它改成 board.old-<进程号>.exe，再把新的放进来
 fn replace(new: &Path, exe: &Path) -> Result<()> {
     let denied = |e: std::io::Error| {
         let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
@@ -172,7 +211,7 @@ fn replace(new: &Path, exe: &Path) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let old = old_path(exe);
+        let old = old_path(exe, std::process::id());
         let _ = std::fs::remove_file(&old);
         std::fs::rename(exe, &old).map_err(denied)?;
         if let Err(e) = std::fs::rename(new, exe) {
@@ -183,10 +222,35 @@ fn replace(new: &Path, exe: &Path) -> Result<()> {
     }
 }
 
-/// Windows 上替换下来的旧版本
+/// Windows 上本次替换下来的旧版本：带上进程号，上一次留下的同名文件还被占用也不会挡住这一次
 #[cfg_attr(unix, allow(dead_code))]
-fn old_path(exe: &Path) -> PathBuf {
-    exe.with_file_name(format!("board.old{}", std::env::consts::EXE_SUFFIX))
+fn old_path(exe: &Path, pid: u32) -> PathBuf {
+    exe.with_file_name(format!("board.old-{pid}{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// 升级开始时尽量清掉以前的 board.old.exe、board.old-<进程号>.exe；被旧进程占着的删不掉就留着，不影响这一次
+#[cfg_attr(unix, allow(dead_code))]
+fn clean_old_files(exe: &Path) {
+    let Some(dir) = exe.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if is_old_name(&name.to_string_lossy()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg_attr(unix, allow(dead_code))]
+fn is_old_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("board.old") else { return false };
+    if rest == std::env::consts::EXE_SUFFIX {
+        return true;
+    }
+    let Some(pid) = rest.strip_prefix('-').and_then(|x| x.strip_suffix(std::env::consts::EXE_SUFFIX)) else {
+        return false;
+    };
+    !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// 本机还在跑、用的就是 exe 这个文件的 board host（不含自己和启动自己的那个）：进程号。
@@ -224,7 +288,7 @@ pub fn run(latest: bool, json: bool, p: &Paint) -> Result<Output> {
         )));
     }
     #[cfg(not(unix))]
-    let _ = std::fs::remove_file(old_path(&exe));
+    clean_old_files(&exe);
     let platform = platform_of(std::env::consts::OS, std::env::consts::ARCH).ok_or_else(|| {
         BoardError::usage(format!("发版附件里没有这个平台（{} {}）的 board：用 cargo install 从源码装", std::env::consts::OS, std::env::consts::ARCH))
     })?;
@@ -234,6 +298,7 @@ pub fn run(latest: bool, json: bool, p: &Paint) -> Result<Output> {
         let (v, url) = server_version()?;
         (Some(v), Some(url))
     };
+    let base = download_base(target.as_deref())?;
     if target.as_deref() == Some(current) {
         let msg = format!("已经是 {current}，和服务端一致，不用升级");
         return Ok(if json {
@@ -243,7 +308,6 @@ pub fn run(latest: bool, json: bool, p: &Paint) -> Result<Output> {
         });
     }
 
-    let base = download_base(target.as_deref());
     let archive = archive_name(platform);
     let sums = String::from_utf8_lossy(&fetch(&base, SUMS)?).into_owned();
     let want = expected_sum(&sums, &archive).ok_or_else(|| BoardError::usage(format!("校验文件 {SUMS} 里没有 {archive}，不替换现在的 board")))?;
@@ -339,6 +403,47 @@ mod tests {
         assert_eq!(expected_sum(&sums, "board-darwin-arm64.tar.gz"), None);
         assert_eq!(expected_sum(&sums, "board-linux-arm64.tar.gz"), None);
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn download_sources_are_https_or_local() {
+        for ok in [
+            "https://github.com/buglan/board/releases/download/v1",
+            "https://mirror.example.com/board/",
+            "http://localhost:8000",
+            "http://localhost",
+            "http://127.0.0.1:8000/assets",
+            "http://[::1]:8000",
+            "/tmp/board-assets",
+            r"C:\board-assets",
+        ] {
+            assert!(check_download_base(ok).is_ok(), "{ok}");
+        }
+        for bad in ["http://example.com", "http://localhost.evil.com", "ftp://example.com", "https://", "http://"] {
+            let e = check_download_base(bad).unwrap_err();
+            assert_eq!(e.code, ErrorCode::Usage, "{bad}");
+        }
+    }
+
+    #[test]
+    fn windows_old_files_are_per_process_and_cleaned() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = d.path().join(format!("board{}", std::env::consts::EXE_SUFFIX));
+        assert_ne!(old_path(&exe, 1), old_path(&exe, 2));
+        assert_eq!(
+            old_path(&exe, 42).file_name().unwrap().to_str().unwrap(),
+            format!("board.old-42{}", std::env::consts::EXE_SUFFIX)
+        );
+        let old1 = d.path().join(format!("board.old-1{}", std::env::consts::EXE_SUFFIX));
+        let legacy = d.path().join(format!("board.old{}", std::env::consts::EXE_SUFFIX));
+        let other = d.path().join(format!("board.old-x{}", std::env::consts::EXE_SUFFIX));
+        for p in [&old1, &legacy, &other] {
+            std::fs::write(p, b"old").unwrap();
+        }
+        clean_old_files(&exe);
+        assert!(!old1.exists());
+        assert!(!legacy.exists());
+        assert!(other.exists(), "不是升级留下的旧文件，不删");
     }
 
     #[test]

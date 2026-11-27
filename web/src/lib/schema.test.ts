@@ -8,6 +8,9 @@ describe('cardTotal（切换器的卡片总数）', () => {
   it('收进「稍后再做」的条目仍算在总数里', () => {
     expect(cardTotal({ todo: 3, doing: 2, review: 2, done: 1, rework: 0, check: 0, inbox: 3, later: 1 })).toBe(12);
   });
+  it('拆解后隐藏的原条目不算，拆出的卡已经算在未整理里', () => {
+    expect(cardTotal({ todo: 3, inbox: 3, later: 1, split: 2 })).toBe(7);
+  });
   it('没有 counts 时是 0', () => {
     expect(cardTotal(undefined)).toBe(0);
     expect(cardTotal(null)).toBe(0);

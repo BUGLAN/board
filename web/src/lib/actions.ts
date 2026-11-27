@@ -3,7 +3,7 @@
    ========================================================================== */
 import { api } from './api';
 import { boardPrompt, detailPrompt, type QuickPrompt } from './prompt';
-import { boardFlow, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
+import { boardFlow, cardTotal, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import { projectDirError } from './projectDir';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
@@ -299,7 +299,7 @@ const dropProject = (pk: string): Patch => ({ ws: ws => ({ ...ws, projects: ws.p
 export async function deleteBoard(path: string) {
   const m = boardMeta(data().ws, path);
   if (!m) return;
-  const total = Object.values(m.board.counts).reduce((a, x) => a + x, 0);
+  const total = cardTotal(m.board.counts);
   const ok = await confirm({
     title: `删除白板「${m.board.name}」？`,
     text: `${total} 张卡片和全部动态会被永久删除，无法恢复。使用 BOARD=${path} 的 agent 会收到 BOARD_NOT_FOUND。`,
@@ -317,7 +317,7 @@ export async function deleteBoard(path: string) {
 export async function deleteProject(pk: string) {
   const p = data().ws?.projects.find(x => x.key === pk);
   if (!p) return;
-  const total = p.boards.reduce((a, b) => a + Object.values(b.counts).reduce((x, y) => x + y, 0), 0);
+  const total = p.boards.reduce((n, b) => n + cardTotal(b.counts), 0);
   const ok = await confirm({
     title: `删除项目「${p.name}」？`,
     text: `项目下的 ${p.boards.length} 块白板、${total} 张卡片会被永久删除，无法恢复。`,

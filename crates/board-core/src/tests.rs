@@ -2880,7 +2880,8 @@ fn inbox_counts_leave_out_later_entries() {
     let counts = |s: &Store| {
         let ws = s.read(|r| r.workspace(T0)).unwrap();
         let b = &ws.projects[0].boards[0];
-        (b.counts[INBOX], b.counts[LATER], b.counts.values().sum::<i64>())
+        let total = b.counts.iter().filter(|(k, _)| k.as_str() != SPLIT).map(|(_, n)| *n).sum::<i64>();
+        (b.counts[INBOX], b.counts[LATER], total)
     };
     assert_eq!(counts(&s), (2, 0, 2));
     exec(&mut s, B, &human(), T0 + 5, later(a, true)).unwrap();

@@ -11,7 +11,7 @@ import { create } from 'zustand';
 import { openBoard } from '../../lib/actions';
 import { api } from '../../lib/api';
 import { statusRoles } from '../../lib/review';
-import { statusColor } from '../../lib/schema';
+import { cardTotal, statusColor } from '../../lib/schema';
 import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsProfile, StatsScope } from '../../lib/types';
 import { agentColor, cx } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
@@ -469,7 +469,7 @@ export function BoardOverview({ s }: { s: Stats }) {
                 <button key={x.path} type="button" onClick={() => openBoard(x.path, { stay: true })}>
                   <b>{x.name}</b>
                   <span>{x.desc || x.path}</span>
-                  <em>{Object.values(x.counts ?? {}).reduce((n, v) => n + v, 0)} 张</em>
+                  <em>{cardTotal(x.counts)} 张</em>
                 </button>
               ))}
             </div>

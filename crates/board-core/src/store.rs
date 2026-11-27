@@ -818,6 +818,7 @@ impl<'a> R<'a> {
                 b.statuses = flow_of(conn, id)?.0.into_iter().map(|s| Status { layout: None, ..s }).collect();
                 b.counts.insert(INBOX.to_string(), 0);
                 b.counts.insert(LATER.to_string(), 0);
+                b.counts.insert(SPLIT.to_string(), 0);
                 for s in &b.statuses {
                     b.counts.insert(s.key.clone(), 0);
                 }
@@ -844,6 +845,14 @@ impl<'a> R<'a> {
                     |r| r.get(0),
                 )?;
                 b.counts.insert(LATER.to_string(), later);
+                let split: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM cards p WHERE p.board = ?1 AND p.col = ?2 AND p.later_at IS NULL
+                       AND p.deleted_at IS NULL
+                       AND EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL)",
+                    params![id, INBOX],
+                    |r| r.get(0),
+                )?;
+                b.counts.insert(SPLIT.to_string(), split);
                 let mut hs = conn.prepare(&format!(
                     "SELECT holder FROM cards c WHERE board = ?1 AND holder IS NOT NULL AND deleted_at IS NULL ORDER BY {}, pos",
                     COL_ORDER

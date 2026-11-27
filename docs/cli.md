@@ -43,7 +43,7 @@
 
 ### `board update`
 
-已经是最新版本时 `updated` 为 `false`；替换成功后为 `true`。桌面端自带的 `board` 会拒绝，并在错误里说明跟着桌面端升级：
+已经是最新版本时 `updated` 为 `false`；替换成功后为 `true`。环境变量 `BOARD_DOWNLOAD` 只接受 HTTPS 地址、`localhost` / 回环地址的 HTTP 或本机目录。桌面端自带的 `board` 会拒绝，并在错误里说明跟着桌面端升级：
 
 ```json
 {
@@ -233,7 +233,7 @@
 
 ### `board boards`
 
-`counts` 按状态标识统计，包含「未整理」的 `inbox`（不含收到「稍后再做」的条目）和收起的 `later`；`flow` 是这块白板的工作流顺序：
+`counts` 按状态标识统计：`inbox` 和界面「未整理」列表一致，不含收到「稍后再做」的 `later`、也不含已经拆出卡片后隐藏的原条目 `split`；这三项相加等于 `board flow` 里的未整理张数。`flow` 是这块白板的工作流顺序：
 
 ```json
 [
@@ -247,6 +247,7 @@
       "later": 0,
       "review": 2,
       "rework": 0,
+      "split": 0,
       "todo": 3
     },
     "flow": [
