@@ -172,10 +172,11 @@ try {
 Write-Host "✓ 已安装 $(& $bin --version)：$bin" -ForegroundColor Green
 
 # 用户 PATH（和桌面端「Agent 接入」那条命令一样，只写一次）
-$p = [Environment]::GetEnvironmentVariable('Path', 'User')
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$p = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 $parts = @($p -split ';' | Where-Object { $_ })
 if ($parts -notcontains $dir) {
-  [Environment]::SetEnvironmentVariable('Path', (($parts + $dir) -join ';'), 'User')
+  $key.SetValue('Path', (($parts + $dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
   Write-Host "  已把 $dir 写进用户 PATH（新开终端生效）"
 }
 if (-not (($env:Path -split ';') -contains $dir)) { $env:Path = "$dir;$env:Path" }

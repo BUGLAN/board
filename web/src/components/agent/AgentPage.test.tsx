@@ -233,6 +233,19 @@ describe('安装 skill 命令（#518）', () => {
   });
 });
 
+describe('安装 board 命令行（#711）', () => {
+  it('Windows：目录带撇号时正确转义，读写用户 PATH 保留 REG_EXPAND_SZ', async () => {
+    const { pathCommand } = await import('./Access');
+    const cmd = pathCommand('powershell', '', String.raw`C:\Users\O'Brien\Board\bin`);
+    expect(cmd).toContain(String.raw`$d = 'C:\Users\O''Brien\Board\bin'`);
+    expect(cmd).toContain("[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)");
+    expect(cmd).toContain('DoNotExpandEnvironmentNames');
+    expect(cmd).toContain("$key.SetValue('Path', (($parts + $d) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)");
+    expect(cmd).not.toContain('[Environment]::GetEnvironmentVariable');
+    expect(cmd).not.toContain('[Environment]::SetEnvironmentVariable');
+  });
+});
+
 describe('复制按钮（#519）', () => {
   it('接入 agent 页每个复制按钮的名称都不一样，写明复制的是哪条；复制成功有 toast', async () => {
     const { fetch } = localServer();

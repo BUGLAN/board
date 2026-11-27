@@ -98,6 +98,22 @@ mod tests {
     }
 
     #[test]
+    fn windows_path_updates_keep_registry_expand_values() {
+        let ps = render(PS1, "1.2.3", "http://127.0.0.1:7420", "https://x/y").unwrap();
+        let nsh = include_str!("../../../src-tauri/windows/installer-hooks.nsh");
+        for script in [ps.as_str(), nsh] {
+            assert!(!script.contains("[Environment]::GetEnvironmentVariable"));
+            assert!(!script.contains("[Environment]::SetEnvironmentVariable"));
+            assert!(script.contains("OpenSubKey('Environment'"));
+            assert!(script.contains("DoNotExpandEnvironmentNames"));
+            assert!(script.contains("RegistryValueKind]::ExpandString"));
+        }
+        assert!(!nsh.contains("$$dir = '$INSTDIR'"));
+        assert_eq!(nsh.matches("$$dir = $$args[0]").count(), 2);
+        assert_eq!(nsh.matches(r#"-File "$PLUGINSDIR\\board-cli-path.ps1" "$INSTDIR""#).count(), 2);
+    }
+
+    #[test]
     fn public_url_from_proxy_headers() {
         let mut h = HeaderMap::new();
         h.insert("host", HeaderValue::from_static("127.0.0.1:7420"));

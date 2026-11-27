@@ -60,15 +60,17 @@ Function BoardCliAddToPath
   StrCmp $INSTDIR "" done
   InitPluginsDir
   FileOpen $9 "$PLUGINSDIR\\board-cli-path.ps1" w
-  FileWrite $9 "$$dir = '$INSTDIR'$\r$\n"
-  FileWrite $9 "$$p = [Environment]::GetEnvironmentVariable('Path','User')$\r$\n"
+  FileWrite $9 "if (-not $$args -or -not $$args[0]) { exit 1 }$\r$\n"
+  FileWrite $9 "$$dir = $$args[0]$\r$\n"
+  FileWrite $9 "$$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $$true)$\r$\n"
+  FileWrite $9 "$$p = $$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)$\r$\n"
   FileWrite $9 "if (-not $$p) { $$p = '' }$\r$\n"
   FileWrite $9 "$$parts = @($$p -split ';' | Where-Object { $$_ -ne '' })$\r$\n"
   FileWrite $9 "if ($$parts -notcontains $$dir) {$\r$\n"
-  FileWrite $9 "  [Environment]::SetEnvironmentVariable('Path', ($$parts + $$dir -join ';'), 'User')$\r$\n"
+  FileWrite $9 "  $$key.SetValue('Path', (($$parts + $$dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)$\r$\n"
   FileWrite $9 "}$\r$\n"
   FileClose $9
-  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\\board-cli-path.ps1"'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\\board-cli-path.ps1" "$INSTDIR"'
   Pop $1
   Pop $2
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
@@ -80,14 +82,16 @@ Function un.BoardCliRemoveFromPath
   StrCmp $INSTDIR "" done
   InitPluginsDir
   FileOpen $9 "$PLUGINSDIR\\board-cli-path.ps1" w
-  FileWrite $9 "$$dir = '$INSTDIR'$\r$\n"
-  FileWrite $9 "$$p = [Environment]::GetEnvironmentVariable('Path','User')$\r$\n"
+  FileWrite $9 "if (-not $$args -or -not $$args[0]) { exit 1 }$\r$\n"
+  FileWrite $9 "$$dir = $$args[0]$\r$\n"
+  FileWrite $9 "$$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $$true)$\r$\n"
+  FileWrite $9 "$$p = $$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)$\r$\n"
   FileWrite $9 "if ($$p) {$\r$\n"
   FileWrite $9 "  $$parts = @($$p -split ';' | Where-Object { $$_ -ne '' -and $$_ -ne $$dir })$\r$\n"
-  FileWrite $9 "  [Environment]::SetEnvironmentVariable('Path', ($$parts -join ';'), 'User')$\r$\n"
+  FileWrite $9 "  $$key.SetValue('Path', ($$parts -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)$\r$\n"
   FileWrite $9 "}$\r$\n"
   FileClose $9
-  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\\board-cli-path.ps1"'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\\board-cli-path.ps1" "$INSTDIR"'
   Pop $1
   Pop $2
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000

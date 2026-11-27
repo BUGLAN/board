@@ -132,16 +132,16 @@ const loginCommand = (url: string, token: string) => `board login --url ${url} -
 const cliDir = () => (boardCli ? boardCli.replace(/[\\/][^\\/]*$/, '') : null);
 
 /** PATH 里加上 board 所在目录：只写用户级配置、重复执行不会重复追加，命令里不出现任何令牌 */
-function pathCommand(kind: 'powershell' | 'sh', rc: string): string {
-  const dir = cliDir();
+export function pathCommand(kind: 'powershell' | 'sh', rc: string, dir = cliDir()): string {
   if (kind === 'powershell') {
     const find = dir
       ? `$d = '${dir.replace(/'/g, "''")}'`
       : `$d = Split-Path (Get-Command board -ErrorAction SilentlyContinue).Source; if (-not $d) { throw '先找到 board.exe：在桌面端打开这个页面会直接给出完整路径' }`;
     return (
       find +
-      `; $p = [Environment]::GetEnvironmentVariable('Path','User'); $parts = @($p -split ';' | Where-Object { $_ }); ` +
-      `if ($parts -notcontains $d) { [Environment]::SetEnvironmentVariable('Path', (($parts + $d) -join ';'), 'User'); "已把 $d 写进用户 PATH" } ` +
+      `; $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true); ` +
+      `$p = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $parts = @($p -split ';' | Where-Object { $_ }); ` +
+      `if ($parts -notcontains $d) { $key.SetValue('Path', (($parts + $d) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString); "已把 $d 写进用户 PATH" } ` +
       `else { "$d 已经在用户 PATH 里" }; $env:Path = "$d;$env:Path"`
     );
   }
