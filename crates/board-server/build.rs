@@ -70,16 +70,29 @@ fn git(args: &[&str]) -> Option<String> {
     (out.status.success() && !s.is_empty()).then_some(s)
 }
 
+/// 只盯存在的路径：cargo 把不存在的 rerun-if-changed 一律当作过期。
+fn watch_git_path(name: &str) {
+    if let Some(p) = git(&["rev-parse", "--git-path", name]) {
+        if Path::new(&p).exists() {
+            println!("cargo:rerun-if-changed={p}");
+        }
+    }
+}
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    println!("cargo:rerun-if-changed=../../web/dist");
     println!("cargo:rerun-if-env-changed=BOARD_COMMIT");
     // 本机开发用 Vite 提供界面，debug 构建不要求 web/dist；发布版本会把界面临时打包进二进制，
     // 没有 index.html 时必须在这里停住，不能让一个能启动、但所有页面都报「界面还没有构建」的服务端流出去。
+    let release = std::env::var("PROFILE").ok().as_deref() == Some("release");
     let index = manifest.join("../../web/dist/index.html");
-    println!("cargo:rerun-if-changed={}", index.display());
+    // debug 构建里 rust-embed 在运行时从磁盘读 web/dist，不需要因为界面变化重编。
+    if release {
+        println!("cargo:rerun-if-changed=../../web/dist");
+        println!("cargo:rerun-if-changed={}", index.display());
+    }
     let index_ready = index.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
-    if std::env::var("PROFILE").ok().as_deref() == Some("release") && !index_ready {
+    if release && !index_ready {
         panic!(
             "发布构建缺少 web/dist/index.html。先在仓库根目录执行 npm run build:web，再编译 board-server；\
              不要在发布构建里使用 --skip-web，除非确认界面已经构建过"
@@ -89,11 +102,9 @@ fn main() {
         Some(c) => c.trim().to_string(),
         None => {
             // 换提交、切分支时重新取
-            if let Some(dir) = git(&["rev-parse", "--git-dir"]) {
-                println!("cargo:rerun-if-changed={dir}/HEAD");
-                println!("cargo:rerun-if-changed={dir}/refs/heads");
-                println!("cargo:rerun-if-changed={dir}/packed-refs");
-            }
+            watch_git_path("HEAD");
+            watch_git_path("refs/heads");
+            watch_git_path("packed-refs");
             git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "unknown".into())
         }
     };
@@ -123,5 +134,8 @@ fn main() {
     }
     code += "];\n";
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("board_skills.rs");
-    std::fs::write(out, code).unwrap();
+    match std::fs::read(&out) {
+        Ok(old) if old == code.as_bytes() => {}
+        _ => std::fs::write(out, code).unwrap(),
+    }
 }
