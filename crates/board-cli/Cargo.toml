@@ -28,6 +28,10 @@ ureq = { version = "3", features = ["json"] }
 # board host 结束 agent 进程树（kill 进程组）、处理 Ctrl+C / SIGTERM
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# board host、board acp 用 Job Object 保证停止或崩溃时结束整棵进程树
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [dev-dependencies]
 serde_json.workspace = true
 # 集成测试直接写服务端的库（造会话、标签）和账本（rusqlite 的 params）

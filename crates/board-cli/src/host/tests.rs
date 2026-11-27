@@ -1002,6 +1002,7 @@ fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
         },
         child,
         _stdin: None,
+        job: None,
         env: Env::direct(),
         pidfile: None,
         log: log.to_path_buf(),
@@ -1034,6 +1035,7 @@ fn test_chat_run(log: &Path) -> ChatRun {
     ChatRun {
         id: 7,
         child,
+        job: None,
         env: Env::direct(),
         stdin: None,
         state: log.with_extension("state"),

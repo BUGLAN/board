@@ -1,6 +1,7 @@
 //! 派发：在白板目录里启动 agent（board acp）、看它是否结束、时限、停止、收尾和上报。
 
 use super::*;
+use crate::proctree::Job;
 
 /// 写 dsh 一次性派发的 profile 补丁（内容固定，每次派发覆盖写）
 pub(super) fn write_dsh_patch(path: &Path) -> std::io::Result<()> {
@@ -49,6 +50,8 @@ pub(super) struct Run {
     pub(super) child: Child,
     /// board acp 的标准输入：host 只拿着写端、从不写，host 退出后管道关闭，board acp 据此取消
     pub(super) _stdin: Option<std::process::ChildStdin>,
+    /// Windows：装着 board acp 和它启动的整棵进程树；句柄关闭时系统一并结束它们
+    pub(super) job: Option<Job>,
     /// 启动环境
     pub(super) env: Env,
     /// WSL 里 agent 的进程号写在这里（BOARD_PIDFILE），结束时删除
@@ -98,29 +101,35 @@ impl Run {
             match pid {
                 Some(pid) => envs::wsl_kill(&self.env, pid, hard),
                 // 还没写进程号（刚启动）：直接结束 wsl.exe
-                None => kill_tree(self.child.id(), true),
+                None => self.terminate_tree(true),
             }
             if hard {
-                kill_tree(self.child.id(), true);
+                self.terminate_tree(true);
             }
         } else {
-            kill_tree(self.child.id(), hard);
+            self.terminate_tree(hard);
         }
     }
 
     /// 主进程已经退出：结束同一进程组里剩下的进程（agent 起的子进程）。
     ///
-    /// Windows 上不做：进程号可能已经被复用，`taskkill /T` 会结束别的进程树。
-    /// 调用前要先把主进程回收（agent 自己退出时 `reap` 已经 `try_wait` 过，board host 退出时先 `wait()`）：
-    /// 不然 `kill` / `taskkill` 打的还是主进程自己
+    /// Windows 上结束 Job 里剩下的进程：父进程先退出也不影响，孙进程仍然在 Job 里。
+    /// 调用前要先把主进程回收（agent 自己退出时 `reap` 已经 `try_wait` 过，board host 退出时先 `wait()`）。
     pub(super) fn kill_rest(&self) {
         if let Some(env) = self.env.wsl().map(|_| &self.env) {
             let pid = self.pidfile.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok());
             if let Some(pid) = pid {
                 envs::wsl_kill(env, pid, true);
             }
-        } else if cfg!(unix) {
-            kill_tree(self.child.id(), true);
+        }
+        self.terminate_tree(true);
+    }
+
+    /// 结束 agent 的整棵进程树：Windows 用 Job，其他系统按进程组
+    fn terminate_tree(&self, hard: bool) {
+        match &self.job {
+            Some(job) => job.terminate(hard),
+            None => kill_tree(self.child.id(), hard),
         }
     }
 
@@ -977,6 +986,16 @@ impl Host<'_> {
             format!("在{}里启动 {prog}（board acp）失败：{e}", env.name)
         })?;
         let stdin = child.stdin.take();
+        let job = Job::attach(&child).inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&conf);
+            let _ = std::fs::remove_file(&prompt_file);
+        });
+        let job = match job {
+            Ok(job) => job,
+            Err(e) => return Err(format!("无法把 board acp 放进 Job Object（停止时结束整棵进程树）：{e}")),
+        };
         // 记下 agent 的进程号和启动时间：这个 host 没走完退出流程时，同名重启后据此结束它
         let procfile = self.run.join(format!("{}.proc", d.id));
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
@@ -987,6 +1006,7 @@ impl Host<'_> {
             d: d.clone(),
             child,
             _stdin: stdin,
+            job: Some(job),
             env,
             pidfile,
             log,

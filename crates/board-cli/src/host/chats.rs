@@ -15,6 +15,7 @@
 //!   board host 退出时一起结束。
 
 use super::*;
+use crate::proctree::Job;
 use board_core::hosts::{ChatReport, ChatTask};
 use std::process::ChildStdin;
 
@@ -22,6 +23,8 @@ use std::process::ChildStdin;
 pub(super) struct ChatRun {
     pub(super) id: i64,
     pub(super) child: Child,
+    /// Windows：装着 board acp 和它启动的整棵进程树；句柄关闭时系统一并结束它们
+    pub(super) job: Option<Job>,
     pub(super) env: Env,
     pub(super) stdin: Option<ChildStdin>,
     pub(super) state: PathBuf,
@@ -67,9 +70,25 @@ impl ChatRun {
             if let Some(pid) = self.pidfile.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok()) {
                 envs::wsl_kill(&self.env, pid, hard);
             }
-            kill_tree(self.child.id(), true);
+            self.terminate_tree(true);
         } else {
-            kill_tree(self.child.id(), hard);
+            self.terminate_tree(hard);
+        }
+    }
+
+    fn kill_rest(&self) {
+        if self.env.wsl().is_some() {
+            if let Some(pid) = self.pidfile.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok()) {
+                envs::wsl_kill(&self.env, pid, true);
+            }
+        }
+        self.terminate_tree(true);
+    }
+
+    fn terminate_tree(&self, hard: bool) {
+        match &self.job {
+            Some(job) => job.terminate(hard),
+            None => kill_tree(self.child.id(), hard),
         }
     }
 
@@ -241,9 +260,7 @@ impl Host<'_> {
     }
 
     fn chat_finish(&mut self, mut c: ChatRun, code: Option<i64>) {
-        if cfg!(unix) && c.env.wsl().is_none() {
-            kill_tree(c.child.id(), true);
-        }
+        c.kill_rest();
         let secrets = self.secrets();
         let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         let (mut rep, _, _) = chat_output(&mut c, true, &secrets);
@@ -332,6 +349,14 @@ impl Host<'_> {
         }
         envs::detach(&mut c);
         let mut child = c.spawn().map_err(|e| format!("在{}里启动 board acp 失败：{e}", env.name))?;
+        let job = Job::attach(&child).inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+        let job = match job {
+            Ok(job) => job,
+            Err(e) => return Err(format!("无法把 board acp 放进 Job Object（结束整棵进程树）：{e}")),
+        };
         let stdin = child.stdin.take();
         let procfile = self.run.join(format!("chat-{}.proc", t.id));
         let pstart = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
@@ -340,6 +365,7 @@ impl Host<'_> {
         Ok(ChatRun {
             id: t.id,
             child,
+            job: Some(job),
             env,
             stdin,
             state,

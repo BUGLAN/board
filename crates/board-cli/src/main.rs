@@ -28,6 +28,7 @@ mod logfmt;
 mod lsdir;
 mod mcpsync;
 mod output;
+mod proctree;
 mod providersync;
 mod redact;
 mod res;

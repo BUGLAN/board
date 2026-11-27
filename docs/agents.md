@@ -62,7 +62,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
    本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
 4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。手动启动的会话不用自己拼名字：`board check --agent <标识>` 由 Board 按这台机器的设置生成同样的名字（§3.2）。
 5. agent 退出后看卡片在哪：在交审状态是「已交审」；已经不归它、在其他状态是「做不下去」；还归它就记「异常退出」，卡片移到错误节点（没有时移到需要人处理的状态），评论里带退出码、最后 10 个事件的文字（工具名加结果摘要、agent 最后说的话），原始输出的最后 20 行折叠在后面。额度用完（上面第 3 步）是例外：记「额度用完」，不算异常退出，卡片回到领取前的可领取状态最上面，这台机器上这个 agent 的本机配置角色暂停到重置时间（报了同一账号的别的机器一起暂停，下面「身份和官方订阅」）。
-6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：先给整个进程组发 SIGTERM，10 秒后 SIGKILL（Windows 用 `taskkill /T /F`；WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）。agent 的主进程自己退出时，同一进程组里剩下的进程也一起结束（Windows 除外）；agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
+6. 人点「停止」或 `board host` 退出时，结束包括启动环境外壳在内的整个进程树：macOS、Linux 上先给整个进程组发 SIGTERM，10 秒后 SIGKILL（WSL 里 agent 的进程号写在 `BOARD_PIDFILE`，在 WSL 中给它的进程组发 SIGTERM / SIGKILL）；Windows 上 board host 给每个 `board acp` 建一个 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），`board acp` 启动 agent 时也放进一个 Job，停止和回收用 `TerminateJobObject`，不再沿父进程链找进程。agent 的主进程自己退出时，同一进程组 / Job 里剩下的进程也一起结束；Windows 的 Job 由内核记录成员，父进程先退出也不影响，`board host` 或 `board acp` 崩溃、句柄关闭时系统会结束整棵进程树。agent 自己再 `setsid` 出去的进程不在组里，管不到。`board host` 被 `kill -9`、崩溃后同名重启，会先结束上一次留下还在跑的 agent（按 `~/.board/host/run/<机器名>/<派发 ID>.proc` 里的进程号和启动时间）。
 
 ## 在一台新机器上装 `board`、接任务
 

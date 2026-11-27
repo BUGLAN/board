@@ -377,6 +377,7 @@ dependencies = [
  "toml_edit 0.25.19+spec-1.1.0",
  "unicode-width",
  "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

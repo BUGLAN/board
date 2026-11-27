@@ -63,6 +63,7 @@
 //! 重置时间）写进去，board host 随派发结束上报。
 
 use crate::envs::Env;
+use crate::proctree::Job;
 use board_core::hosts::{AgentAuth, LocalModel, LocalModels, Quota, QuotaWindow, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN, WINDOW_FIVE_HOUR, WINDOW_SEVEN_DAY};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1515,7 +1516,7 @@ fn send(stdin: &mut Option<ChildStdin>, frames: Vec<Value>) {
 }
 
 /// 在启动环境里拉起 agent 的 ACP 入口：标准输出一行一行送进返回的通道（读完送 None）。启动失败时写明原因、返回退出码
-fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Option<ChildStdin>, mpsc::Receiver<Option<String>>), i32> {
+fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Job, Option<ChildStdin>, mpsc::Receiver<Option<String>>), i32> {
     let env = Env::from_parts(&o.env, &o.env_prog);
     let mut c = env.command(&o.prog, &o.args, Some(&o.cwd), true);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -1523,6 +1524,16 @@ fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Option<ChildStdin>, mpsc
         Ok(ch) => ch,
         Err(e) => {
             eprintln!("✗ board acp：在{}里启动 {} 失败：{e}", env.name, o.prog);
+            return Err(EXIT_PROTOCOL);
+        }
+    };
+    // agent 自己起的子进程也在这棵进程树里：board acp 退出、或等不到它退出要结束时，一起结束
+    let job = match Job::attach(&child) {
+        Ok(job) => job,
+        Err(e) => {
+            eprintln!("✗ board acp：无法把 {} 放进 Job Object（结束整棵进程树）：{e}", o.prog);
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(EXIT_PROTOCOL);
         }
     };
@@ -1547,7 +1558,7 @@ fn spawn_agent(o: &Opts) -> std::result::Result<(Child, Option<ChildStdin>, mpsc
             let _ = tx.send(None);
         });
     }
-    Ok((child, stdin, rx))
+    Ok((child, job, stdin, rx))
 }
 
 /// 列模型（`--auth probe`）最多用多久（问完身份之后算）：Claude Code 每切一个模型要等它重读配置
@@ -1568,7 +1579,7 @@ fn write_quota(o: &Opts, q: Option<&Quota>) {
 fn run_usage(o: &Opts) -> i32 {
     let cmd = o.usage.clone().unwrap_or_default();
     let say = |q: Option<&Quota>, why: Option<String>| log(&json!({ "usage": q, "error": why }).to_string());
-    let (mut child, mut stdin, rx) = match spawn_agent(o) {
+    let (mut child, job, mut stdin, rx) = match spawn_agent(o) {
         Ok(x) => x,
         Err(code) => {
             say(None, Some(format!("启动 {} 失败", o.prog)));
@@ -1612,7 +1623,7 @@ fn run_usage(o: &Opts) -> i32 {
     };
     quiet(&mut stdin, client.close());
     drop(stdin);
-    let _ = wait(&mut child, GRACE);
+    let _ = wait(&mut child, &job, GRACE);
     match end {
         Outcome::Stopped(_) => match usage_of_text(&client.usage_text, chrono::Local::now()) {
             Some(q) => say(Some(&q), None),
@@ -1636,7 +1647,7 @@ fn run_auth(o: &Opts) -> i32 {
         log(&line);
     };
     let unknown = |why: String| AgentAuth { kind: AUTH_UNKNOWN.into(), label: why, ..Default::default() };
-    let (mut child, mut stdin, rx) = match spawn_agent(o) {
+    let (mut child, job, mut stdin, rx) = match spawn_agent(o) {
         Ok(x) => x,
         Err(code) => {
             say(&unknown(format!("启动 {} 失败", o.prog)), None);
@@ -1704,7 +1715,7 @@ fn run_auth(o: &Opts) -> i32 {
     // 列模型时开的会话关掉（v2 的 session/close），再关标准输入
     quiet(&mut stdin, client.close());
     drop(stdin);
-    wait(&mut child, GRACE);
+    wait(&mut child, &job, GRACE);
     EXIT_OK
 }
 
@@ -1717,7 +1728,7 @@ fn run(o: &Opts) -> i32 {
             return EXIT_PROTOCOL;
         }
     };
-    let (mut child, mut stdin, rx) = match spawn_agent(o) {
+    let (mut child, job, mut stdin, rx) = match spawn_agent(o) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -1838,7 +1849,7 @@ fn run(o: &Opts) -> i32 {
     // 等一会儿，还不退就结束它
     send(&mut stdin, client.close());
     drop(stdin);
-    let status = wait(&mut child, GRACE);
+    let status = wait(&mut child, &job, GRACE);
     // 结束时再写一次（额度用完时记上了用完和重置时间）
     if client.quota != written {
         write_quota(o, client.quota.as_ref());
@@ -1924,6 +1935,15 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
         Ok(ch) => ch,
         Err(e) => {
             eprintln!("✗ board acp：在{}里启动 {} 失败：{e}", env.name, o.prog);
+            return EXIT_PROTOCOL;
+        }
+    };
+    let job = match Job::attach(&child) {
+        Ok(job) => job,
+        Err(e) => {
+            eprintln!("✗ board acp：无法把 {} 放进 Job Object（结束整棵进程树）：{e}", o.prog);
+            let _ = child.kill();
+            let _ = child.wait();
             return EXIT_PROTOCOL;
         }
     };
@@ -2121,7 +2141,7 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
     }
     send(&mut stdin, client.close());
     drop(stdin);
-    wait(&mut child, GRACE);
+    wait(&mut child, &job, GRACE);
     st.busy = false;
     st.save(state_file);
     if let Some(why) = failed {
@@ -2253,13 +2273,14 @@ fn nudge(board: &str, id: i64, title: &str, n: u32, max: u32) -> String {
 }
 
 /// 等 agent 退出，最多 limit；到时还在就结束它（整棵进程树交给 board host 收尾）
-fn wait(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {
+fn wait(child: &mut Child, job: &Job, limit: Duration) -> Option<std::process::ExitStatus> {
     let until = Instant::now() + limit;
     loop {
         match child.try_wait() {
             Ok(Some(s)) => return Some(s),
             Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
             _ => {
+                job.terminate(true);
                 let _ = child.kill();
                 return child.wait().ok();
             }

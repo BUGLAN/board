@@ -1015,4 +1015,103 @@ mod tests {
         assert!(!o.ok);
         assert_eq!(o.stdout, PROMPT);
     }
+
+    /// Windows 进程树回收（`proctree.rs`）：假 board acp 由 PowerShell 启动，再起一个不等它的孙进程后自己退出。
+    /// 名字以 `powershell_` 开头，现有的 Windows CI 步骤（`envs::tests::powershell_`）会一起跑。
+    #[cfg(windows)]
+    fn powershell_job_running(pid: u32) -> bool {
+        let pid = sysinfo::Pid::from_u32(pid);
+        let Ok(mut sys) = sysinfo::System::new() else { return false };
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        sys.process(pid).is_some_and(|p| {
+            !matches!(
+                p.status(),
+                sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead
+            )
+        })
+    }
+
+    #[cfg(windows)]
+    fn powershell_job_wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !ok() {
+            assert!(std::time::Instant::now() < until, "10 秒内没有等到：{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// 起一个“假 board acp”：稍等 Job 绑定，再起一个不等待它的孙进程，写下孙进程号后自己退出
+    #[cfg(windows)]
+    fn powershell_job_grandchild(dir: &Path) -> (crate::proctree::Job, std::process::Child, PathBuf) {
+        let pidfile = dir.join("grandchild.pid");
+        let script = dir.join("fake-acp.ps1");
+        let path = pidfile.display().to_string().replace('\'', "''");
+        std::fs::write(
+            &script,
+            format!(
+                r#"Start-Sleep -Milliseconds 1000
+$ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$grand = Start-Process -FilePath $ps -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60' -PassThru
+Set-Content -LiteralPath '{path}' -Value $grand.Id
+"#
+            ),
+        )
+        .unwrap();
+        let child = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let job = crate::proctree::Job::attach(&child).unwrap();
+        (job, child, pidfile)
+    }
+
+    #[cfg(windows)]
+    fn powershell_job_grandchild_pid(
+        (job, mut parent, pidfile): (crate::proctree::Job, std::process::Child, PathBuf),
+    ) -> (crate::proctree::Job, u32) {
+        assert!(parent.wait().unwrap().success(), "假 board acp 没正常退出");
+        powershell_job_wait_until("孙进程写下进程号", || pidfile.is_file());
+        let pid = std::fs::read_to_string(pidfile)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        powershell_job_wait_until("孙进程还活着", || powershell_job_running(pid));
+        assert!(powershell_job_running(pid), "父进程退出后，孙进程仍在 Job 里");
+        (job, pid)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_job_object_kills_detached_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let (job, pid) = powershell_job_grandchild_pid(powershell_job_grandchild(dir.path()));
+        job.terminate(true);
+        powershell_job_wait_until("TerminateJobObject 结束孙进程", || !powershell_job_running(pid));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_job_object_close_kills_detached_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let (job, pid) = powershell_job_grandchild_pid(powershell_job_grandchild(dir.path()));
+        drop(job);
+        powershell_job_wait_until("关闭 Job 句柄后系统结束孙进程", || {
+            !powershell_job_running(pid)
+        });
+    }
 }
