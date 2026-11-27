@@ -492,25 +492,11 @@ fn host_rename_renames_the_machine_record() {
     let mut rep = board_core::HostReport {
         name: "mbp".into(),
         instance: "i1".into(),
-        resume: None,
         os: "test".into(),
         version: "0.0.0".into(),
-        agents: vec![],
-        envs: vec![],
         workspace: Some(board_core::HostWorkspace { path: "/tmp".into(), ..Default::default() }),
         dirs: vec![board_core::HostDir { board: "default/main".into(), path: "/tmp/default/main".into(), ..Default::default() }],
-        dirs_rev: 0,
-        running: vec![],
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
-        selftest: false,
-        config_sync: false,
-        rescan_skills: false,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     };
     // 令牌是「添加机器」给 mbp 建的机器令牌：只有它能登记新机器（#507）
     st.conn().execute("UPDATE auth_tokens SET host = 'mbp' WHERE id = 1", []).unwrap();

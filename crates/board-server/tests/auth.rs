@@ -1163,25 +1163,13 @@ fn agent_check_generates_the_name_from_machine_settings() {
     let rep = HostReport {
         name: "win".into(),
         instance: "i1".into(),
-        resume: None,
         os: "Windows 11".into(),
         version: "0.1.24".into(),
         agents: vec![claude, agent("dsh", "")],
-        envs: vec![],
         workspace: Some(HostWorkspace { path: "C:\\repo".into(), ..Default::default() }),
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
-        dirs_rev: 0,
-        running: vec![],
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
-        selftest: false,
         config_sync: true,
-        rescan_skills: false,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     };
     board_core::Store::open(&s.db).unwrap().write(board_core::now_ms(), Origin::cli(), |w| w.host_beat(&rep, Some(host_info.id))).unwrap();
     let check = |token: &str, body: Value| send("POST", &format!("{}/api/agents/check", s.url), &[("authorization", &format!("Bearer {token}"))], Some(body));

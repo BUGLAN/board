@@ -3,7 +3,7 @@
 use super::*;
 
 /// board host 每 10 秒的上报（`POST /api/hosts/beat`）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HostReport {
     pub name: String,
     /// 这个 board host 进程的标识

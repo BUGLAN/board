@@ -1086,28 +1086,19 @@ mod tests {
         let rep = HostReport {
             name: name.into(),
             instance: format!("{name}-1"),
-            resume: None,
             os: "macOS".into(),
             version: "0.1.24".into(),
             agents: vec![agent("claude", "Claude Code", true), agent("mycli", "mycli", false)],
-            envs: vec![],
             workspace: (!dirs.is_empty()).then(|| HostWorkspace { path: "/tmp".into(), ..Default::default() }),
             dirs: dirs
                 .iter()
                 .map(|b| HostDir { board: b.to_string(), path: format!("/tmp/{b}"), ..Default::default() })
                 .collect(),
             dirs_rev: rev,
-            running: vec![],
-            chats: None,
-            done: false,
-            asked: None,
-            ask_error: None,
             selftest: true,
             config_sync: true,
             rescan_skills: true,
-            local_skills: None,
-            res: None,
-            quotas: vec![],
+            ..Default::default()
         };
         s.write(at, Origin::cli(), |w| w.host_beat(&rep, Some(1))).unwrap();
     }

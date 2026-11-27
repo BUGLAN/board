@@ -46,25 +46,16 @@ fn report(name: &str, instance: &str, running: Vec<i64>) -> HostReport {
     HostReport {
         name: name.into(),
         instance: instance.into(),
-        resume: None,
         os: "macOS 15.4".into(),
         version: "0.1.1".into(),
         agents: vec![claude(true), HostAgent { id: "mycli".into(), name: "mycli".into(), version: String::new(), found: false, ..Default::default() }],
-        envs: vec![],
         workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
         dirs: vec![HostDir { board: B.into(), path: "/tmp/default".into(), ..Default::default() }],
-        dirs_rev: 0,
         running,
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
         selftest: true,
         config_sync: true,
         rescan_skills: true,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     }
 }
 
@@ -832,7 +823,6 @@ fn dispatch_names_unique_while_concurrent_and_reused_after() {
     tag(&mut s, d, ld);
     tag(&mut s, e, ld);
     rules(&mut s, &[("deepseek", "dsh")], None).unwrap();
-    s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let dp = pull(&mut s, T0 + 4 * S).unwrap();
     assert_eq!(dp.agent, "dsh");
     assert_eq!(dp.name.as_deref(), Some("mbp/deepseek-v4.1-flash"), "离线后的名字可以复用");
@@ -1028,7 +1018,6 @@ fn priority_labels_in_queue_and_cron() {
     let p = s.write(T0, Origin::ui(None), |w| w.create_label("default", "急", None, false)).unwrap();
     exec(&mut s, T0, &Actor::human(), Cmd::Label { id: b2, add: vec![p.id], remove: vec![] }).unwrap();
     s.write(T0, Origin::ui(None), |w| w.update_label("default", p.id, None, None, None, Some(true))).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().unwrap();
     assert_eq!(d1.card, b2, "带优先标签的先派发");
 }
@@ -1297,7 +1286,6 @@ fn crashed_dispatch_without_human_status_explains_and_skips_this_round() {
     lead_round(&mut s);
     let a = new_card_tagged(&mut s, "A");
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
     assert_eq!(d.card, a);
     // 异常退出：工作流没有 check，卡片留在进行中，评论要说明会回到待办
@@ -1330,7 +1318,6 @@ fn stopped_dispatch_without_human_status_skips_this_round() {
     lead_round(&mut s);
     let a = new_card_tagged(&mut s, "A");
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
     // 人停止：工作流没有 check，评论说明会回到待办
     s.write(T0 + 3 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "buglan")).unwrap();
@@ -1371,7 +1358,6 @@ fn pausing_stops_auto_claim_and_resuming_continues() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     new_card(&mut s, T0, "A");
     lead_round(&mut s);
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(host(&s, T0 + S).round);
     let h = s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { paused: Some(true), ..Default::default() })).unwrap();
     assert!(!h.round, "暂停接单时不自动领");
@@ -1495,7 +1481,6 @@ fn crashed_dispatch_moves_card_to_error_status() {
     lead_round(&mut s);
     let a = new_card_tagged(&mut s, "A");
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(1), ..Default::default() })).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
     assert_eq!(d.card, a);
     let id = d.id;
@@ -1507,7 +1492,6 @@ fn crashed_dispatch_moves_card_to_error_status() {
     beat(&mut s, T0 + 55 * S, &report("mbp", "i1", vec![])).unwrap();
     s.sweep(T0 + 60 * S).unwrap();
     assert_eq!(card(&s, a).card.column, key, "错误节点里的卡片不会被心跳超时释放");
-    s.write(T0 + 61 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 62 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "定时领取不会再领错误节点里的卡片");
 }
 
@@ -1806,7 +1790,6 @@ fn pull_includes_fixed_dirs_and_skips_legacy_board_ids() {
     assert!(h.dirs.iter().any(|d| d.board == B && d.fixed), "default/main 是 --dir 覆盖的目录：{:?}", h.dirs.iter().map(|d| (&d.board, d.fixed)).collect::<Vec<_>>());
     lead_round(&mut s);
     let a = new_card_tagged(&mut s, "A");
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", Some(1))).unwrap().expect("--dir 覆盖的 default/main 也要参与定时领取");
     assert_eq!(d.card, a);
     assert_eq!(d.state, "running");
@@ -1828,7 +1811,6 @@ fn pull_includes_fixed_dirs_and_skips_legacy_board_ids() {
     })
     .unwrap();
     assert!(host(&s, T0).dirs.iter().all(|d| !crate::valid_board(&d.board)), "只有旧的 `main`：{:?}", host(&s, T0).dirs.iter().map(|d| &d.board).collect::<Vec<_>>());
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "非法的旧目录不会被领取");
     assert!(!s.read(|r| r.host("mbp", T0 + 2 * S)).unwrap().round, "没有可领的白板，这一轮结束");
 }
@@ -1887,7 +1869,6 @@ fn session_capacity_counts_sessions_not_dispatches() {
     for t in ["A", "B", "C", "D", "E", "F"] {
         new_card_tagged(&mut s, t);
     }
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     // 第一个会话：1 张在跑 + 1 张排着，只占 1 个会话位
     let d1 = pull(&mut s, T0 + 2 * S).unwrap();
     assert_eq!((d1.state.as_str(), d1.seq, d1.total), ("running", 1, 2));
@@ -1951,7 +1932,6 @@ fn session_does_up_to_n_cards_then_a_new_one_starts() {
         tag(&mut s, *c, ui);
     }
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     let name = d1.name.clone().unwrap();
     assert_eq!((d1.card, d1.session), (cards[0], d1.id));
@@ -2003,7 +1983,6 @@ fn session_plan_prefers_priority_then_common_labels() {
         extra(&mut s, y, ui);
         set_host(&mut s, HostPatch { per_session: Some(2), ..Default::default() }).unwrap();
         lead_round(&mut s);
-        s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
         let d = pull(&mut s, T0 + S).unwrap();
         assert_eq!(d.card, first);
         let planned: Vec<i64> = session_of(&s, d.id).into_iter().filter(|q| q.state == "queued").map(|q| q.card).collect();
@@ -2037,7 +2016,6 @@ fn session_plan_prefers_priority_then_common_labels() {
     tag(&mut s, z, urgent);
     set_host(&mut s, HostPatch { per_session: Some(2), ..Default::default() }).unwrap();
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     // 带优先标签的 Z 先被开始（规则 1）；第一张排进会话
     let d = pull(&mut s, T0 + S).unwrap();
     assert_eq!(d.card, z);
@@ -2070,14 +2048,12 @@ fn next_refuses_when_session_should_end() {
     end(&mut s, T0 + 3 * S, d.id, Some(0), &[]);
     // N = 1：和改动前一样，做一张就结束
     set_host(&mut s, HostPatch { per_session: Some(1), ..Default::default() }).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + 4 * S).unwrap();
     let name = d.name.clone().unwrap();
     submit(&mut s, T0 + 5 * S, &name, d.card);
     assert_eq!(next(&mut s, T0 + 5 * S, &name).unwrap_err().code, ErrorCode::SessionDone);
     end(&mut s, T0 + 6 * S, d.id, Some(0), &[]);
     // 暂停接单：在跑的会话做完当前这张，board next 返回 SESSION_DONE
-    s.write(T0 + 7 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + 7 * S).unwrap();
     let name = d.name.clone().unwrap();
     set_host(&mut s, HostPatch { paused: Some(true), ..Default::default() }).unwrap();
@@ -2105,7 +2081,6 @@ fn second_card_crash_or_stop_keeps_first_result() {
         for t in ["A", "B", "C"] {
             new_card_tagged(&mut s, t);
         }
-        s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
         let d1 = pull(&mut s, T0 + S).unwrap();
         let name = d1.name.clone().unwrap();
         submit(&mut s, T0 + 2 * S, &name, d1.card);
@@ -2133,7 +2108,6 @@ fn open_sessions(cards: usize, per: i64) -> (Store, Vec<Vec<i64>>) {
     }
     set_host(&mut s, HostPatch { max: Some(4), per_session: Some(per), ..Default::default() }).unwrap();
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let mut sessions = vec![];
     while let Some(d) = pull(&mut s, T0 + S) {
         sessions.push(session_of(&s, d.id).iter().map(|x| x.card).collect::<Vec<_>>());
@@ -2190,7 +2164,6 @@ fn session_queue_is_planned_and_shown() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let cards: Vec<i64> = (0..6).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     let name = d1.name.clone().unwrap();
     assert_eq!((d1.card, d1.seq, d1.total), (cards[0], 1, 4));
@@ -2248,7 +2221,6 @@ fn session_queue_occupies_cards_and_can_be_canceled() {
     // 没有派发的那张一直在待办：别人领得走，不会被这一轮的会话排进去
     let free = new_card(&mut s, T0, "没有派发");
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     let name = d1.name.clone().unwrap();
     let queued: Vec<Dispatch> = session_of(&s, d1.id).into_iter().filter(|d| d.state == "queued").collect();
@@ -2284,7 +2256,6 @@ fn session_end_cancels_the_rest_and_a_new_session_takes_them() {
         let cards: Vec<i64> = (0..4).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
         set_host(&mut s, HostPatch { max: Some(2), ..Default::default() }).unwrap();
         lead_round(&mut s);
-        s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
         let d1 = pull(&mut s, T0 + S).unwrap();
         assert!(pull(&mut s, T0 + S).is_none(), "卡都排进了第一个会话");
         assert!(host(&s, T0 + S).round, "还有会话排着卡片：这一轮不算结束");
@@ -2311,7 +2282,6 @@ fn session_end_cancels_the_rest_and_a_new_session_takes_them() {
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     let cards: Vec<i64> = (0..3).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     let name = d1.name.clone().unwrap();
     set_host(&mut s, HostPatch { paused: Some(true), ..Default::default() }).unwrap();
@@ -2335,7 +2305,6 @@ fn session_queue_is_canceled_when_host_goes_offline() {
         new_card_tagged(&mut s, &format!("卡{i}"));
     }
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     s.write(T0 + 120 * S, Origin::system(), |w| w.sweep_hosts()).unwrap();
     let all = session_of(&s, d1.id);
@@ -2353,7 +2322,6 @@ fn per_session_change_only_affects_new_sessions() {
     }
     set_host(&mut s, HostPatch { max: Some(2), per_session: Some(2), ..Default::default() }).unwrap();
     lead_round(&mut s);
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     set_host(&mut s, HostPatch { per_session: Some(4), ..Default::default() }).unwrap();
     assert_eq!(session_of(&s, d1.id).len(), 2, "已经排好的会话不变");
@@ -2498,7 +2466,6 @@ fn no_rules_never_auto_claims() {
     let c = new_card(&mut s, T0, "C");
     tag(&mut s, c, l);
     rules(&mut s, &[("dsh", "dsh")], None).unwrap();
-    s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert_eq!(pull(&mut s, T0 + 4 * S).unwrap().card, c);
 }
 
@@ -2684,7 +2651,6 @@ fn next_stops_when_the_profile_leaves_the_machine_mid_session() {
     tag(&mut s, second, lc);
     rules(&mut s, &[("claude", "claude")], None).unwrap();
     s.write(T0 + S, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { per_session: Some(2), ..Default::default() })).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + 2 * S).unwrap();
     assert_eq!(d.card, first);
     let name = d.name.unwrap();
@@ -2715,7 +2681,6 @@ fn next_follows_rules() {
     tag(&mut s, y, lc);
     tag(&mut s, y, ui);
     rules(&mut s, &[("claude", "claude"), ("deepseek", "dsh")], None).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + S).unwrap();
     assert_eq!((d.card, d.agent.as_str()), (first, "claude"));
     let name = d.name.unwrap();
@@ -3864,7 +3829,6 @@ fn session_view_groups_a_process_and_card_history_lists_every_dispatch() {
     let cards: Vec<i64> = (0..3).map(|i| new_card_tagged(&mut s, &format!("卡{i}"))).collect();
     lead_round(&mut s);
     set_host(&mut s, HostPatch { per_session: Some(3), ..Default::default() }).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d1 = pull(&mut s, T0 + S).unwrap();
     let name = d1.name.clone().unwrap();
     s.write(T0 + S, Origin::cli(), |w| w.dispatch_log_append(d1.id, &["第一张的输出".to_string()])).unwrap();
@@ -4647,7 +4611,6 @@ fn split_dispatch_checks_host_and_cron_never_takes_inbox() {
     inbox_card(&mut s, T0, &Actor::human(), "只在未整理", None).unwrap();
     s.write(T0, Origin::ui(None), |w| w.create_label("default", "全部", None, false)).unwrap();
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { rules: Some(vec![cond("not_in", &["全部"], "claude")]), ..Default::default() })).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "定时领取不会派发未整理里的条目");
 }
 
@@ -4863,7 +4826,6 @@ fn project_repo_must_be_cloned_right_before_the_host_takes_its_cards() {
     assert_eq!(e.code, ErrorCode::BoardNotOnHost);
     assert!(e.message.contains("/tmp/default 还不存在"), "{}", e.message);
     assert_eq!(blocks(&s), vec![("mbp".to_string(), B.to_string(), "BOARD_NOT_ON_HOST".to_string())]);
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(pull(&mut s, T0 + S).is_none(), "目录不存在的项目不领");
     // 同一个项目的另一块白板共用这个目录：它还没被这台机器报过，也按这个目录的状态算
     ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
@@ -4879,7 +4841,6 @@ fn project_repo_must_be_cloned_right_before_the_host_takes_its_cards() {
     // 就是项目的仓库（写法不同也算）：照常领
     beat(&mut s, T0 + 4 * S, &dir_report("ok", Some("https://github.com/O/R.git"))).unwrap();
     assert!(blocks(&s).is_empty(), "{:?}", blocks(&s));
-    s.write(T0 + 4 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     let d = pull(&mut s, T0 + 5 * S).unwrap();
     assert_eq!((d.card, d.state.as_str()), (id, "running"));
 }
@@ -4940,7 +4901,6 @@ fn agent_pauses_after_three_crashes_in_a_row_until_resumed() {
     assert!(e.message.contains("暂停接单") && e.message.contains("恢复"), "{}", e.message);
     // 定时领取不领交给它的卡
     beat(&mut s, t, &report("mbp", "i1", vec![])).unwrap();
-    s.write(t, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(pull(&mut s, t + S).is_none());
     assert_eq!(card(&s, c).card.column, "todo");
     // 恢复：重新数，照常派
@@ -4951,7 +4911,6 @@ fn agent_pauses_after_three_crashes_in_a_row_until_resumed() {
     // 再点一次不重复记
     s.write(t + 3 * S, Origin::ui(None), |w| w.host_update_as("mbp", &p, "lan")).unwrap();
     assert_eq!(host(&s, t + 3 * S).ops.iter().filter(|o| o.text.contains("恢复了")).count(), 1);
-    s.write(t + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert_eq!(pull(&mut s, t + 4 * S).map(|d| d.card), Some(c));
     // 恢复之后的一次异常退出只算一次
     let t2 = t + 20 * S;
@@ -5193,7 +5152,6 @@ fn quota_without_reset_pauses_an_hour_is_not_a_crash_and_can_be_resumed() {
     assert_eq!(claude_agent(&s, "mbp", t + 13 * S).quota_until, Some(t + 2 * S + crate::hosts::QUOTA_PAUSE_DEFAULT));
     let next = new_card_tagged(&mut s, "T");
     beat(&mut s, t + 14 * S, &report("mbp", "i1", vec![])).unwrap();
-    s.write(t + 14 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(pull(&mut s, t + 14 * S).is_none());
     // 人点「恢复」：提前恢复，照常领
     let p = HostPatch { resume: Some("claude".into()), ..Default::default() };
@@ -6299,9 +6257,6 @@ fn force_release_does_not_redispatch_while_the_old_dispatch_runs() {
     s.write(T0, Origin::ui(None), |w| w.host_update("mbp", &HostPatch { max: Some(2), ..Default::default() })).unwrap();
     s.write(T0, Origin::ui(None), |w| w.host_update("mac", &HostPatch { auto: Some(true), ..Default::default() })).unwrap();
     let a = new_card_tagged(&mut s, "A");
-    for h in ["mbp", "mac"] {
-        s.write(T0 + S, Origin::ui(None), |w| w.host_round(h)).unwrap();
-    }
     let d = s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().expect("定时领取应该开始一张");
     assert_eq!((d.card, d.state.as_str()), (a, "running"));
 
@@ -6342,7 +6297,6 @@ fn error_status_cards_are_never_claimed_even_with_matching_labels() {
     let a = new_card_tagged(&mut s, "A");
     let mv = |id: i64, to: &str| Cmd::Move { id, column: to.into(), top: false, index: None, order: None, before: None, after: None };
     exec(&mut s, T0, &Actor::human(), mv(a, &key)).unwrap();
-    s.write(T0 + S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 2 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "错误节点里的卡片不被自动领取");
     let beta = Actor::agent("beta/x");
     assert_eq!(exec(&mut s, T0 + 3 * S, &beta, Cmd::Claim { id: None }).unwrap_err().code, ErrorCode::EmptyTodo);
@@ -6387,7 +6341,6 @@ fn humans_dispatch_from_any_unlocked_status_in_one_step() {
     let c = card(&s, a);
     assert_eq!((c.card.column.as_str(), c.card.claimed_from.as_deref()), (key.as_str(), None));
     assert!(c.activity.iter().any(|x| x.text.contains("卡片回到「搁置」最上面")), "{:?}", c.activity.iter().map(|x| &x.text).collect::<Vec<_>>());
-    s.write(T0 + 3 * S, Origin::ui(None), |w| w.host_round("mbp")).unwrap();
     assert!(s.write(T0 + 3 * S, Origin::cli(), |w| w.dispatch_pull("mbp", "i1", None)).unwrap().is_none(), "回到错误节点后不被自动领取");
     // 终点里的卡片派给任意机器：同样一步进「进行中」，开始后照常领取
     let e = new_card(&mut s, T0, "E");

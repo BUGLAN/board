@@ -101,6 +101,13 @@ case "$(cat "$FAKE_DIR/mode")" in
   split0)
     echo "没拆出来 #$need"
     end ;;
+  chat)
+    # 机器对话：第一轮答完、留在同一个会话里等第二轮；第二轮收到后直接退出，让 board host 回报 exit
+    upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"第一轮回答"}}'
+    echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
+    read -r l
+    echo "chat exit: $l" >&2
+    exit 0 ;;
   review)
     # 像 dsh 那样拿不到名字像密钥的环境变量：令牌只能从 BOARD_CONFIG 指向的文件里读
     env -u BOARD_TOKEN "$BOARD_BIN" beat "$id" --final >/dev/null && env -u BOARD_TOKEN "$BOARD_BIN" move "$id" review >/dev/null
@@ -601,6 +608,70 @@ fn host_runs_dispatches_end_to_end() {
     assert_eq!(code, 0, "{out}");
     assert!(ended(&rig.show(4), "已停止"), "{:?}", activity(&rig.show(4)));
     assert!(rig.workspace()["hosts"][0]["online"] == false);
+}
+
+/// 机器对话：服务端随任务下发 ChatTask，board host 启动 `board acp --chat`，回报 took、idle；
+/// 第二轮 agent 自己退出时回报 exit（这一轮记一条出错，对话留着）
+#[test]
+fn host_runs_chat_and_reports_took_idle_exit() {
+    let rig = Rig::new();
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("chat");
+    let c = {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.chat_start("mbp", None, Some("claude"), None, "第一轮", "lan"))
+            .unwrap()
+    };
+    let id = c.id;
+    let host_id = c.host_id;
+    let read_chat = || {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        store.read(|r| r.chat(id)).unwrap()
+    };
+    wait_until("对话第一轮结束", Duration::from_secs(20), || read_chat().turn == "idle");
+    wait_until("第一轮输出到达", Duration::from_secs(20), || {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        store
+            .read(|r| r.chat_view(id, 0))
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.kind == "message" && e.text.as_deref() == Some("第一轮回答"))
+    });
+    let acp: Option<String> = {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        store.conn().query_row("SELECT acp FROM chats WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(acp.as_deref(), Some("s1"), "回报了 ACP 会话");
+    let tasks = {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        store.read(|r| r.chat_tasks(host_id)).unwrap()
+    };
+    assert!(tasks.is_empty(), "took 清掉了消息，idle 让这一轮结束：{tasks:?}");
+
+    {
+        let mut store = board_core::Store::open(&rig.s.db).unwrap();
+        store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.chat_prompt(id, "第二轮")).unwrap();
+    }
+    wait_until("第二轮因 agent 退出结束", Duration::from_secs(20), || {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        let v = store.read(|r| r.chat_view(id, 0)).unwrap();
+        v.chat.turn == "idle"
+            && v.events
+                .iter()
+                .any(|e| e.kind == "error" && e.text.as_deref().is_some_and(|t| t.contains("agent 进程退出了（退出码 0）") && t.contains("这一轮没做完")))
+    });
+    let tasks = {
+        let store = board_core::Store::open(&rig.s.db).unwrap();
+        store.read(|r| r.chat_tasks(host_id)).unwrap()
+    };
+    assert!(tasks.is_empty(), "exit 结束了没做完的这一轮：{tasks:?}");
+
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(&format!("对话 #{id}：agent 退出（退出码 0）")), "{out}");
 }
 
 /// 未整理里的条目派给 agent 拆解（PRD §9.1）：不领取、不移动；按建出的子卡数记「已拆解」「不用拆」，退出码非 0 记「异常退出」

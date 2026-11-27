@@ -25,25 +25,11 @@ fn host_patch_accepts_workspace_from_old_and_new_clients() {
     let mut rep = HostReport {
         name: "mbp".into(),
         instance: "i1".into(),
-        resume: None,
         os: "macOS 15".into(),
         version: "0.1.25".into(),
-        agents: vec![],
-        envs: vec![],
         workspace: Some(HostWorkspace { path: "/tmp/ws".into(), ..Default::default() }),
-        dirs: vec![],
-        dirs_rev: 0,
-        running: vec![],
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
-        selftest: false,
         config_sync: true,
-        rescan_skills: false,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     };
     st.write(now, board_core::Origin::cli(), |w| w.host_beat(&rep, None)).unwrap();
     let base = format!("{}/api/hosts/mbp", s.url);

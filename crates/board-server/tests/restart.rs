@@ -13,25 +13,14 @@ fn report(running: Vec<i64>) -> HostReport {
     HostReport {
         name: "mbp".into(),
         instance: "i1".into(),
-        resume: None,
         os: "Windows".into(),
         version: "0.1.6".into(),
         agents: vec![HostAgent { id: "claude".into(), name: "Claude Code".into(), version: "2.4.1".into(), found: true, model: "opus-5.5".into(), ..Default::default() }],
-        envs: vec![],
         workspace: Some(HostWorkspace { path: "E:\\repo".into(), ..Default::default() }),
         dirs: vec![HostDir { board: B.into(), path: "E:\\repo\\default\\main".into(), ..Default::default() }],
-        dirs_rev: 0,
         running,
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
-        selftest: false,
         config_sync: true,
-        rescan_skills: false,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     }
 }
 

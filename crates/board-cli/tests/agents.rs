@@ -94,25 +94,12 @@ fn report_win(instance: &str) -> HostReport {
     HostReport {
         name: "win".into(),
         instance: instance.into(),
-        resume: None,
         os: "Windows 11".into(),
         version: "0.1.24".into(),
         agents: vec![agent("claude", "opus-5.5"), agent("dsh", "deepseek-v4.1-flash"), agent("codex", "")],
-        envs: vec![],
         workspace: Some(board_core::HostWorkspace { path: "C:\\repo".into(), ..Default::default() }),
         dirs: vec![HostDir { board: "default/main".into(), path: "C:\\repo\\default\\main".into(), ..Default::default() }],
-        dirs_rev: 0,
-        running: vec![],
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
-        selftest: false,
-        config_sync: false,
-        rescan_skills: false,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     }
 }
 

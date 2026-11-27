@@ -75,7 +75,6 @@ fn host_report(running: Vec<i64>) -> HostReport {
     HostReport {
         name: HOST.into(),
         instance: INSTANCE.into(),
-        resume: None,
         os: "macOS 15.4".into(),
         version: "0.1.20".into(),
         agents: vec![HostAgent {
@@ -86,21 +85,12 @@ fn host_report(running: Vec<i64>) -> HostReport {
             model: "opus-5.5".into(),
             ..Default::default()
         }],
-        envs: vec![],
         workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
         dirs: vec![HostDir { board: B.into(), path: format!("/tmp/{B}"), ..Default::default() }],
-        dirs_rev: 0,
         running,
-        chats: None,
-        done: false,
-        asked: None,
-        ask_error: None,
-        selftest: false,
         config_sync: true,
         rescan_skills: true,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     }
 }
 

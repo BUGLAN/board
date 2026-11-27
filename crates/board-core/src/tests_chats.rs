@@ -18,25 +18,17 @@ fn report(name: &str, instance: &str, running: Vec<i64>, chats: Option<Vec<i64>>
     HostReport {
         name: name.into(),
         instance: instance.into(),
-        resume: None,
         os: "macOS 15.4".into(),
         version: "0.1.50".into(),
         agents: vec![HostAgent { id: "claude".into(), name: "Claude Code".into(), version: "2.4.1".into(), found: true, model: "opus-5.5".into(), ..Default::default() }],
-        envs: vec![],
         workspace: Some(HostWorkspace { path: "/tmp".into(), ..Default::default() }),
         dirs: vec![HostDir { board: B.into(), path: "/tmp/default".into(), ..Default::default() }],
-        dirs_rev: 0,
         running,
         chats,
-        done: false,
-        asked: None,
-        ask_error: None,
         selftest: true,
         config_sync: true,
         rescan_skills: true,
-        local_skills: None,
-        res: None,
-        quotas: vec![],
+        ..Default::default()
     }
 }
 

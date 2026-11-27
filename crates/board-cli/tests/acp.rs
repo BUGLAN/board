@@ -4,9 +4,9 @@
 
 mod common;
 use common::{isolate, start, Server};
-use std::io::Read;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const UPDATE: &str = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":"#;
@@ -44,6 +44,73 @@ fn finish(mut c: std::process::Child, limit: Duration) -> (i32, String, String) 
     c.stdout.take().unwrap().read_to_string(&mut out).unwrap();
     c.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     (status.code().unwrap_or(-1), out, err)
+}
+
+struct ChatBridge {
+    child: std::process::Child,
+    stdin: Option<ChildStdin>,
+    state: PathBuf,
+}
+
+impl ChatBridge {
+    fn send(&mut self, line: &str) {
+        let w = self.stdin.as_mut().expect("标准输入还开着");
+        writeln!(w, "{line}").unwrap();
+        w.flush().unwrap();
+    }
+
+    fn close_stdin(&mut self) {
+        self.stdin.take();
+    }
+
+    fn wait_exit(&mut self, limit: Duration) {
+        let until = Instant::now() + limit;
+        while self.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < until, "board acp 没在 {limit:?} 内退出");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn finish(mut self, limit: Duration) -> (i32, String, String) {
+        self.stdin.take();
+        finish(self.child, limit)
+    }
+}
+
+fn chat_bridge(dir: &Path, script: &str, more: &[&str]) -> ChatBridge {
+    let fake = write(dir, "fake-chat.sh", script);
+    let state = dir.join("chat.state");
+    let cwd = dir.display().to_string();
+    let state_arg = state.display().to_string();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
+    c.args(["acp", "--env", "direct", "--cwd", &cwd, "--chat", &state_arg]).args(more).args(["--", "sh", &fake]);
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    let stdin = child.stdin.take();
+    ChatBridge { child, stdin, state }
+}
+
+fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
+    let until = Instant::now() + Duration::from_secs(15);
+    while !ok() {
+        assert!(Instant::now() < until, "15 秒内没有等到：{what}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn chat_state(path: &Path) -> Option<serde_json::Value> {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn wait_state(path: &Path, what: &str, mut ok: impl FnMut(&serde_json::Value) -> bool) -> serde_json::Value {
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(v) = chat_state(path).filter(|v| ok(v)) {
+            return v;
+        }
+        assert!(Instant::now() < until, "15 秒内没有等到状态：{what}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[test]
@@ -142,6 +209,128 @@ read l; exit 0
         .unwrap();
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("启动"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// 对话：同一个 ACP 会话里连发两轮，状态文件的 busy / seq / stop 跟着每一轮变化；`session/new` 只开一次
+#[test]
+fn chat_reuses_one_session_for_two_rounds() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
+read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'; echo "session/new" >> sessions
+n=0
+while read -r l; do
+  case "$l" in
+    *'"session/prompt"'*)
+      n=$((n+1))
+      pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
+      : > "got$n"
+      i=0; while [ ! -f "go$n" ] && [ $i -lt 300 ]; do sleep 0.05; i=$((i+1)); done
+      echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"round $n\"}}}}"
+      echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
+      ;;
+  esac
+done
+"#;
+    let mut b = chat_bridge(d.path(), script, &[]);
+    wait_state(&b.state, "会话开好", |v| v["session"] == "s1" && v["busy"] == false && v["seq"] == 0);
+
+    b.send(r#"{"seq":1,"prompt":"第一轮"}"#);
+    wait_for("agent 收到第一轮", || d.path().join("got1").exists());
+    wait_state(&b.state, "第一轮运行中", |v| v["session"] == "s1" && v["busy"] == true && v["seq"] == 1 && v["stop"].is_null());
+    std::fs::write(d.path().join("go1"), "").unwrap();
+    wait_state(&b.state, "第一轮结束", |v| v["busy"] == false && v["seq"] == 1 && v["stop"] == "end_turn");
+
+    b.send(r#"{"seq":2,"prompt":"第二轮"}"#);
+    wait_for("agent 收到第二轮", || d.path().join("got2").exists());
+    wait_state(&b.state, "第二轮运行中", |v| v["session"] == "s1" && v["busy"] == true && v["seq"] == 2 && v["stop"].is_null());
+    std::fs::write(d.path().join("go2"), "").unwrap();
+    wait_state(&b.state, "第二轮结束", |v| v["busy"] == false && v["seq"] == 2 && v["stop"] == "end_turn");
+
+    assert_eq!(std::fs::read_to_string(d.path().join("sessions")).unwrap().lines().count(), 1);
+    let (code, out, err) = b.finish(Duration::from_secs(15));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+}
+
+/// 对话：收到 `{"cancel":true}` 时给 agent 发 `session/cancel`，状态文件的 stop 变成 cancelled
+#[test]
+fn chat_cancel_ends_the_round_as_cancelled() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
+read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+read -r l; printf '%s\n' "$l" > prompt
+pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
+echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'
+read -r l; printf '%s\n' "$l" > cancel
+echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"cancelled\"}}"
+while read -r l; do :; done
+"#;
+    let mut b = chat_bridge(d.path(), script, &[]);
+    wait_state(&b.state, "会话开好", |v| v["session"] == "s1");
+    b.send(r#"{"seq":1,"prompt":"跑一条长命令"}"#);
+    wait_state(&b.state, "这一轮运行中", |v| v["busy"] == true && v["seq"] == 1);
+    b.send(r#"{"cancel":true}"#);
+    wait_state(&b.state, "取消结束", |v| v["busy"] == false && v["seq"] == 1 && v["stop"] == "cancelled");
+    let cancel = std::fs::read_to_string(d.path().join("cancel")).unwrap();
+    assert!(cancel.contains("session/cancel") && cancel.contains(r#""sessionId":"s1""#), "{cancel}");
+    let (code, out, err) = b.finish(Duration::from_secs(15));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+}
+
+/// 对话：没有新消息超过 `--idle-exit` 秒就自己退出（标准输入还开着）
+#[test]
+fn chat_exits_after_the_idle_timeout() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
+read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+while read -r l; do :; done
+"#;
+    let mut b = chat_bridge(d.path(), script, &["--idle-exit", "1"]);
+    wait_state(&b.state, "会话开好", |v| v["session"] == "s1");
+    b.wait_exit(Duration::from_secs(10));
+    let (code, out, err) = b.finish(Duration::from_secs(5));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+}
+
+/// 对话：board host 关掉标准输入时退出
+#[test]
+fn chat_exits_when_stdin_closes() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
+read -r l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+while read -r l; do :; done
+"#;
+    let mut b = chat_bridge(d.path(), script, &[]);
+    wait_state(&b.state, "会话开好", |v| v["session"] == "s1");
+    b.close_stdin();
+    b.wait_exit(Duration::from_secs(10));
+    let (code, out, err) = b.finish(Duration::from_secs(5));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+}
+
+/// 对话：agent 既不支持 session/resume 也不支持 session/load 时开新会话，并在标准错误里说明之前的对话没了
+#[test]
+fn chat_starts_a_new_session_when_resume_is_not_supported() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read -r l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+read -r l; printf '%s\n' "$l" > method; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s2"}}'
+while read -r l; do
+  case "$l" in
+    *'"session/prompt"'*)
+      pid=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/')
+      echo "{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
+      ;;
+  esac
+done
+"#;
+    let mut b = chat_bridge(d.path(), script, &["--resume", "s1"]);
+    wait_state(&b.state, "新会话开好", |v| v["session"] == "s2");
+    let method = std::fs::read_to_string(d.path().join("method")).unwrap();
+    assert!(method.contains("session/new") && !method.contains("session/resume") && !method.contains("session/load"), "{method}");
+    b.send(r#"{"seq":1,"prompt":"还记得刚才吗"}"#);
+    wait_state(&b.state, "新会话第一轮结束", |v| v["busy"] == false && v["seq"] == 1 && v["stop"] == "end_turn");
+    let (code, out, err) = b.finish(Duration::from_secs(15));
+    assert_eq!(code, 0, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("agent 不支持接回会话") && err.contains("开了新会话") && err.contains("之前"), "{err}");
 }
 
 /// 续轮用的假 agent：答完握手，之后每条 prompt 都以 end_turn 结束这一轮，收到的 prompt 打到标准错误（`prompt <id>: <帧>`）。
