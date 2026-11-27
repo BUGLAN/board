@@ -22,7 +22,6 @@
 //! - 服务端：agent 级心跳和 final 带着会话标识，和名字最近一次 check 发出的对不上就拒绝（`NAME_TAKEN`）；
 //! - 本机：`start`、`stop`、不带 ID 的 `board beat` 只在 check 这个名字的 agent 进程里生效。名字属于另一个还活着的 agent 进程时
 //!   拒绝（`NAME_TAKEN`，写明是哪个进程），不停它的循环、不发 final；那个进程已经不在了才接管。`--force` 只放开本机这一层。
-//! 旧版写的 `<名字>.pid`（只有循环的进程号）照旧能被 stop、start 停掉。
 
 use crate::backend::Backend;
 use board_core::*;
@@ -205,11 +204,6 @@ fn state_file(name: &str) -> Result<PathBuf> {
     Ok(dir()?.join(format!("{}.json", key(name))))
 }
 
-/// 旧版的 pid 文件（只有循环的进程号）
-fn legacy_pidfile(name: &str) -> Result<PathBuf> {
-    Ok(dir()?.join(format!("{}.pid", key(name))))
-}
-
 pub fn read_state(name: &str) -> Option<State> {
     let f = state_file(name).ok()?;
     serde_json::from_str::<State>(&std::fs::read_to_string(f).ok()?).ok().filter(|s| s.name == name)
@@ -245,20 +239,8 @@ fn wait_loop(p: Proc) {
     }
 }
 
-/// 停掉旧版 pid 文件里的循环：删掉文件就是让它停下
-fn stop_legacy(name: &str) -> Result<()> {
-    let f = legacy_pidfile(name)?;
-    let p = std::fs::read_to_string(&f).ok().and_then(|s| Proc::parse(&s));
-    let _ = std::fs::remove_file(&f);
-    if let Some(p) = p {
-        wait_loop(p);
-    }
-    Ok(())
-}
-
 /// 停掉状态里记的后台循环并等它退出（先把记录清掉，循环看到就停下）；没有循环时什么也不做
 fn stop_loop(st: &mut State) -> Result<()> {
-    stop_legacy(&st.name)?;
     let Some(p) = st.heartbeat() else { return Ok(()) };
     st.heartbeat = None;
     st.stopped = Some(p.arg());

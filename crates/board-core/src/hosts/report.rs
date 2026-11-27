@@ -237,7 +237,6 @@ impl<'a> W<'a> {
                     // 导出不了（旧版报的是白板标识、不是路径）：存一个空的，按老办法用 dirs
                     workspace = Some(HostWorkspace {
                         path: String::new(),
-                        created: false,
                         // 这几块在盘上已经摆着（旧版 `--dir` 固定）：不算只给界面上改
                         overrides: dirs.iter().map(|d| HostDirOverride { board: d.board.clone(), path: d.path.clone() }).collect(),
                         ..Default::default()

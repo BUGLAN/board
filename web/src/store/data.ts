@@ -1627,15 +1627,12 @@ export async function exec(cmd: Cmd, patch?: Patch, settle?: (r: CardDetail) => 
   try {
     const r = await queue(() => api.cmd(path, cmd));
     settle?.(r);
-    // 删除、永久删除返回的是删除前的卡片：写进详情缓存会把已经不在的卡片又画出来
-    if (cmd.op !== 'delete' && cmd.op !== 'purge') {
-      details.set(pkey(path, r.id), r);
-      if (get().detailId === r.id && get().path === path) {
-        base.detail = r;
-        render({ detailError: null });
-      }
+    details.set(pkey(path, r.id), r);
+    if (get().detailId === r.id && get().path === path) {
+      base.detail = r;
+      render({ detailError: null });
     }
-    await refreshAfter(path, cmd.op === 'delete' || cmd.op === 'purge' ? null : r);
+    await refreshAfter(path, r);
     return r;
   } finally {
     if (l) drop(l);

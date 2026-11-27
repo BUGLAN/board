@@ -259,33 +259,6 @@ fn span_words(d: Duration) -> String {
     }
 }
 
-/// 这一分钟（本地时间）有哪条定时表达式到点。旧版服务端发来的 HH:MM 按「每天这个时间」算；解析不了的跳过
-fn cron_due(at: &chrono::DateTime<chrono::Local>, cron_on: bool, cron: &[String], paused: bool, round: bool) -> bool {
-    use chrono::{Datelike, Timelike};
-    if !cron_on || paused || round {
-        return false;
-    }
-    cron.iter().filter_map(|t| board_core::cron::normalize(t).ok()).filter_map(|t| board_core::cron::Cron::parse(&t).ok()).any(|c| {
-        c.matches(at.minute(), at.hour(), at.day(), at.month(), at.weekday().num_days_from_sunday())
-    })
-}
-
-/// 定时领取的一个 tick：同一分钟只处理一次。不用领取时记下这一分钟；要领取时调 `start`，
-/// 成功才记下（失败了留到同一分钟的下一个 tick 重试）。返回这一 tick 是否调了 `start`
-fn cron_tick(m: &str, last: &mut String, due: bool, start: impl FnOnce() -> bool) -> bool {
-    if m == last {
-        return false;
-    }
-    if !due {
-        *last = m.to_string();
-        return false;
-    }
-    if start() {
-        *last = m.to_string();
-    }
-    true
-}
-
 /* ------------------------------ host ------------------------------ */
 
 struct Host<'a> {
@@ -763,7 +736,6 @@ impl Host<'_> {
         // 启动时清一次本机日志，之后每天一次
         let mut next_clean = Instant::now();
         let mut fetch = false;
-        let mut last_min = String::new();
         let mut seen: Option<i64> = None;
         loop {
             if QUIT.load(Ordering::SeqCst) {
@@ -856,7 +828,6 @@ impl Host<'_> {
             if self.fill()? {
                 fetch = true;
             }
-            self.cron(&mut last_min);
             if now >= next_events {
                 next_events = now + EVENTS_EVERY;
                 self.upload_events();
@@ -1005,30 +976,6 @@ impl Host<'_> {
                 Ok(())
             }
         }
-    }
-
-    /// 连旧版服务端时才会触发（新版服务端把定时领取换成了接单时段，发来的时间表是空的，是否来领卡只看 `round`）。
-    /// 定时领取：到了设置的时间点（机器本地时区），机器在线、没有暂停、没有正在进行的一轮，就开始一轮
-    fn cron(&mut self, last: &mut String) {
-        // 同一分钟只处理一次：多条表达式同时到点也只开始一轮
-        let now = chrono::Local::now();
-        let m = now.format("%Y-%m-%d %H:%M").to_string();
-        let Some(w) = &self.work else { return };
-        let due = cron_due(&now, w.host.cron_on, &w.host.cron, w.host.paused, w.host.round);
-        cron_tick(&m, last, due, || match self.rm().post::<HostInfo>(&format!("/api/hosts/{}/round", self.name), json!({})) {
-            Ok(_) => {
-                self.say(format!("{} {m} 到点，开始一轮领取", self.p.green("⏰")));
-                self.hold = false;
-                if let Some(w) = self.work.as_mut() {
-                    w.host.round = true;
-                }
-                true
-            }
-            Err(e) => {
-                self.say(format!("{} {m} 到点，没能开始领取：{}", self.p.yellow("!"), e.message));
-                false
-            }
-        });
     }
 
     /// 退出：按「人停止」结束本机所有 agent（先 SIGTERM，10 秒后 SIGKILL），上报结束，再让机器离线

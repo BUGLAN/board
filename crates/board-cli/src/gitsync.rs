@@ -575,7 +575,7 @@ fn sync_with(on: bool, cred: Option<&GitCred>, repos: &[PathBuf], dir: &Path, cf
 /// 开始派发前、克隆完之后：在用服务端的凭据，就确认用户级配置里那一项还在（已经配好时不动）。
 /// 全局配置按主机生效，不再按仓库补配；只补凭据 helper，不碰提交身份（用户可能自己改过）。
 /// 返回写进去的那一句（打印用）
-pub fn ensure(_repo: &Path, dir: &Path) -> Option<String> {
+pub fn ensure(dir: &Path) -> Option<String> {
     ensure_with(dir, &GitConfig::global(dir))
 }
 

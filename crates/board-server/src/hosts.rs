@@ -501,13 +501,6 @@ pub(crate) async fn update(
     Json(v): Json<Value>,
 ) -> ApiResult<HostInfo> {
     let p: HostPatch = parse(v)?;
-    // 旧版界面提交的是「白板与目录」（`dirs`）：请求头里带着工作空间时按新模型收
-    let mut p = p;
-    if p.workspace.is_none() {
-        if let Some(ws) = h.get("x-board-workspace").and_then(|v| v.to_str().ok()).map(str::trim).filter(|w| !w.is_empty()) {
-            p.workspace = Some(HostWorkspace { path: ws.to_string(), ..Default::default() });
-        }
-    }
     let client = client_of(&h);
     let by = human(&caller).map_err(ApiError)?;
     let out = s.db(move |st| st.write(now_ms(), Origin::ui(client), |w| w.host_update_as(&name, &p, &by))).await?;

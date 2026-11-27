@@ -384,9 +384,6 @@ pub const QUOTA_PAUSE_DEFAULT: i64 = 60 * 60 * 1000;
 pub struct HostWorkspace {
     /// 配置里写的路径（`~` 不展开）
     pub path: String,
-    /// 目录不存在、是在这台机器上给这块白板新建的（还在等仓库地址）
-    #[serde(default)]
-    pub created: bool,
     /// `--dir <项目>=<路径>` 单独覆盖的项目目录（旧写法 `--dir <项目>/<白板>=<路径>` 只覆盖那一块白板，兼容保留）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<HostDirOverride>,
@@ -520,7 +517,7 @@ pub struct HostClone {
 /// 工作空间的设置路径：去掉首尾空白（`~` 不展开，和配置里写的一样）。没有路径、都是空白时为空
 pub(super) fn clean_workspace(w: &HostWorkspace) -> HostWorkspace {
     // 项目目录（projects）不存：读的时候按项目表填
-    let mut out = HostWorkspace { path: w.path.trim().to_string(), created: w.created, ..Default::default() };
+    let mut out = HostWorkspace { path: w.path.trim().to_string(), ..Default::default() };
     for o in &w.overrides {
         let (board, path) = (o.board.trim().to_string(), o.path.trim().to_string());
         if board.is_empty() || path.is_empty() || out.overrides.iter().any(|x| x.board == board) {
@@ -531,13 +528,12 @@ pub(super) fn clean_workspace(w: &HostWorkspace) -> HostWorkspace {
     out
 }
 
-/// 只比较工作空间设置本身（路径、是否新建的、`--dir` 覆盖了哪几块白板），不看检查结果和克隆状态
+/// 只比较工作空间设置本身（路径、`--dir` 覆盖了哪几块白板），不看检查结果和克隆状态
 pub(super) fn same_workspace(a: Option<&HostWorkspace>, b: Option<&HostWorkspace>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => {
             a.path == b.path
-                && a.created == b.created
                 && a.overrides.len() == b.overrides.len()
                 && a.overrides.iter().all(|x| b.overrides.iter().any(|y| y.board == x.board && y.path == x.path))
         }
@@ -587,7 +583,7 @@ pub(super) fn exported_workspace(dirs: &[HostDir]) -> Option<HostWorkspace> {
             overrides.push(HostDirOverride { board: d.board.trim().to_string(), path: d.path.trim().to_string() });
         }
     }
-    base.map(|path| HostWorkspace { path, created: false, overrides, ..Default::default() })
+    base.map(|path| HostWorkspace { path, overrides, ..Default::default() })
 }
 
 /// 这台机器的工作空间：新数据读 `workspace` 列；还没有时（升级前的机器）用旧的「白板与目录」导出，

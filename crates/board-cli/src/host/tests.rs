@@ -568,10 +568,10 @@ fn dir_checks_are_cached_between_beats() {
 #[test]
 fn missing_dirs_are_reported_instead_of_failing_startup() {
     let missing = "~/board-test-no-such-dir";
-    let (dirs, raw) = parse_dirs(vec![("default/main".into(), missing.into())]).unwrap();
-    assert_eq!(raw, vec![("default/main".to_string(), missing.to_string())], "配置里的 ~ 原样保留");
-    assert_eq!(dirs[0].0, "default/main");
-    assert!(!dirs[0].1.is_dir(), "目录可以暂时不存在，交给界面显示并克隆");
+    let ws = to_workspace(Some(missing), &[("default/main".into(), missing.into())]).unwrap();
+    assert_eq!(ws.overrides[0].path, missing, "配置里的 ~ 原样保留");
+    assert_eq!(ws.overrides[0].board, "default/main");
+    assert!(!workspace_path(&ws.overrides[0].path).unwrap().is_dir(), "目录可以暂时不存在，交给界面显示并克隆");
 }
 
 #[test]
@@ -1137,49 +1137,6 @@ fn split_dispatch_uses_split_prompt() {
     assert!(split.contains("先按粒度预检") && split.contains("任务粒度合适，未进行拆解"), "粒度预检写在提示词里：{split}");
     // 够小但只是原始需求：整理成一张能直接做的卡，挂在原条目下面（default/main#374）
     assert!(split.contains("只是原始需求的整理成一张能直接做的卡（board new --inbox --from 12）"), "{split}");
-}
-
-#[test]
-fn cron_failed_minute_is_retried() {
-    use chrono::TimeZone;
-    let at = |d: u32, h: u32, m: u32| chrono::Local.with_ymd_and_hms(2026, 11, d, h, m, 0).unwrap();
-    // 2026-11-09 是周一
-    let cron = vec!["0 3 * * *".to_string()];
-    // 不是定时点、暂停、正在进行一轮、没开定时都不发
-    assert!(cron_due(&at(9, 3, 0), true, &cron, false, false));
-    assert!(!cron_due(&at(9, 3, 0), true, &cron, true, false));
-    assert!(!cron_due(&at(9, 3, 0), true, &cron, false, true));
-    assert!(!cron_due(&at(9, 3, 1), true, &cron, false, false));
-    assert!(!cron_due(&at(9, 3, 0), false, &cron, false, false));
-    // 每 5 分钟、工作日 9 点；旧版服务端发来的 HH:MM 照样按每天这个时间
-    let every5 = vec!["*/5 * * * *".to_string()];
-    assert!(cron_due(&at(9, 14, 35), true, &every5, false, false));
-    assert!(!cron_due(&at(9, 14, 36), true, &every5, false, false));
-    let workday = vec!["0 9 * * 1-5".to_string()];
-    assert!(cron_due(&at(9, 9, 0), true, &workday, false, false), "周一");
-    assert!(!cron_due(&at(14, 9, 0), true, &workday, false, false), "周六");
-    assert!(cron_due(&at(9, 3, 0), true, &["03:00".to_string()], false, false));
-    // 两条同一分钟都到点：cron_tick 按分钟只处理一次（下面）
-    assert!(cron_due(&at(9, 9, 0), true, &[workday[0].clone(), "0 9 * * *".into()], false, false));
-
-    let mut last = String::new();
-    let mut calls = 0;
-    // 到点、请求失败：不记下这一分钟，同一分钟的下一个 tick 再试
-    assert!(cron_tick("03:00", &mut last, true, || {
-        calls += 1;
-        false
-    }));
-    assert_eq!(last, "");
-    assert!(cron_tick("03:00", &mut last, true, || {
-        calls += 1;
-        true
-    }));
-    assert_eq!((last.as_str(), calls), ("03:00", 2), "第二次成功才记下");
-    // 成功之后同一分钟不再发
-    assert!(!cron_tick("03:00", &mut last, true, || panic!("同一分钟不该再发")));
-    // 不用领取的分钟记下来，不调 start
-    assert!(!cron_tick("03:01", &mut last, false, || panic!("不到点不该发")));
-    assert_eq!(last, "03:01");
 }
 
 #[cfg(windows)]

@@ -6,6 +6,7 @@ import type { CardBatchOp } from '../lib/api';
 import type { BoardEvent, BoardSnapshot, CardDetail, Cmd, Workspace } from '../lib/types';
 import { card, detail, snapshot, workspace } from '../../test/fixtures';
 import type * as Data from './data';
+import type * as Trash from '../lib/trash';
 
 interface Call {
   board: string;
@@ -114,6 +115,7 @@ vi.mock('../lib/api', async orig => {
 });
 
 let D: typeof Data;
+let T: typeof Trash;
 /** 等挂起的 Promise 链走完（请求排队、刷新） */
 const settle = () => new Promise(r => setTimeout(r, 0));
 const title = (id: number) => D.useData.getState().board!.cards[id].title;
@@ -148,6 +150,7 @@ beforeEach(async () => {
   server.gate = null;
   server.wsGate = null;
   D = await import('./data');
+  T = await import('../lib/trash');
   await D.refresh();
   expect(D.useData.getState().path).toBe('p/a');
 });
@@ -496,33 +499,37 @@ describe('新建', () => {
 
 describe('删除、恢复（回收站）', () => {
   it('删掉：当帧从白板上拿掉，回收站里多一张；被拒绝时回来并提示', async () => {
-    const r = D.exec({ op: 'delete', id: 2 }, D.removeCard(2));
+    const r = T.deleteCards([2], { silent: true });
     expect(D.useData.getState().board!.cols.todo).toEqual([1, 3]);
     expect(D.useData.getState().board!.cards[2]).toBeUndefined();
     expect(D.useData.getState().board!.trash).toBe(1);
     await settle();
-    server.calls[0].fail('USAGE');
-    await expect(r).rejects.toMatchObject({ code: 'USAGE' });
+    server.cardBatches[0].fail('USAGE');
+    expect(await r).toBe(false);
     expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3]);
     // 撤掉补丁后回到服务端的快照（旧的快照没有这个字段）
     expect(D.useData.getState().board!.trash).toBeUndefined();
   });
 
   it('恢复：当帧回到原来那一列，回收站里少一张', async () => {
-    const p = D.restoreCard({ id: 2, column: 'todo', pos: 1, movedAt: 0, card: card(2) });
-    const r = D.exec({ op: 'restore', id: 2 }, p);
-    expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3]);
-    // 回收站里的张数按补丁先减一（最少是 0）；旧快照没有这个字段时也不会画成负数
-    expect(D.useData.getState().board!.trash).toBeUndefined();
-    await settle();
     const b = server.boards['p/a'];
-    b.cards[2] = card(2);
-    b.trash = 0;
-    serverEdit('p/a', 2, {});
-    server.calls[0].ok(detail(b.cards[2]));
-    await r;
+    delete b.cards[2];
+    b.cols.todo = [1, 3];
+    b.trash = 1;
+    serverEdit('p/a', 1, {});
+    await D.refresh();
+    server.trash['p/a'] = [{ ...card(2), deletedAt: 0, deletedBy: { kind: 'human', name: '人' }, col: 'todo', pos: 1 }];
+    const r = T.restoreMany('p/a', [2]);
+    await settle();
     expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3]);
-    // 撤掉补丁后按服务端的快照画（这里是 0 张）
+    expect(D.useData.getState().board!.trash).toBe(0);
+    b.cards[2] = card(2);
+    b.cols.todo = [1, 2, 3];
+    b.trash = 0;
+    const rev = serverEdit('p/a', 2, {});
+    server.cardBatches[0].ok({ ok: [2], failed: [], rev });
+    expect(await r).toEqual({ ok: [2], failed: [] });
+    expect(D.useData.getState().board!.cols.todo).toEqual([1, 2, 3]);
     expect(D.useData.getState().board!.trash).toBe(0);
   });
 });

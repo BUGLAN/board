@@ -370,8 +370,6 @@ export interface HostEnv {
 export interface HostWorkspace {
   /** 配置里写的路径（~ 不展开） */
   path: string;
-  /** 目录不存在、是在这台机器上给这块白板新建的 */
-  created?: boolean;
   /** `--dir <项目>=<路径>` 单独指定的项目目录（旧写法 `<项目>/<白板>=<路径>` 只管那一块白板，兼容保留） */
   overrides?: { board: string; path: string }[];
 }
@@ -1217,12 +1215,6 @@ export type Cmd =
   | { op: 'delete_comment'; id: number; activity: number }
   | { op: 'label'; id: number; add?: number[]; remove?: number[] }
   | { op: 'release'; id: number }
-  /** 删除卡片：移进回收站，一直可以恢复，只有人永久删除才真的删掉（规则 10） */
-  | { op: 'delete'; id: number }
-  /** 从回收站恢复（仅人） */
-  | { op: 'restore'; id: number }
-  /** 从回收站永久删除（仅人） */
-  | { op: 'purge'; id: number }
   /** 合并「未整理」里的条目（仅人）：from 并进 id，只留下 id；标签取并集，来源的附件、评论归到 id */
   | { op: 'merge'; id: number; from: number[]; title?: string; body?: string }
   /** 人看过「未整理」里的条目（仅人）：不给 id 时是这块白板「未整理」里的全部（「全部标为已读」） */

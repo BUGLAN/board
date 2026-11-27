@@ -6,7 +6,6 @@
    ========================================================================== */
 
 /* ---------------- 桌面端外壳 ---------------- */
-.titlebar { display: none; }
 html[data-shell="desktop"][data-os="mac"] .topbar { padding-left: 94px; }
 html[data-shell="desktop"] .topbar { cursor: default; }
 html[data-shell="desktop"] body { user-select: none; -webkit-user-select: none; }

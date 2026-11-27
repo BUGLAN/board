@@ -66,65 +66,65 @@ pub(crate) struct HostRow {
 }
 
 pub(super) const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, cron_on, cron, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]'), (SELECT fallback FROM sched WHERE id = 1), dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180), COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20), selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT json_group_array(json_object('id', id, 'name', name, 'agent', agent, 'provider', provider, 'model', model, 'effort', effort, 'note', note, 'only', json(only), 'sort', sort, 'createdAt', created_at)) FROM profiles), '[]') AS profiles_json, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]') AS rules, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180) AS max_run, COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20) AS idle_run, selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT json_group_array(json_object('id', id, 'name', name, 'agent', agent, 'provider', provider, 'model', model, 'effort', effort, 'note', note, 'only', json(only), 'sort', sort, 'createdAt', created_at)) FROM profiles), '[]') AS profiles_json, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
 
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
-    let agents_raw: String = r.get(5)?;
-    let workspace_raw: Option<String> = r.get(6)?;
-    let dirs_raw: String = r.get(38)?;
-    let envs_raw: String = r.get(17)?;
-    let run: String = r.get(18)?;
+    let agents_raw: String = r.get("agents")?;
+    let workspace_raw: Option<String> = r.get("workspace")?;
+    let dirs_raw: String = r.get("dirs")?;
+    let envs_raw: String = r.get("envs")?;
+    let run: String = r.get("run")?;
     Ok(HostRow {
-        id: r.get(0)?,
-        name: r.get(1)?,
-        instance: r.get(2)?,
-        os: r.get(3)?,
-        version: r.get(4)?,
+        id: r.get("id")?,
+        name: r.get("name")?,
+        instance: r.get("instance")?,
+        os: r.get("os")?,
+        version: r.get("version")?,
         agents: serde_json::from_str(&agents_raw).unwrap_or_default(),
         proj_dirs: serde_json::from_str(&r.get::<_, String>("proj_dirs")?).unwrap_or_default(),
         envs: serde_json::from_str(&envs_raw).unwrap_or_default(),
         run: serde_json::from_str(&run).unwrap_or_default(),
         workspace_raw,
         dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
-        dirs_rev: r.get(22)?,
-        dirs_at: r.get(23)?,
-        dirs_by: r.get(24)?,
-        max: r.get(7)?,
-        per_session: r.get(19)?,
-        max_run: r.get(31)?,
-        idle_run: r.get(32)?,
-        rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>(20)?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
+        dirs_rev: r.get("dirs_rev")?,
+        dirs_at: r.get("dirs_at")?,
+        dirs_by: r.get("dirs_by")?,
+        max: r.get("max")?,
+        per_session: r.get("per_session")?,
+        max_run: r.get("max_run")?,
+        idle_run: r.get("idle_run")?,
+        rules: serde_json::from_str::<Vec<ClaimRule>>(&r.get::<_, String>("rules")?).unwrap_or_default().into_iter().map(ClaimRule::upgraded).collect(),
         profiles: {
             let mut v: Vec<crate::profiles::Profile> = serde_json::from_str(&r.get::<_, String>("profiles_json")?).unwrap_or_default();
             v.sort_by(|a, b| (a.sort, a.created_at, &a.id).cmp(&(b.sort, b.created_at, &b.id)));
             v
         },
-        paused: r.get::<_, i64>(8)? != 0,
-        agent: r.get(9)?,
-        auto: r.get::<_, i64>(39)? != 0,
-        windows: serde_json::from_str(&r.get::<_, String>(40)?).unwrap_or_else(|_| crate::sched::all_day()),
-        up_tried: r.get(41)?,
-        up_tries: r.get(42)?,
-        up_retry: r.get(43)?,
-        res: r.get::<_, Option<String>>(44)?.and_then(|j| serde_json::from_str(&j).ok()),
-        round_at: r.get(12)?,
-        rr: r.get(13)?,
-        first_at: r.get(14)?,
-        beat_at: r.get(15)?,
-        off_at: r.get(16)?,
-        ask: r.get::<_, Option<String>>(25)?.and_then(|j| serde_json::from_str(&j).ok()),
-        ask_seq: r.get(26)?,
-        drain_at: r.get(27)?,
-        up_pause: r.get::<_, i64>(28)? != 0,
-        agent_auto: r.get::<_, i64>(46)? != 0,
-        rechecked_at: r.get(29)?,
-        token: r.get(30)?,
-        selftest: r.get::<_, Option<String>>(33)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
-        sync_skills: r.get::<_, i64>(34)? != 0,
-        sync_mcp: r.get::<_, i64>(35)? != 0,
-        sync_git: r.get::<_, i64>(45)? != 0,
-        config_sync: r.get::<_, Option<String>>(36)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
-        skill_import: r.get::<_, Option<String>>(37)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
+        paused: r.get::<_, i64>("paused")? != 0,
+        agent: r.get("agent")?,
+        auto: r.get::<_, i64>("auto")? != 0,
+        windows: serde_json::from_str(&r.get::<_, String>("windows")?).unwrap_or_else(|_| crate::sched::all_day()),
+        up_tried: r.get("up_tried")?,
+        up_tries: r.get("up_tries")?,
+        up_retry: r.get("up_retry")?,
+        res: r.get::<_, Option<String>>("res")?.and_then(|j| serde_json::from_str(&j).ok()),
+        round_at: r.get("round_at")?,
+        rr: r.get("rr")?,
+        first_at: r.get("first_at")?,
+        beat_at: r.get("beat_at")?,
+        off_at: r.get("off_at")?,
+        ask: r.get::<_, Option<String>>("ask")?.and_then(|j| serde_json::from_str(&j).ok()),
+        ask_seq: r.get("ask_seq")?,
+        drain_at: r.get("drain_at")?,
+        up_pause: r.get::<_, i64>("up_pause")? != 0,
+        agent_auto: r.get::<_, i64>("agent_auto")? != 0,
+        rechecked_at: r.get("rechecked_at")?,
+        token: r.get("token")?,
+        selftest: r.get::<_, Option<String>>("selftest")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
+        sync_skills: r.get::<_, i64>("sync_skills")? != 0,
+        sync_mcp: r.get::<_, i64>("sync_mcp")? != 0,
+        sync_git: r.get::<_, i64>("sync_git")? != 0,
+        config_sync: r.get::<_, Option<String>>("config_sync")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
+        skill_import: r.get::<_, Option<String>>("skill_import")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         agents_raw,
         envs_raw,
         dirs_raw,
@@ -421,13 +421,9 @@ pub(super) fn effort_of(agents: &[HostAgent], agent: &str) -> String {
 
 /// `board check --agent <标识>` 用：按写事务里的机器记录（[`W::agent_check_generated`] 已经按机器名或令牌找到的那台）
 /// 算这个 agent 该用的模型名、强度，以及第二段是不是真的模型名
-pub(crate) fn name_opts_for_transaction(
-    _conn: &rusqlite::Connection,
-    h: &HostInfo,
-    agent: &str,
-) -> Result<(String, String, bool)> {
+pub(crate) fn name_opts_for_transaction(h: &HostInfo, agent: &str) -> (String, String, bool) {
     let (model, modeled) = model_of(&h.agents, agent);
-    Ok((model, effort_of(&h.agents, agent), modeled))
+    (model, effort_of(&h.agents, agent), modeled)
 }
 
 /// 按名字找一台在线的机器（带上按机器设置算好的 agent 数据）：`board check --agent <标识>` 用它。

@@ -263,7 +263,6 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
     let mut rep = report("mbp", "i1", vec![]);
     rep.workspace = Some(HostWorkspace {
         path: "/tmp".into(),
-        created: false,
         overrides: vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }],
         ..Default::default()
     });
@@ -286,7 +285,6 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
             let p = HostPatch {
                 workspace: Some(HostWorkspace {
                     path: "/tmp".into(),
-                    created: false,
                     overrides: vec![HostDirOverride { board: "default/other".into(), path: "/tmp/other".into() }],
                     ..Default::default()
                 }),
@@ -306,7 +304,6 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
                 &HostPatch {
                     workspace: Some(HostWorkspace {
                         path: "/tmp/new".into(),
-                        created: false,
                         overrides: vec![HostDirOverride { board: "default/other".into(), path: "/elsewhere/repo".into() }],
                         ..Default::default()
                     }),
@@ -448,7 +445,6 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
     let mut rep = report("mbp", "i1", vec![]);
     rep.workspace = Some(HostWorkspace {
         path: "/tmp".into(),
-        created: false,
         overrides: vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }],
         ..Default::default()
     });
@@ -478,7 +474,6 @@ fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
                 &HostPatch {
                     workspace: Some(HostWorkspace {
                         path: "/repo".into(),
-                        created: false,
                         overrides: vec![HostDirOverride { board: B.into(), path: "/tmp/board".into() }],
                         ..Default::default()
                     }),
@@ -3272,7 +3267,6 @@ fn old_database_moves_board_repo_to_the_project() {
 fn dir_override_can_cover_a_whole_project() {
     let ws = HostWorkspace {
         path: "/ws".into(),
-        created: false,
         overrides: vec![
             HostDirOverride {
                 board: "a".into(),

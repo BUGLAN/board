@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('rev', 0), ('schema', 1), ('hosts', 0);
+INSERT OR IGNORE INTO meta (key, value) VALUES ('rev', 0), ('hosts', 0);
 
 CREATE TABLE IF NOT EXISTS projects (
   key         TEXT PRIMARY KEY,

@@ -34,34 +34,6 @@ pub(super) struct CloneRun {
     pub(super) log: PathBuf,
 }
 
-/// 校验白板与目录（`--dir`、旧配置里的 `[host] dirs`）：写成 <项目> 或 <项目>/<白板>、不重复；目录可以暂时不存在
-/// （界面上显示状态、可以克隆）。返回展开后的目录（相对路径按当前目录）和配置里写的原文
-#[cfg(test)]
-pub(super) fn parse_dirs(raw: Vec<(String, String)>) -> Result<(Vec<(String, PathBuf)>, Vec<(String, String)>)> {
-    let mut dirs: Vec<(String, PathBuf)> = vec![];
-    let mut raw_out: Vec<(String, String)> = vec![];
-    for (board, path) in raw {
-        let board = board.trim().to_string();
-        let path = path.trim().to_string();
-        if !board_core::valid_dir_key(&board) {
-            return Err(BoardError::usage(format!("要写成 <项目> 或 <项目>/<白板>：{board}")));
-        }
-        if dirs.iter().any(|(b, _)| *b == board) {
-            return Err(BoardError::usage(format!("白板 {board} 写了两次")));
-        }
-        if path.is_empty() {
-            return Err(BoardError::usage(format!("{board} 还没有目录")));
-        }
-        let mut dir = expand(&path);
-        if dir.is_relative() {
-            dir = std::env::current_dir().map(|c| c.join(&dir)).unwrap_or(dir);
-        }
-        dirs.push((board.clone(), dir));
-        raw_out.push((board, path));
-    }
-    Ok((dirs, raw_out))
-}
-
 /// `--workspace` 的值：去掉首尾空白，空的当作没给
 pub(super) fn workspace_arg(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
@@ -136,7 +108,7 @@ pub(super) fn to_workspace(raw: Option<&str>, overrides: &[(String, String)]) ->
         }
         None => String::new(),
     };
-    Ok(HostWorkspace { path, created: false, overrides: out, ..Default::default() })
+    Ok(HostWorkspace { path, overrides: out, ..Default::default() })
 }
 
 /// 服务端把工作空间写回本机配置；保留 `[host]` 里的机器名和文件里的其他项、注释
@@ -208,7 +180,7 @@ pub(super) fn bootstrap_dirs(
                 });
                 match spawn {
                     Ok(s) if s.success() => {
-                        let _ = gitsync::ensure(&dir, &host_dir);
+                        let _ = gitsync::ensure(&host_dir);
                         checks.push(DirCheck::new(dir, "ok", Some(url.to_string()), None))
                     }
                     Ok(s) => {
@@ -613,8 +585,8 @@ impl Host<'_> {
         }
         // 刚克隆完的白板：删掉旧的目录状态，下一次上报马上重新看
         let paths: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().filter(|(b, _)| done.contains(b)).map(|(_, p)| p).collect();
-        for p in &paths {
-            let _ = gitsync::ensure(p, &self.host_dir());
+        if !paths.is_empty() {
+            let _ = gitsync::ensure(&self.host_dir());
         }
         self.dir_checks.retain(|c| !paths.contains(&c.path));
     }

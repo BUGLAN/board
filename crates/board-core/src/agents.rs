@@ -290,7 +290,7 @@ impl<'a> W<'a> {
         // （同一个 free_agent_name：没有机器名、模型时第一段、第二段都是 agent 标识）
         let (name, modeled) = match found {
             Some(m) => {
-                let (model, effort, set) = crate::hosts::name_opts_for_transaction(self.tx, &m, agent)?;
+                let (model, effort, set) = crate::hosts::name_opts_for_transaction(&m, agent);
                 (self.free_agent_name(agent, &m.name, &model, &effort)?, set)
             }
             None => (self.free_agent_name(agent, "", "", "")?, false),

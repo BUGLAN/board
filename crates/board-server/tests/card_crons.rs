@@ -14,10 +14,9 @@ fn crons(s: &Server) -> Vec<Value> {
     b["cardCrons"].as_array().cloned().unwrap_or_default()
 }
 
-/// 旧版界面（只认「白板与目录」）调 PATCH /api/hosts/{名字}：请求头带着工作空间（`x-board-workspace`）时按工作空间收，
-/// 不带时把旧的目录列表换成工作空间。派发不再因为「没有这块白板的目录」拒绝——有工作空间就视为有
+/// PATCH /api/hosts/{名字} 按工作空间收；旧版 board host 只报白板与目录时照样能认
 #[test]
-fn host_patch_accepts_workspace_from_old_and_new_clients() {
+fn host_patch_accepts_workspace() {
     use board_core::hosts::{HostDir, HostReport, HostWorkspace};
     let s = Server::start(Auth::Local);
     let mut st = board_core::Store::open(&s.db).unwrap();
@@ -37,15 +36,6 @@ fn host_patch_accepts_workspace_from_old_and_new_clients() {
     let r = send("PATCH", &base, &[UI], Some(json!({ "workspace": { "path": "/srv/repo" } })));
     assert_eq!(r.status, 200, "{}", r.text);
     assert_eq!(r.body["workspace"]["path"], "/srv/repo");
-    // 旧版界面：只有白板与目录，请求头里带着工作空间
-    let r = send(
-        "PATCH",
-        &base,
-        &[UI, ("x-board-workspace", "/srv/repo2")],
-        Some(json!({ "dirs": [{ "board": "default/main", "path": "/srv/repo2/default/main" }] })),
-    );
-    assert_eq!(r.status, 200, "{}", r.text);
-    assert_eq!(r.body["workspace"]["path"], "/srv/repo2", "{}", r.text);
     // 旧版上报（不报工作空间、白板标识不合规则）碰到服务端按工作空间配好的机器：拒绝，不改存着的
     rep.workspace = None;
     rep.dirs = vec![HostDir { board: "main".into(), path: "/tmp/board".into(), ..Default::default() }];

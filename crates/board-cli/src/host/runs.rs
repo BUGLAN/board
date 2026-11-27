@@ -841,7 +841,7 @@ impl Host<'_> {
             return Ok(None);
         }
         // 服务端的 Git 凭据：同步之后才克隆、才有的仓库在这里补配上，拉代码和 agent 推送都用它
-        if let Some(line) = gitsync::ensure(&dir, &self.host_dir()) {
+        if let Some(line) = gitsync::ensure(&self.host_dir()) {
             self.say(format!("{} {line}", self.p.green("✓")));
         }
         // 没有会话名（旧版、异常的服务端）：不准备、不删任何目录，这张派发直接结束（#508）

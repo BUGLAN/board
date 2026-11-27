@@ -170,8 +170,8 @@ pub struct Milestones {
 /// - 终点状态（`final`）：最近一次发版之后移进去的算「未发版」，更早的、没写卡片行的算「没有版本」；
 ///   还没有任何版本记录时都算「没有版本」
 /// - 其他状态（可领取的待办、返工，锁定的进行中、待审核，错误节点）→ 「未发版」：进了工作流就是这一轮的活儿
-pub fn group_of(column: &str, in_inbox: bool, final_: bool, moved_at: Option<i64>, created_at: i64, last_release: Option<i64>) -> Option<Group> {
-    if column == INBOX || in_inbox {
+pub fn group_of(column: &str, final_: bool, moved_at: Option<i64>, created_at: i64, last_release: Option<i64>) -> Option<Group> {
+    if column == INBOX {
         return None;
     }
     if final_ {
@@ -372,7 +372,7 @@ impl R<'_> {
             let Some(group) = (if r.labels.iter().any(|l| version_ids.contains(l)) {
                 Some(Group::Version)
             } else {
-                group_of(&r.column, false, r.final_, r.moved_at, r.created_at, last_release)
+                group_of(&r.column, r.final_, r.moved_at, r.created_at, last_release)
             }) else {
                 continue;
             };
@@ -428,22 +428,22 @@ mod unit {
     fn grouping_by_status_rules() {
         let rel = Some(100);
         // 可领取：待办、返工
-        assert_eq!(group_of("todo", false, false, None, 200, rel), Some(Group::Next));
-        assert_eq!(group_of("rework", false, false, None, 200, rel), Some(Group::Next));
+        assert_eq!(group_of("todo", false, None, 200, rel), Some(Group::Next));
+        assert_eq!(group_of("rework", false, None, 200, rel), Some(Group::Next));
         // 锁定：进行中、审核、错误节点
         for col in ["doing", "review", "error"] {
-            assert_eq!(group_of(col, false, false, None, 200, rel), Some(Group::Next), "{col}");
+            assert_eq!(group_of(col, false, None, 200, rel), Some(Group::Next), "{col}");
         }
         // 未整理：还没进工作流的想法，哪一组都不算
-        assert_eq!(group_of(INBOX, false, false, None, 200, rel), None);
+        assert_eq!(group_of(INBOX, false, None, 200, rel), None);
         // 终点：发版之后移进去的算未发版，之前的算没有版本
-        assert_eq!(group_of("done", false, true, Some(150), 10, rel), Some(Group::Next));
-        assert_eq!(group_of("done", false, true, Some(50), 10, rel), Some(Group::None));
+        assert_eq!(group_of("done", true, Some(150), 10, rel), Some(Group::Next));
+        assert_eq!(group_of("done", true, Some(50), 10, rel), Some(Group::None));
         // 没有移到终点的时间时按建卡时间算
-        assert_eq!(group_of("done", false, true, None, 150, rel), Some(Group::Next));
+        assert_eq!(group_of("done", true, None, 150, rel), Some(Group::Next));
         // 还没有任何版本记录：终点的都算没有版本
-        assert_eq!(group_of("done", false, true, Some(150), 10, None), Some(Group::None));
-        assert_eq!(group_of("todo", false, false, None, 150, None), Some(Group::Next));
+        assert_eq!(group_of("done", true, Some(150), 10, None), Some(Group::None));
+        assert_eq!(group_of("todo", false, None, 150, None), Some(Group::Next));
     }
 
     #[test]
