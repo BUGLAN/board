@@ -115,13 +115,25 @@ pub fn integration_branch(repo: &Path, want: &str) -> Result<String, String> {
     let want = want.trim();
     let branch = if !want.is_empty() {
         want.to_string()
-    } else if let Ok(head) = git(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], QUICK) {
-        head.strip_prefix("origin/").unwrap_or(&head).to_string()
+    } else if let Ok(head) = git(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], QUICK) {
+        head.strip_prefix("refs/remotes/origin/").or_else(|| head.strip_prefix("origin/")).unwrap_or(&head).to_string()
     } else {
         git(repo, &["branch", "--show-current"], QUICK).ok().filter(|b| !b.is_empty()).ok_or("认不出集成分支：在项目设置里填上")?
     };
     git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")], QUICK).map_err(|_| format!("远端没有分支 {branch}"))?;
     Ok(branch)
+}
+
+/// git 内部用的完整远端引用：`origin/main` → `refs/remotes/origin/main`。
+/// 短名可能被同名的本地分支顶替，内部命令一律用完整引用。
+fn remote_ref(branch: &str) -> String {
+    if branch.starts_with("refs/") {
+        branch.to_string()
+    } else if branch.starts_with("origin/") {
+        format!("refs/remotes/{branch}")
+    } else {
+        format!("refs/remotes/origin/{branch}")
+    }
 }
 
 /// 主仓库目录（`repo` 自己也可能是一个 worktree）
@@ -399,7 +411,8 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str, in_use: &[Pa
     board_core::model::check_agent_name(name).map_err(|e| Fail::Other(format!("会话名不对，不准备 worktree：{e}")))?;
     fetch(repo).map_err(Fail::Fetch)?;
     let branch = integration_branch(repo, want_branch).map_err(Fail::Other)?;
-    let tip = format!("origin/{branch}");
+    let tip = remote_ref(&branch);
+    let tip_name = format!("origin/{branch}");
     let first = worktree_path(repo, name).ok_or_else(|| Fail::Other("找不到主仓库目录".into()))?;
     let root = wt_root(repo).ok_or_else(|| Fail::Other("找不到主仓库目录".into()))?;
     let locks = worktree_locks(repo);
@@ -453,7 +466,7 @@ pub fn prepare(repo: &Path, name: &str, id: i64, want_branch: &str, in_use: &[Pa
     }
     match found {
         Some(wt) => {
-            git(&wt, &["checkout", "--quiet", "--detach", &tip], WT_LIMIT).map_err(|e| Fail::Other(format!("{} 切不到 {tip}：{e}", wt.display())))?;
+            git(&wt, &["checkout", "--quiet", "--detach", &tip], WT_LIMIT).map_err(|e| Fail::Other(format!("{} 切不到 {tip_name}：{e}", wt.display())))?;
             target = wt;
         }
         // 3. 新建。按名字算出的目录被占着（别的名字接手了、里面有没推的改动）时另开一个
@@ -499,13 +512,23 @@ pub fn worktree_locks(repo: &Path) -> Vec<(PathBuf, Option<String>)> {
 pub fn session_worktree(repo: &Path, here: &Path, name: &str, tip: &str, online: Option<&[String]>) -> Result<(PathBuf, Got), String> {
     board_core::model::check_agent_name(name).map_err(|e| format!("名字不对，不准备 worktree：{e}"))?;
     let root = wt_root(repo).ok_or("找不到主仓库目录")?;
-    let locks = worktree_locks(repo);
-    let mine = |p: &Path| locks.iter().any(|(q, r)| r.as_deref() == Some(name) && same_path(q, p));
+    let tip = remote_ref(tip);
+    let mut locks = worktree_locks(repo);
+    let stale: Vec<PathBuf> = locks.iter().filter(|(q, r)| r.as_deref() == Some(name) && under(&root, q) && !q.exists()).map(|(q, _)| q.clone()).collect();
+    if !stale.is_empty() {
+        for p in &stale {
+            let path = p.to_string_lossy().to_string();
+            git(repo, &["worktree", "unlock", &path], QUICK).map_err(|e| format!("解不开已经不存在的 worktree {}：{e}", p.display()))?;
+        }
+        git(repo, &["worktree", "prune"], QUICK).map_err(|e| format!("清不掉已经不存在的 worktree 登记：{e}"))?;
+        locks = worktree_locks(repo);
+    }
+    let mine = |p: &Path| locks.iter().any(|(q, r)| r.as_deref() == Some(name) && q.exists() && same_path(q, p));
     let found = git(here, &["rev-parse", "--show-toplevel"], QUICK)
         .ok()
         .map(PathBuf::from)
         .filter(|top| mine(top))
-        .or_else(|| locks.iter().find(|(q, r)| r.as_deref() == Some(name) && under(&root, q)).map(|(q, _)| q.clone()));
+        .or_else(|| locks.iter().find(|(q, r)| r.as_deref() == Some(name) && under(&root, q) && q.exists()).map(|(q, _)| q.clone()));
     if let Some(wt) = found {
         touch(&wt);
         return Ok((wt, Got::Mine));
@@ -527,7 +550,7 @@ pub fn session_worktree(repo: &Path, here: &Path, name: &str, tip: &str, online:
         std::fs::create_dir_all(parent).map_err(|e| format!("无法创建 {}：{e}", parent.display()))?;
     }
     let path = target.to_string_lossy().to_string();
-    git(repo, &["worktree", "add", "--quiet", "--detach", "--lock", "--reason", name, &path, tip], WT_LIMIT).map_err(|e| format!("建不了 worktree {path}：{e}"))?;
+    git(repo, &["worktree", "add", "--quiet", "--detach", "--lock", "--reason", name, &path, &tip], WT_LIMIT).map_err(|e| format!("建不了 worktree {path}：{e}"))?;
     touch(&target);
     write_owner(repo, &target, name);
     Ok((target, Got::Created))

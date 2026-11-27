@@ -31,6 +31,8 @@ pub const MIN_SIGNIFICANT: usize = 5;
 const SAMPLES: usize = 2;
 /// reflog 最多往回看几条
 const REFLOG_LIMIT: usize = 500;
+/// 一条 git log 命令最多带多少字符的路径（Windows 命令行上限 32767，留出别的参数和转义的余量）
+const PATH_BATCH_BYTES: usize = 24_000;
 
 pub struct Opts<'a> {
     pub commit: Option<&'a str>,
@@ -70,13 +72,39 @@ fn short(h: &str) -> &str {
     &h[..h.len().min(7)]
 }
 
+/// git 内部用的完整远端引用：`origin/main` → `refs/remotes/origin/main`。
+/// 短名会被同名的本地分支顶替（有人误建过 `refs/heads/origin/main` 时），内部不能再用短名。
+fn remote_ref(name: &str) -> String {
+    if name.starts_with("refs/") {
+        name.to_string()
+    } else if name.starts_with("origin/") {
+        format!("refs/remotes/{name}")
+    } else {
+        format!("refs/remotes/origin/{name}")
+    }
+}
+
+/// 给人看的引用名：完整远端引用还原成 `origin/main`
+fn remote_name(full: &str) -> String {
+    full.strip_prefix("refs/remotes/").or_else(|| full.strip_prefix("refs/heads/")).unwrap_or(full).to_string()
+}
+
 /// 集成分支：`--upstream`，否则 `origin/HEAD` 指的分支，再否则 `origin/main`
 fn upstream(dir: Option<&str>, given: Option<&str>) -> Result<(String, String)> {
     if let Some(u) = given.map(str::trim).filter(|s| !s.is_empty()) {
-        return Ok((u.to_string(), rev(dir, u)?));
+        let full = remote_ref(u);
+        let name = remote_name(&full);
+        let h = rev(dir, &full).map_err(|_| BoardError::usage(format!("找不到集成分支「{name}」：用 --upstream <分支> 指定（例如 origin/main）")))?;
+        return Ok((name, h));
     }
-    let name = git(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "origin/main".into());
-    let h = rev(dir, &name).map_err(|_| BoardError::usage(format!("找不到集成分支「{name}」：用 --upstream <分支> 指定（例如 origin/main）")))?;
+    let name = git(dir, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .and_then(|s| s.strip_prefix("refs/remotes/").map(str::to_string).or_else(|| s.strip_prefix("origin/").map(|b| format!("origin/{b}"))))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "origin/main".into());
+    let full = remote_ref(&name);
+    let h = rev(dir, &full).map_err(|_| BoardError::usage(format!("找不到集成分支「{name}」：用 --upstream <分支> 指定（例如 origin/main）")))?;
     Ok((name, h))
 }
 
@@ -146,6 +174,64 @@ struct FileDiff {
     old_ranges: Vec<(u64, u64)>,
 }
 
+impl FileDiff {
+    fn merge(&mut self, other: Self) {
+        self.added.extend(other.added);
+        self.removed.extend(other.removed);
+        self.old_ranges.extend(other.old_ranges);
+    }
+}
+
+/// git 的 C 风格引用：`"a/tab\tname.md"` → `a/tab<TAB>name.md`
+fn unquote_path(s: &str) -> Option<String> {
+    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        let e = chars.next()?;
+        match e {
+            'a' => bytes.push(0x07),
+            'b' => bytes.push(0x08),
+            't' => bytes.push(b'\t'),
+            'n' => bytes.push(b'\n'),
+            'v' => bytes.push(0x0b),
+            'f' => bytes.push(0x0c),
+            'r' => bytes.push(b'\r'),
+            '\\' => bytes.push(b'\\'),
+            '"' => bytes.push(b'"'),
+            '0'..='7' => {
+                let mut n = e.to_digit(8)?;
+                for _ in 0..2 {
+                    let Some(d) = chars.clone().next().and_then(|c| c.to_digit(8)) else { break };
+                    n = n * 8 + d;
+                    chars.next();
+                }
+                bytes.push(n as u8);
+            }
+            other => {
+                let mut buf = [0; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `---` / `+++` 后面的路径：去掉 a/、b/ 前缀；带空格的路径末尾有一个 TAB，带特殊字符的会整个引号转义
+fn diff_path(field: &str) -> Option<String> {
+    let field = field.strip_suffix('\t').unwrap_or(field);
+    if field == "/dev/null" {
+        return None;
+    }
+    let path = if field.starts_with('"') { unquote_path(field)? } else { field.to_string() };
+    Some(path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(&path).to_string())
+}
+
 /// 解析 `git diff -U0` 的输出：每个文件加了、删了哪些行
 fn parse_diff(text: &str) -> BTreeMap<String, FileDiff> {
     let mut out: BTreeMap<String, FileDiff> = BTreeMap::new();
@@ -161,11 +247,11 @@ fn parse_diff(text: &str) -> BTreeMap<String, FileDiff> {
         }
         if !in_hunk {
             if let Some(p) = l.strip_prefix("--- ") {
-                old = (p != "/dev/null").then(|| p.strip_prefix("a/").unwrap_or(p).to_string());
+                old = diff_path(p);
                 continue;
             }
             if let Some(p) = l.strip_prefix("+++ ") {
-                let new = (p != "/dev/null").then(|| p.strip_prefix("b/").unwrap_or(p).to_string());
+                let new = diff_path(p);
                 cur = new.or_else(|| old.clone());
                 continue;
             }
@@ -193,6 +279,26 @@ fn parse_diff(text: &str) -> BTreeMap<String, FileDiff> {
         } else if let Some(t) = l.strip_prefix('-') {
             out.entry(path.clone()).or_default().removed.push(t.to_string());
         }
+    }
+    out
+}
+
+/// 按总长度把路径分批：Windows 上一条 git log 带 2000 个文件会超过命令行上限
+fn path_batches<'a>(paths: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut out = vec![];
+    let mut batch = vec![];
+    let mut len = 0;
+    for &path in paths {
+        let next = path.len() + 1;
+        if !batch.is_empty() && len + next > PATH_BATCH_BYTES {
+            out.push(std::mem::take(&mut batch));
+            len = 0;
+        }
+        batch.push(path);
+        len += next;
+    }
+    if !batch.is_empty() {
+        out.push(batch);
     }
     out
 }
@@ -251,32 +357,53 @@ pub(crate) fn check(o: &Opts, json: bool, p: &Paint) -> Result<Report> {
 
     // 最近的提交：只看动过这次改到的文件的
     let mut recent: Vec<Recent> = vec![];
+    let mut known: HashMap<String, usize> = HashMap::new();
     if !paths.is_empty() && b != from {
-        let mut args = vec![
-            "log",
-            "--no-merges",
-            "--no-renames",
-            "--no-color",
-            "--no-ext-diff",
-            "-U0",
-            "--format=%x1e%H%x1f%s%x1f%B%x1d",
-        ];
         let range = format!("{b}..{from}");
-        args.push(&range);
-        args.push("--");
-        args.extend(paths.iter().copied());
-        let text = git(dir, &args)?;
-        for chunk in text.split('\x1e').filter(|s| !s.trim().is_empty()) {
-            let Some((head, diff)) = chunk.split_once('\x1d') else { continue };
-            let mut f = head.splitn(3, '\x1f');
-            let sha = f.next().unwrap_or_default().trim().to_string();
-            let subject = f.next().unwrap_or_default().trim().to_string();
-            let body = f.next().unwrap_or_default();
-            let card = card_refs(body).into_iter().map(|(p, b, id)| format!("{p}/{b}#{id}")).next();
-            if card.as_ref().is_some_and(|c| mine.contains(c)) {
-                continue;
+        let batches = path_batches(&paths);
+        for batch in &batches {
+            let mut args = vec![
+                "log",
+                "--no-merges",
+                "--no-renames",
+                "--no-color",
+                "--no-ext-diff",
+                "-U0",
+                "--format=%x1e%H%x1f%s%x1f%B%x1d",
+            ];
+            args.push(&range);
+            args.push("--");
+            args.extend(batch.iter().copied());
+            let text = git(dir, &args)?;
+            for chunk in text.split('\x1e').filter(|s| !s.trim().is_empty()) {
+                let Some((head, diff)) = chunk.split_once('\x1d') else { continue };
+                let mut f = head.splitn(3, '\x1f');
+                let sha = f.next().unwrap_or_default().trim().to_string();
+                let subject = f.next().unwrap_or_default().trim().to_string();
+                let body = f.next().unwrap_or_default();
+                let card = card_refs(body).into_iter().map(|(p, b, id)| format!("{p}/{b}#{id}")).next();
+                if card.as_ref().is_some_and(|c| mine.contains(c)) {
+                    continue;
+                }
+                let diff = parse_diff(diff);
+                if let Some(&i) = known.get(&sha) {
+                    for (path, d) in diff {
+                        recent[i].diff.entry(path).or_default().merge(d);
+                    }
+                } else {
+                    known.insert(sha.clone(), recent.len());
+                    recent.push(Recent { sha, subject, card, diff });
+                }
             }
-            recent.push(Recent { sha, subject, card, diff: parse_diff(diff) });
+        }
+        if batches.len() > 1 {
+            // 分批查时同一个提交可能在多批里出现：先合并，再按 rev-list 的顺序排回去（git log 从新到旧）
+            let order: HashMap<String, usize> = git(dir, &["rev-list", "--no-merges", &range])?
+                .lines()
+                .enumerate()
+                .map(|(i, sha)| (sha.trim().to_string(), i))
+                .collect();
+            recent.sort_by_key(|r| order.get(&r.sha).copied().unwrap_or(usize::MAX));
         }
     }
     let by_sha: HashMap<&str, usize> = recent.iter().enumerate().map(|(i, r)| (r.sha.as_str(), i)).collect();
@@ -309,13 +436,16 @@ pub(crate) fn check(o: &Opts, json: bool, p: &Paint) -> Result<Report> {
             }
         }
         // 加回的行：最近哪个提交删掉了它，而集成分支上现在没有这一行
-        if d.added.is_empty() {
+        if d.added.is_empty() || recent.is_empty() {
+            continue;
+        }
+        let changed: Vec<(usize, &FileDiff)> = recent.iter().enumerate().filter_map(|(i, r)| r.diff.get(path).map(|d| (i, d))).collect();
+        if changed.is_empty() {
             continue;
         }
         let now: Vec<String> = git(dir, &["show", &format!("{from}:{path}")]).map(|t| t.lines().map(|l| l.trim().to_string()).collect()).unwrap_or_default();
         let exact: HashSet<&str> = now.iter().map(String::as_str).collect();
-        for (i, r) in recent.iter().enumerate() {
-            let Some(rd) = r.diff.get(path) else { continue };
+        for (i, rd) in changed {
             // 它删掉、集成分支上现在也没有（连差不多的都没有）的行
             let gone: Vec<&str> = rd
                 .removed
@@ -482,5 +612,37 @@ mod tests {
         assert_eq!(a.old_ranges, vec![(3, 2)]);
         assert_eq!(m["gone.ts"].removed, vec!["only line"]);
         assert_eq!(m["gone.ts"].old_ranges, vec![(1, 1)]);
+    }
+
+    #[test]
+    fn parses_paths_with_spaces_and_c_quoting() {
+        let d = concat!(
+            "diff --git a/my file.md b/my file.md\n",
+            "--- a/my file.md\t\n",
+            "+++ b/my file.md\t\n",
+            "@@ -1 +1 @@\n",
+            "-old\n",
+            "+space\n",
+            "diff --git \"a/tab\\tname.md\" \"b/tab\\tname.md\"\n",
+            "--- \"a/tab\\tname.md\"\n",
+            "+++ \"b/tab\\tname.md\"\n",
+            "@@ -1 +1 @@\n",
+            "-old\n",
+            "+quoted\n",
+        );
+        let m = parse_diff(d);
+        assert_eq!(m["my file.md"].added, vec!["space"]);
+        assert_eq!(m["tab\tname.md"].added, vec!["quoted"]);
+        assert_eq!(diff_path("\"a/\\345\\233\\276\\347\\211\\207.md\"").as_deref(), Some("图片.md"));
+    }
+
+    #[test]
+    fn batches_paths_under_the_command_line_limit() {
+        let paths: Vec<String> = (0..2000).map(|i| format!("many/{i:04}-{}.txt", "x".repeat(40))).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let batches = path_batches(&refs);
+        assert!(batches.len() > 1);
+        assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), paths.len());
+        assert!(batches.iter().all(|b| b.iter().map(|p| p.len() + 1).sum::<usize>() <= PATH_BATCH_BYTES));
     }
 }

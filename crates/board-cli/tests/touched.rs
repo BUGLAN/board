@@ -159,8 +159,13 @@ fn start_card(work: &Path) {
 
 /// rebase 到最新的 origin/main 后压成一个提交
 fn rebase_and_squash(work: &Path, msg: &str, take_mine: &[&str]) {
+    rebase_and_squash_to(work, msg, take_mine, "origin/main");
+}
+
+/// rebase 到指定引用后压成一个提交
+fn rebase_and_squash_to(work: &Path, msg: &str, take_mine: &[&str], upstream: &str) {
     git(work, &["fetch", "-q", "origin"]);
-    if !git_try(work, &["rebase", "origin/main"]) {
+    if !git_try(work, &["rebase", upstream]) {
         // 冲突：整份取自己那一版（rebase 里 theirs 是正在重放的自己的提交）
         for f in take_mine {
             git(work, &["checkout", "--theirs", "--", f]);
@@ -168,7 +173,7 @@ fn rebase_and_squash(work: &Path, msg: &str, take_mine: &[&str]) {
         }
         git(work, &["rebase", "--continue"]);
     }
-    git(work, &["reset", "-q", "--soft", "origin/main"]);
+    git(work, &["reset", "-q", "--soft", upstream]);
     git(work, &["commit", "-q", "-m", msg]);
 }
 
@@ -211,6 +216,90 @@ fn reports_changes_of_other_cards_reverted_by_conflict_resolution() {
     assert!(r.out.contains("Lightbox.tsx  加回了它删的 1 行"), "{}", r.out);
     assert!(r.out.contains("Lightbox.test.tsx  删掉了它加的 3 行"), "{}", r.out);
     assert_eq!(r.out.trim_end().lines().last(), Some("碰到的别的卡：default/main#320（Lightbox.test.tsx、Lightbox.tsx）"));
+}
+
+/// 文件名带空格：`---` / `+++` 行末尾的 TAB 不能留在路径里
+#[test]
+fn reports_changes_in_a_filename_with_spaces() {
+    let (root, up, work) = setup();
+    start_card(&work);
+    let other = root.path().join("space");
+    git(root.path(), &["clone", "-q", up.to_str().unwrap(), other.to_str().unwrap()]);
+    let file = "docs 设计 说明.md";
+    std::fs::write(other.join(file), "# 设计说明\n这是另一张卡加的一行内容\n").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "docs: 加设计说明\n\n卡片：default/main#320"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+
+    std::fs::write(work.join(file), "# 设计说明\n这是这张卡改写的一行内容\n").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "docs: 改设计说明"]);
+    rebase_and_squash_to(&work, "docs: 改设计说明\n\n卡片：default/main#328", &[file], "refs/remotes/origin/main");
+
+    let r = touched(&work, &["--json"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    let j = r.json();
+    assert_eq!(j["touched"][0]["card"], "default/main#320", "{j}");
+    assert_eq!(j["touched"][0]["files"][0]["path"], file, "{j}");
+    assert_eq!(j["touched"][0]["files"][0]["removed"], 1, "{j}");
+}
+
+/// 本地误建了同名分支 origin/main：touched 仍以远端最新提交为上游
+#[test]
+fn ignores_a_local_branch_named_origin_main() {
+    let (root, up, work) = setup();
+    start_card(&work);
+    let old = git(&work, &["rev-parse", "refs/remotes/origin/main"]).trim().to_string();
+    git(&work, &["branch", "origin/main", &old]);
+    push_320(root.path(), &up);
+    std::fs::write(work.join("Lightbox.tsx"), VIEW_328).unwrap();
+    git(&work, &["commit", "-q", "-am", "fix(web): 切图不闪"]);
+    rebase_and_squash_to(&work, "fix(web): 切图不闪\n\n卡片：default/main#328", &["Lightbox.tsx"], "refs/remotes/origin/main");
+    let tip = git(&work, &["rev-parse", "refs/remotes/origin/main"]).trim().to_string();
+
+    let r = touched(&work, &["--json"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    let j = r.json();
+    assert_eq!(j["upstream"], "origin/main", "{j}");
+    assert_eq!(j["from"], tip, "{j}");
+    assert_eq!(j["touched"][0]["card"], "default/main#320", "{j}");
+}
+
+/// Windows 的命令行上限：2000 个路径要分批查，不能全部塞进一条 git log
+#[test]
+fn handles_two_thousand_paths() {
+    let (root, up, work) = setup();
+    let files: Vec<String> = (0..2000).map(|i| format!("many/{i:04}-{}.txt", "x".repeat(40))).collect();
+    std::fs::create_dir_all(work.join("many")).unwrap();
+    for f in &files {
+        std::fs::write(work.join(f), "base line for all files\nshared tail\n").unwrap();
+    }
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "chore: 两千个文件"]);
+    git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    start_card(&work);
+
+    let other = root.path().join("many-other");
+    git(root.path(), &["clone", "-q", up.to_str().unwrap(), other.to_str().unwrap()]);
+    std::fs::write(
+        other.join(&files[0]),
+        "base line for all files\nshared tail\nline added by card three twenty for this test\n",
+    )
+    .unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "feat: 加一行\n\n卡片：default/main#320"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+
+    for f in &files[1..] {
+        std::fs::write(work.join(f), "base line changed by card three twenty eight\nshared tail\n").unwrap();
+    }
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "feat: 批量改文件"]);
+    rebase_and_squash_to(&work, "feat: 批量改文件\n\n卡片：default/main#328", &[], "refs/remotes/origin/main");
+
+    let r = touched(&work, &["--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["touched"], serde_json::json!([]));
 }
 
 /// 正常的情况：开工后别人改了别的文件、或者这次改的是自己的行，没有碰到

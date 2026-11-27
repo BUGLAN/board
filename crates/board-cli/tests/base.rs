@@ -127,6 +127,40 @@ fn creates_or_reuses_the_session_worktree() {
     assert_eq!(git(&hosted, &["rev-parse", "HEAD"]), tip);
 }
 
+/// 本地误建了同名分支 origin/main：base 仍切到远端最新提交
+#[test]
+fn uses_the_remote_ref_when_a_local_origin_branch_exists() {
+    let s = server();
+    let r = repo();
+    let tip = r.push("other", "origin/main", "main", "b.txt", "pushed by someone else\n", "feat: 别的卡\n\n卡片：default/main#91");
+    let old = git(&r.main, &["rev-parse", "refs/remotes/origin/main"]);
+    git(&r.main, &["branch", "origin/main", &old]);
+
+    let (code, v) = base(&s, &r.main);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"].as_str().map(|b| tip.starts_with(b)), Some(true), "{v}");
+    let wt = PathBuf::from(v["worktree"].as_str().unwrap());
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), tip);
+}
+
+/// 锁着自己名字、目录被人删了：先解掉旧登记，再新建 worktree，不能一直失败
+#[test]
+fn recovers_when_a_locked_worktree_directory_was_deleted() {
+    let s = server();
+    let r = repo();
+    let (_, v) = base(&s, &r.main);
+    let wt = PathBuf::from(v["worktree"].as_str().unwrap());
+    std::fs::remove_dir_all(&wt).unwrap();
+
+    let (code, v) = base(&s, &r.main);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["created"], true, "{v}");
+    assert!(same(Path::new(v["worktree"].as_str().unwrap()), &wt), "{v}");
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), r.tip());
+    let list = git(&r.main, &["worktree", "list", "--porcelain"]);
+    assert_eq!(list.matches(&format!("worktree {}", wt.display())).count(), 1, "{list}");
+}
+
 /// 用完留着、下一个会话接手（default/main#622）：另一个会话还在线、锁着它的 worktree 时不碰它的，自己新建；
 /// 那个会话结束、解锁之后，再来的会话（换了名字）接手它留下的 worktree：锁换成自己，停在最新的集成分支上，
 /// 里面的依赖、构建产物（被忽略的文件）都还在

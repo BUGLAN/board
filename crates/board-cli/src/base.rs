@@ -62,12 +62,13 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     git(dir, &["fetch", "--quiet", "--prune", "origin"], NET).map_err(|e| BoardError::usage(format!("git fetch origin 失败：{e}。什么都没动")))?;
     let want = a.value("--branch").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or(board.branch.clone());
     let branch = integration_branch(dir, &want).map_err(BoardError::usage)?;
+    let up_ref = format!("refs/remotes/origin/{branch}");
     let up = format!("origin/{branch}");
 
     // 3. 会话的 worktree
     // 谁在线：判断别的会话留下的 worktree 是不是空闲。查不到（旧服务端、网络）时锁着的一律当成有人在用
     let online = be.online().ok();
-    let (wt, got) = code::session_worktree(dir, dir, name, &up, online.as_deref()).map_err(BoardError::usage)?;
+    let (wt, got) = code::session_worktree(dir, dir, name, &up_ref, online.as_deref()).map_err(BoardError::usage)?;
     let wt_s = wt.display().to_string();
     let mut v = json!({
         "worktree": wt_s,
@@ -111,7 +112,7 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
 
     // 5. 这张卡在集成分支上已经有的提交；动态里有没有交审时写的「提交：」行
     let mine = format!("{}#{id}", board.path);
-    let log = git(&wt, &["log", &up, "--format=%h%x09%s", "--fixed-strings", &format!("--grep=卡片：{mine}")], QUICK).unwrap_or_default();
+    let log = git(&wt, &["log", &up_ref, "--format=%h%x09%s", "--fixed-strings", &format!("--grep=卡片：{mine}")], QUICK).unwrap_or_default();
     let reported: Vec<String> = card
         .activity
         .iter()
@@ -137,8 +138,9 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     let wip = wip_branch(&card.activity).filter(|w| git(&wt, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{w}")], QUICK).is_ok());
     if let Some(w) = &wip {
         v["from_wip"] = json!(w);
-        git(&wt, &["checkout", "--quiet", "--detach", &format!("origin/{w}")], QUICK).map_err(|e| BoardError::usage(format!("切不到 origin/{w}：{e}")))?;
-        let r = git_output(&wt, &["rebase", "--quiet", &up], REBASE).map_err(BoardError::usage)?;
+        let wip_ref = format!("refs/remotes/origin/{w}");
+        git(&wt, &["checkout", "--quiet", "--detach", &wip_ref], QUICK).map_err(|e| BoardError::usage(format!("切不到 origin/{w}：{e}")))?;
+        let r = git_output(&wt, &["rebase", "--quiet", &up_ref], REBASE).map_err(BoardError::usage)?;
         if !r.status.success() {
             let conflicts: Vec<String> = git(&wt, &["diff", "--name-only", "--diff-filter=U"], QUICK).unwrap_or_default().lines().map(str::to_string).collect();
             if conflicts.is_empty() {
@@ -159,11 +161,11 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
         }
     } else {
         // 7. 切到最新的集成分支
-        git(&wt, &["checkout", "--quiet", "--detach", &up], QUICK).map_err(|e| BoardError::usage(format!("{wt_s} 切不到 {up}：{e}")))?;
+        git(&wt, &["checkout", "--quiet", "--detach", &up_ref], QUICK).map_err(|e| BoardError::usage(format!("{wt_s} 切不到 {up}：{e}")))?;
     }
 
     // 8. 基点包含最新的集成分支
-    let ok = git_output(&wt, &["merge-base", "--is-ancestor", &up, "HEAD"], QUICK).is_ok_and(|o| o.status.success());
+    let ok = git_output(&wt, &["merge-base", "--is-ancestor", &up_ref, "HEAD"], QUICK).is_ok_and(|o| o.status.success());
     if !ok {
         return Err(BoardError::usage(format!("{wt_s} 的 HEAD 不包含最新的 {up}：重新 board base {id}")));
     }

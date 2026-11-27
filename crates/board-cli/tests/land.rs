@@ -140,6 +140,24 @@ fn squashes_pushes_and_prints_review_lines() {
     assert!(e.json()["error"]["message"].as_str().unwrap().contains("--checked"));
 }
 
+/// 本地误建了同名分支 origin/main：land 仍以远端最新提交为基点，不被旧分支带回去
+#[test]
+fn uses_the_remote_ref_when_a_local_origin_branch_exists() {
+    let s = server();
+    let r = repo();
+    let old = git(&r.work, &["rev-parse", "HEAD"]);
+    r.push_other("other", "c.txt", "pushed by someone else\n", "feat: 别的卡\n\n卡片：default/main#91");
+    let latest = r.main();
+    git(&r.work, &["fetch", "-q", "origin"]);
+    git(&r.work, &["rebase", "-q", "refs/remotes/origin/main"]);
+    git(&r.work, &["branch", "origin/main", &old]);
+    r.commit("d.txt", "my change\n", "wip");
+
+    let out = land(&s, &r, &normal(&r, &[]));
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    assert_eq!(git(&r.up, &["rev-parse", "refs/heads/main^"]), latest);
+}
+
 /// HEAD 不在最新的集成分支之上：不压、不推，写明先 rebase、重新跑检查
 #[test]
 fn refuses_when_not_on_top_of_latest_integration_branch() {

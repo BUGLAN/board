@@ -65,6 +65,7 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     git(dir, &["fetch", "--quiet", "origin"], NET).map_err(|e| BoardError::usage(format!("git fetch origin 失败：{e}。什么都没改")))?;
     let want = a.value("--branch").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or(d.branch.clone());
     let branch = integration_branch(dir, &want).map_err(BoardError::usage)?;
+    let up_ref = format!("refs/remotes/origin/{branch}");
     let up = format!("origin/{branch}");
     let dirty = git(dir, &["status", "--porcelain"], QUICK).map_err(BoardError::usage)?;
     let dirty = dirty.lines().filter(|l| !l.trim().is_empty()).count();
@@ -73,22 +74,22 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
             "工作区有 {dirty} 个没提交的文件：先提交，再 git rebase {up}、在 rebase 之后的代码上跑检查，然后 board land {id}。什么都没改"
         )));
     }
-    if !ancestor(dir, &up, "HEAD") {
+    if !ancestor(dir, &up_ref, "HEAD") {
         return Err(BoardError::usage(format!(
             "HEAD 不在最新的 {up} 之上（集成分支有新提交，或者还没 rebase）：先 git rebase {up}、在 rebase 之后的代码上重新跑检查，再 board land {id}。什么都没改"
         )));
     }
-    let same = git_output(dir, &["diff", "--quiet", &up, "HEAD"], QUICK).map_err(BoardError::usage)?;
+    let same = git_output(dir, &["diff", "--quiet", &up_ref, "HEAD"], QUICK).map_err(BoardError::usage)?;
     if same.status.success() {
         return Err(BoardError::usage(format!("相对 {up} 没有改动：没有要推的")));
     }
 
     // 2. 压成一个提交（上一次已经压好、停在了 touched 时不重复压）
-    let ahead: usize = git(dir, &["rev-list", "--count", &format!("{up}..HEAD")], QUICK).ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+    let ahead: usize = git(dir, &["rev-list", "--count", &format!("{up_ref}..HEAD")], QUICK).ok().and_then(|n| n.parse().ok()).unwrap_or(0);
     let before = git(dir, &["rev-parse", "--short", "HEAD"], QUICK).map_err(BoardError::usage)?;
     let current = git(dir, &["log", "-1", "--format=%B", "HEAD"], QUICK).unwrap_or_default();
     if !(ahead == 1 && current.trim_end() == msg.trim_end()) {
-        git(dir, &["reset", "--quiet", "--soft", &up], QUICK).map_err(|e| BoardError::usage(format!("git reset --soft {up} 失败：{e}")))?;
+        git(dir, &["reset", "--quiet", "--soft", &up_ref], QUICK).map_err(|e| BoardError::usage(format!("git reset --soft {up} 失败：{e}")))?;
         git(dir, &["commit", "--quiet", "-m", &msg], COMMIT).map_err(|e| {
             BoardError::usage(format!(
                 "压成一个提交时 git commit 失败：{e}。改动都在暂存区里；原来的提交是 {before}，要回去用 git reset --soft {before}"
@@ -100,7 +101,7 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
 
     // 3. 有没有碰到别的卡
     let dir_arg = a.value("--dir");
-    let t = touched::check(&touched::Opts { commit: None, base: None, upstream: Some(&up), card: Some(&card), dir: dir_arg }, json, p)?;
+    let t = touched::check(&touched::Opts { commit: None, base: None, upstream: Some(&up_ref), card: Some(&card), dir: dir_arg }, json, p)?;
     if t.code != 0 && !a.flag("--touched-ok") {
         let hint = format!(
             "没有推，压好的提交 {sha} 留着。逐条确认：不是有意的，把别的卡的改动找回来，重新跑检查再 board land {id}；都是有意的，加 --touched-ok 再执行一次，交审评论「碰到的别的卡」一行后面逐条写为什么"
