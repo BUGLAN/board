@@ -3,12 +3,12 @@
 //! - **机器**：每台干活的机器上常驻一个 `board host`。它每 10 秒上报一次（[`W::host_beat`]）：机器名、系统、
 //!   board 版本、本机 agent、白板与目录，以及本机正在跑的派发；连续 5 次没收到算离线。机器名正被另一个在线的
 //!   board host 使用时 `HOST_NAME_TAKEN`；同一台机器上 board host 异常退出后重启，带上上一次的标识（resume）可以接回名字。
-//! - **机器设置**（最多几个会话、暂停接单、默认 agent、接单时段、每个 agent 的启动环境和模型、skills 和 MCP 用不用服务器的）
-//!   存在服务端，界面上修改，host 通过推送实时拿到。机器第一次连上时按默认值建立（模型、skills、MCP 都是「不改」）；
+//! - **机器设置**（最多几个会话、暂停接单、默认 agent、接单时段、每个 agent 的启动环境、skills / MCP / Git 凭据用不用服务器的）
+//!   存在服务端，界面上修改，host 通过推送实时拿到。机器第一次连上时按默认值建立（启动环境、skills、MCP、Git 凭据都是「不改」）；
 //!   被移除后再连上来，按新机器处理。
-//! - **同步配置**（见 [`ConfigSync`]）：服务器上的供应商、每个 agent 的分配、skills 库、MCP、机器上的这几个选择一改，
+//! - **同步配置**（见 [`ConfigSync`]）：服务器上的 skills 库、MCP、Git 凭据、每个 agent 的启动环境、机器上的这几个选择一改，
 //!   服务端算出每台机器要写成的样子（[`R::config_key`]），和它上次写好的不一样就下发「同步配置」请求；board host 写完上报
-//!   每个 agent 一行、skills 和 MCP 各一行，记进操作记录。board host 启动时也写一次。
+//!   skills、MCP、Git 凭据各一行，记进操作记录。board host 启动时也写一次。
 //! - **启动环境**（启动环境与桌面端需求 §二）：在哪种 shell 里启动 agent 的命令（直接启动、登录 shell、cmd、
 //!   PowerShell、Git Bash、WSL 的发行版 …）。board host 启动时发现本机有哪些，并在每个 agent 支持的环境里各检查
 //!   一次命令找不找得到；每个 agent 用哪个由机器设置决定，没设置（或设置的环境本机已经没有）时取支持顺序里第一个
@@ -30,7 +30,7 @@
 //!
 //! - **拆解**（`kind = split`，PRD §9.1）：派发「未整理」里的条目，让 agent 把它拆成几张卡、记回「未整理」（`board new --inbox --from`）。
 //!   不领取、不移动这条，也不占用它（人照样能编辑、整理）；开始时只生成名字、check，host 替这个名字发心跳；
-//!   结束时按这次派发期间建了几张「拆自」是它的卡记「已拆解」或「没拆出卡」，退出码非 0 记「异常退出」并评论，人停止、超时记「已停止」并评论。
+//!   结束时按这次派发期间建了几张「拆自」是它的卡记「已拆解」或「不用拆」，退出码非 0 记「异常退出」并评论，人停止、超时记「已停止」并评论。
 //!   和普通派发一样占机器的一个会话位。
 //!
 //! 派发、取消、开始、结束都在卡片动态里追加一条，写明机器、agent、来源和结果。
@@ -288,7 +288,8 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"))?;
         }
     }
-    // Git 凭据（gitcred.rs）：新机器默认不同步——只改 Board 管的仓库的本地 git 配置，要人去界面打开。
+    // Git 凭据（gitcred.rs）：新机器默认不同步——打开后写用户级 git 配置（`git config --global`）里该主机的
+    // credential helper，凭据带提交身份时还写 user.name / user.email；要人去界面打开。
     // 第一次补上这一列时，已有的机器保持当时的效果（#386 起默认用服务器的），和 skills、MCP 的迁移一样；
     // 之后新建的机器在 INSERT 里显式写 0（0.1.34 的库里这一列是 ALTER 补的，表上的默认值还是 1）
     if !has("hosts", "sync_git")? {

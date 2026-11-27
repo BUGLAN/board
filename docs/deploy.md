@@ -4,12 +4,13 @@
 
 ```
 浏览器 / 桌面端 ─┐
-board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ cloudflared（服务器上的系统服务）─ HTTP ─▶ board-server（直接运行，127.0.0.1:7420）
+board CLI ──────┼─ HTTPS ─▶ Cloudflare ─ Tunnel ─▶ cloudflared（服务器上的系统服务）─ HTTP ─▶ board-server（直接运行，0.0.0.0:7420）
                 ┘                                                                              └─ <服务器目录>/data/board.db
 ```
 
 - HTTPS 证书在 Cloudflare 那边，服务器不用开 80/443。
 - GitHub Actions 只负责测试和构建 Release 产物、不部署；服务端由局域网机器上的发版卡片执行服务机部署目录里的 `release-lan.sh`，在本机编译后把二进制复制到 `<服务器目录>`。
+- 局域网机器直接部署的 `run-board-server.sh` 默认监听 `0.0.0.0:7420`，这会把纯 HTTP 暴露给局域网；只让 Cloudflare Tunnel 在本机访问时，在 `.env` 里设 `BOARD_HOST=127.0.0.1`（Docker 部署已经只把宿主机端口绑在 `127.0.0.1`）。
 
 - 网页端：浏览器打开 `https://board.example.com`，用 GitHub 登录，只有 `BOARD_GITHUB_USER` 指定的账号能进。
 - agent：`board login --url <服务端地址> --token <访问令牌>` 写进 `~/.board/config.toml`（也可以用环境变量 `BOARD_URL`、`BOARD_TOKEN`，优先于配置文件）。
@@ -277,7 +278,7 @@ GitHub Actions 只负责测试和构建 Release 产物，**不再部署服务端
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等 33 个用例）。不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
+| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等）。不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
 | 推 `v*` tag | version（核对 tag、Cargo.toml、CHANGELOG.md）→ test；skill、desktop（和它们同时跑）→ release，见下图 |
 
 ```
@@ -377,7 +378,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 3. `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey` 换成 `board-updater.key.pub` 的内容。
 
-没有配私钥时，desktop 任务在编译之前的「核对更新签名私钥」一步就失败、不建 Release（服务端照常部署）：不会发出一份装不上的更新。私钥配错（例如只贴了一部分、密码不对）时 `tauri build` 报「failed to decode secret key」，同样不建 Release。
+没有配私钥时，desktop 任务在编译之前的「核对更新签名私钥」一步就失败、不建 Release：不会发出一份装不上的更新。服务端部署不经过 CI，由发版卡片另行执行，和这里的 Release 构建无关。私钥配错（例如只贴了一部分、密码不对）时 `tauri build` 报「failed to decode secret key」，同样不建 Release。
 
 发版流程不用另外操作：`npm run release -- x.y.z --push` 之后，desktop 任务带着签名打包、收齐更新包、按 tag 生成清单；release 任务把两个平台的清单合并成 `latest.json`（要求 macOS 两个架构和 Windows 都在），和安装包一起附在 Release 上。版本号在 tag、`tauri.conf.json`、`CHANGELOG.md` 和 `latest.json` 里一致（前两处不一致时构建就失败；清单的版本号和说明直接取 tag 和 CHANGELOG）。
 
@@ -460,11 +461,11 @@ sudo launchctl kickstart -k system/com.buglan.board-server
 
 ### 线上出问题怎么查
 
-1. 先看最近的日志：`docker compose logs --tail 200 board`（加 `-f` 持续跟踪；按时间查用 `--since 1h`）。5xx 响应会额外有一行 `ERROR`，带具体原因（数据库错误、文件错误等），和请求的 span 一起显示方法、路径、调用者。
-2. 需要更细的日志（例如成功的心跳、日志上传）：在 `.env` 里设 `RUST_LOG=debug`，再 `docker compose up -d board`。排查完改回 `RUST_LOG=info` 重启，避免日志被心跳刷掉。
+1. 先看最近的日志。Docker：`docker compose logs --tail 200 board`（加 `-f` 持续跟踪；按时间查用 `--since 1h`）。launchd：`tail -n 200 <服务器目录>/data/board.log`（错误另看 `data/board.err.log`，持续跟踪用 `tail -f`）。5xx 响应会额外有一行 `ERROR`，带具体原因（数据库错误、文件错误等），和请求的 span 一起显示方法、路径、调用者。
+2. 需要更细的日志（例如成功的心跳、日志上传）：在 `.env` 里设 `RUST_LOG=debug`，Docker 用 `docker compose up -d board`，launchd 用 `sudo launchctl kickstart -k system/com.buglan.board-server` 重启。排查完改回 `RUST_LOG=info` 重启，避免日志被心跳刷掉。
 3. 确认线上版本：`curl -s https://board.example.com/api/health`，核对返回的 `version` 和 `commit` 与部署记录、tag 的提交号一致。
 4. 从客户端检查：`board doctor` 看服务端地址、令牌和名字；带白板再跑一次 `board doctor --as <名字> --board <项目>/<白板>`。
-5. Docker 的日志按 10 MB 轮转、保留 5 个；launchd 直接部署按 `/etc/newsyslog.d/board.conf` 轮转。旧记录被挤掉时用 `--since` 缩小时间范围，或先看宿主机上的备份和监控。
+5. Docker 的日志按 10 MB 轮转、保留 5 个；launchd 直接部署按 `/etc/newsyslog.d/board.conf` 轮转。Docker 旧记录被挤掉时用 `--since` 缩小时间范围；launchd 看 `data/backups/` 里的数据库备份和宿主机监控，或先缩小排查时间。
 
 ## 局域网机器直接部署（不用 Docker）
 
@@ -492,7 +493,7 @@ sudo launchctl kickstart -k system/com.buglan.board-server
 - 第一次运行没有 Node 时会下载 Node 到 `~/.local/node-v22.19.0-darwin-x64`，不装系统目录；之后复用。
 - 构建产物是开发仓库的 `target/release/board-server`，脚本会复制到服务器目录的 `bin/board-server`；界面在编译时从 `web/dist` 嵌进二进制。`--skip-web` 只跳过重复的前端构建，`web/dist/index.html` 不存在时仍然直接失败；`deploy/build-linux.sh` 也有同样的检查。
 - 机器上装了 `com.buglan.board-server` 的 LaunchDaemon 时，脚本替换服务器目录里的二进制后杀掉进程，launchd 会按 KeepAlive 自动用新二进制拉起；没有 LaunchDaemon 时由脚本自己停旧进程、启动新进程。
-- 服务器目录的 `.env` 由根部的 `run-board-server.sh`（来自仓库 `deploy/run-board-server.sh`）读取，按 GitHub 登录模式监听 `0.0.0.0:7420`（`BOARD_HOST`、`BOARD_PORT` 可改）。没有 `.env` 或缺少 GitHub 登录配置时脚本直接失败，**不会**用 `--local --demo` 顶上；本机模式只由人显式运行 `cargo run -p board-server -- --local`。
+- 服务器目录的 `.env` 由根部的 `run-board-server.sh`（来自仓库 `deploy/run-board-server.sh`）读取，按 GitHub 登录模式监听 `0.0.0.0:7420`（`BOARD_HOST`、`BOARD_PORT` 可改）。`0.0.0.0` 会把纯 HTTP 暴露给局域网；只让 Cloudflare Tunnel 在本机访问时设 `BOARD_HOST=127.0.0.1`。没有 `.env` 或缺少 GitHub 登录配置时脚本直接失败，**不会**用 `--local --demo` 顶上；本机模式只由人显式运行 `cargo run -p board-server -- --local`。
 - 重启后必须运行 `deploy/verify-server.sh <版本> <7 位提交号>`：它同时核对 `/api/health` 的 `mode:github`、`version`、`commit` 和 `/` 的 Board HTML。任一项失败时部署脚本要恢复上一份二进制并重启；没有可恢复的二进制时明确标记部署失败，不能把这次部署算成功。
 - 发版：在 Board 建一张「发版」卡（正文可写版本号，例如 `0.1.41`；不写就按上一版 z+1），派到这台 Mac。卡片里的 agent 在开发仓库运行 `<服务器目录>/deploy/release-lan.sh [版本号]`：它执行 `npm run release -- <版本号> --push`（CI 只测试和构建 Release，不部署），然后自动调用 `deploy-lan.sh` 把 `board-server` 装到服务器目录并重启。
 - 从 Windows 触发用 部署目录里的 `deploy-lan.ps1`（默认 `<用户>@<服务器>`、`<开发仓库>`，可用参数改）。

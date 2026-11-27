@@ -32,11 +32,11 @@ board submit <ID> --comment-file <文件> [<截图>…] [--no-code]   # 交审�
 board giveup <ID> --comment-file <文件> [<日志>…]               # 做不下去：上传附件、评论原因、结束计时、移到错误节点（没有时移到需要人处理的状态）
 board flow                                # 工作流：状态的顺序、标识、名称、规则；以及白板所在项目的仓库、集成分支
 board new "<标题>" --body "<描述>" [--inbox] [--label <标签>]… [--from <ID>]  # 新建卡片，进入首个可领取状态；--inbox 记到「未整理」最下面；--label 带上已有的标签；--from 记下拆自哪张
-                                          # 多行描述用 --body-file <文件>（Windows 上必须，见 work.md「会话开始」第 3 步）；edit 同样
+                                          # 多行或含双引号的描述用 --body-file <文件>（Windows 上必须，见 work.md「会话开始」第 3 步）；edit 同样
                                           # --image <图片>、--file <文件> 可以写多次：附件随卡片一起建，按顺序接在描述后面（图片直接显示）
 board show <ID> --json                    # 全部字段和动态；split_from 拆自哪张，split_into 拆出了哪几张
 board ls [--column todo] [--label bug] [--search <文字>]
-board comment <ID> "<内容>"               # 多行内容：board comment <ID> --comment-file <文件>
+board comment <ID> "<内容>"               # 多行或含双引号的内容：board comment <ID> --comment-file <文件>
 board check --agent <标识> && board heartbeat start   # 不领卡的会话（只建卡、拆解、整理）开始时：占用名字、启动后台心跳（check 单独执行、看结果）
 board heartbeat stop                      # 会话结束：停掉后台心跳，名字立刻离线
 board doctor --as <名字> --json           # 环境自检；checks 里 board_as 一项是名字是否在线

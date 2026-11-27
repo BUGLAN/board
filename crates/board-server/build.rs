@@ -1,6 +1,6 @@
 // 界面构建产物（web/dist）变化时重新编译，让网页端带上最新的界面
 // 提交号写进可执行文件（BOARD_COMMIT），`/api/health` 返回它，部署后据此核对线上版本：
-// 设置了环境变量 BOARD_COMMIT 时用它（Docker 镜像构建时传入），
+// 设置了环境变量 BOARD_COMMIT 时用它（Docker 镜像构建等外部构建可传入），
 // 否则取 git 当前提交，取不到时是 unknown
 // skills 共用库里固定的 board-skills 随服务端版本：把 .agents/skills/board-skills 打包进来（跳过 bin/：各平台的 board
 // 由各台 board host 用自己的填上），生成 $OUT_DIR/board_skills.rs（[(相对路径, 可执行, 内容)]）

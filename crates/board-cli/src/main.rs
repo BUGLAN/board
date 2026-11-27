@@ -98,8 +98,8 @@ const COMMANDS: [(&str, &str, &str); 34] = [
         ),
         (
             "land",
-            "<ID> --message-file <文件> --checked \"<检查和结果>\" [--touched-ok] [--branch <分支>] [--dir <仓库>] | <ID> --wip",
-            "推送，在自己的 worktree 里 rebase、跑完检查之后用，一条命令按顺序做完：确认工作区干净、HEAD 在最新的集成分支之上（不在就停，先 rebase、重新跑检查），压成一个提交（--message-file 的内容，最后一行补上「卡片：」），board touched（碰到别的卡就停，确认有意后加 --touched-ok 重来），board hold，推集成分支（被拒不 --force，压好的提交留着），删掉接着做的 wip 分支，输出交审评论最后四行。集成分支：项目设置里的，没设用远端默认分支，--branch 指定。--wip：做不下去时把没做完的改动提交、推到 wip/<白板标识>/<ID>，输出「未完成的改动：」一行",
+            "<ID> --message-file <文件> --checked \"<检查和结果>\" [--touched-ok] [--branch <分支>] [--dir <仓库>] [--wait <秒>] | <ID> --wip",
+            "推送，在自己的 worktree 里 rebase、跑完检查之后用，一条命令按顺序做完：确认工作区干净、HEAD 在最新的集成分支之上（不在就停，先 rebase、重新跑检查），压成一个提交（--message-file 的内容，最后一行补上「卡片：」），board touched（碰到别的卡就停，确认有意后加 --touched-ok 重来），board hold（连不上服务端时最多等 --wait 秒，默认 300），推集成分支（被拒不 --force，压好的提交留着），删掉接着做的 wip 分支，输出交审评论最后四行。集成分支：项目设置里的，没设用远端默认分支，--branch 指定。--wip：做不下去时把没做完的改动提交、推到 wip/<白板标识>/<ID>，输出「未完成的改动：」一行",
         ),
         ("hold", "<ID> [--wait <秒>]", "推集成分支前确认领取仍有效：这张卡仍由你持有、在锁定状态，否则 NOT_HOLDER（不要推集成分支，改推 wip 分支）；连不上服务端时每 30 秒重试，最多等 --wait 秒（默认 300），还连不上就 UNREACHABLE"),
         ("comment", "<ID> \"<内容>\" | <ID> --comment-file <文件>", "追加评论；多行内容用 --comment-file（- 读标准输入）"),

@@ -142,7 +142,7 @@ agent 的名字（`--as` / `BOARD_AS`）和令牌无关，同一个令牌可以�
 /board-skills 开始执行 oss项目之中的main白板中的#2任务
 ```
 
-卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：check 名字并启动后台心跳（`board heartbeat start`）→ 先领取（领到之前不读卡片、不看代码、不发进展，免得调研期间卡片被别人领走、耗时少算）→ 读卡片描述和动态，在本会话的 worktree 里按描述和验收标准干活 → 评论进度 → rebase 到集成分支、跑完仓库规定的检查，压成一个提交直接推上去 → 评论提交号和检查结果，结束这张卡片的计时（final）并移到待审核；做不下去时把未完成的改动推到 `wip/<白板>/<ID>` 分支，移到需人工校验；会话结束时停掉心跳，名字离线，删掉 worktree。集成分支和推送前检查写在代码仓库的 AGENTS.md / CLAUDE.md 里（没写集成分支就用远端的默认分支）；拆解需求时，同类别的小改动（界面、文案、图片）合成一张卡，不按前后端、不按步骤拆。
+卡片详情里的「复制为提示词」（快捷键 `C`）会生成这一句；`/board-skills oss/main` 则让 agent 循环领取这块白板上所有可领取的卡片。agent 会按照 skill 里的流程：check 名字并启动后台心跳（`board heartbeat start`）→ 先领取（领到之前不读卡片、不看代码、不发进展，免得调研期间卡片被别人领走、耗时少算）→ 读卡片描述和动态，在本会话的 worktree 里按描述和验收标准干活 → 评论进度 → rebase 到集成分支、跑完仓库规定的检查，压成一个提交直接推上去 → 评论提交号和检查结果，结束这张卡片的计时（final）并移到待审核；做不下去时把未完成的改动推到 `wip/<白板>/<ID>` 分支，移到需人工校验；会话结束时停掉心跳，名字离线，解锁 worktree 留给下一个会话（不删）。集成分支和推送前检查写在代码仓库的 AGENTS.md / CLAUDE.md 里（没写集成分支就用远端的默认分支）；拆解需求时，同类别的小改动（界面、文案、图片）合成一张卡，不按前后端、不按步骤拆。
 
 ## CLI 速查
 
@@ -168,7 +168,7 @@ board heartbeat start         # 会话开始：启动后台心跳（每 10 秒�
 board heartbeat final 2       # 结束这张卡片这一次的计时
 board heartbeat stop          # 会话结束：停掉后台心跳，名字立刻离线
 board new "标题" --body "描述" # 新建卡片；--inbox 记到「未整理」最下面
-board new "标题" --body-file body.md   # 多行描述写进文件（Windows 的 board.cmd 只能这样传多行）；comment 用 --comment-file
+board new "标题" --body-file body.md   # 多行或含双引号的描述写进文件（Windows 的 board.cmd 只能这样传）；comment 用 --comment-file
 board new "标题" --body "描述" --image 1.png --file run.log  # 截图、日志随卡片一起建，图片直接显示在描述里
 board attach 2 shot.png --comment "截图"  # 上传附件
 board host --name mbp --workspace ~/repo   # 在这台机器上常驻接任务：每个项目的目录是 <工作空间>/<项目目录>（项目设置里填，留空用项目标识；项目下的白板共用），没有时自动建好或克隆（Ctrl+C 退出）；内置 dsh、Claude Code、Codex，其他 agent 见 docs/agents.md

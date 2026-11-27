@@ -360,8 +360,8 @@ impl<'a> W<'a> {
         self.read().host(name, self.now)
     }
 
-    /// 以前的「开始一轮领取」（定时到点时旧版 board host 发起，或界面上「现在领一轮」）：现在机器在接单时段里持续领卡，
-    /// 没有「一轮」了。接口留着给旧版 board host 调，什么也不做，返回机器现在的样子
+    /// 旧版 board host 的「开始一轮领取」兼容接口：现在机器在接单时段里持续领卡，没有「一轮」了；
+    /// 接口留着给旧版 board host 调，什么也不做，返回机器现在的样子
     pub fn host_round(&mut self, name: &str) -> Result<HostInfo> {
         self.read().host(name, self.now)
     }

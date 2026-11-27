@@ -9,7 +9,7 @@ services:
       args:
         # 部署前设置：BOARD_COMMIT=$(git rev-parse --short=7 HEAD)
         BOARD_COMMIT: ${BOARD_COMMIT:-unknown}
-    # 首次在服务器上构建时是 board-server:latest；由 .env 的 BOARD_IMAGE 决定，部署脚本或人工维护
+    # 镜像名由 .env 的 BOARD_IMAGE 决定；本地构建时保持 board-server:latest
     image: ${BOARD_IMAGE:-board-server:latest}
     container_name: board
     restart: unless-stopped
