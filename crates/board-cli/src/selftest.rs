@@ -69,7 +69,7 @@ pub enum Outcome {
 
 /// 跑一条命令，输出（标准输出和标准错误）写进 log，最多等 limit
 fn run_limited(mut cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Outcome {
-    let files = std::fs::File::create(log).and_then(|out| out.try_clone().map(|err| (out, err)));
+    let files = crate::securetmp::create_log(log).and_then(|out| out.try_clone().map(|err| (out, err)));
     let (out, err) = match files {
         Ok(x) => x,
         Err(e) => return Outcome::Spawn(format!("无法创建日志 {}：{e}", log.display())),

@@ -15,8 +15,9 @@
 //! 进程信息用 sysinfo 取（Windows 上是 NtQuerySystemInformation / OpenProcess），不用 ps、WMI、PowerShell。
 //!
 //! 本机状态文件按名字区分：`<临时目录>/board-heartbeat/<名字>.json`，记着 check 这个名字的 agent 进程、服务端发的会话标识、
-//! 后台循环的进程（进程号:启动时间）。`board check` 成功时写下；循环每 200 毫秒看一次，记的循环不是自己了（stop、重新 start）
-//! 就在发完手上这次心跳后退出。
+//! 后台循环的进程（进程号:启动时间）。目录和文件都是当前用户私有（0700 / 0600）；共享临时目录里的固定名字被别人占了时，
+//! 改用同目录下按 uid 区分的 `board-heartbeat-<uid>`。`board check` 成功时写下；循环每 200 毫秒看一次，记的循环不是自己了
+//! （stop、重新 start）就在发完手上这次心跳后退出。
 //!
 //! 同名会话互相干扰（同一台机器上两个会话用了同一个名字）的保护：
 //! - 服务端：agent 级心跳和 final 带着会话标识，和名字最近一次 check 发出的对不上就拒绝（`NAME_TAKEN`）；
@@ -26,7 +27,7 @@
 use crate::backend::Backend;
 use board_core::*;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
@@ -190,10 +191,28 @@ impl State {
     }
 }
 
+fn dir_at(base: &Path) -> std::io::Result<PathBuf> {
+    let primary = base.join("board-heartbeat");
+    #[cfg(unix)]
+    {
+        let uid = unsafe { libc::geteuid() };
+        if crate::securetmp::create_private_dir_owned(&primary, uid).is_ok() {
+            return Ok(primary);
+        }
+        // Linux 的 /tmp 是共享的：别的用户先占了固定名字时，不能相信里面的状态文件
+        let fallback = base.join(format!("board-heartbeat-{uid}"));
+        crate::securetmp::create_private_dir_owned(&fallback, uid)?;
+        return Ok(fallback);
+    }
+    #[cfg(not(unix))]
+    {
+        crate::securetmp::create_private_dir(&primary)?;
+        Ok(primary)
+    }
+}
+
 fn dir() -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join("board-heartbeat");
-    std::fs::create_dir_all(&dir).map_err(|e| BoardError::usage(format!("无法创建 {}：{e}", dir.display())))?;
-    Ok(dir)
+    dir_at(&std::env::temp_dir()).map_err(|e| BoardError::usage(format!("无法创建心跳状态目录：{e}")))
 }
 
 fn key(name: &str) -> String {
@@ -204,17 +223,40 @@ fn state_file(name: &str) -> Result<PathBuf> {
     Ok(dir()?.join(format!("{}.json", key(name))))
 }
 
+fn readable_state(path: &Path) -> Option<State> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    if !md.file_type().is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if md.uid() != unsafe { libc::geteuid() } {
+            return None;
+        }
+    }
+    serde_json::from_str::<State>(&std::fs::read_to_string(path).ok()?).ok()
+}
+
 pub fn read_state(name: &str) -> Option<State> {
     let f = state_file(name).ok()?;
-    serde_json::from_str::<State>(&std::fs::read_to_string(f).ok()?).ok().filter(|s| s.name == name)
+    readable_state(&f).filter(|s| s.name == name)
 }
 
 fn write_state(st: &State) -> Result<()> {
     let f = state_file(&st.name)?;
-    let tmp = f.with_extension(format!("json.{}", std::process::id()));
+    let dir = f.parent().ok_or_else(|| BoardError::usage(format!("{} 没有所在目录", f.display())))?;
     let body = serde_json::to_string_pretty(st).unwrap_or_default();
-    std::fs::write(&tmp, body).map_err(|e| BoardError::usage(format!("写不了 {}：{e}", tmp.display())))?;
-    std::fs::rename(&tmp, &f).map_err(|e| BoardError::usage(format!("写不了 {}：{e}", f.display())))
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| BoardError::usage(format!("写不了 {}：{e}", f.display())))?;
+    use std::io::Write;
+    tmp.write_all(body.as_bytes()).map_err(|e| BoardError::usage(format!("写不了 {}：{e}", f.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file().set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| BoardError::usage(format!("写不了 {}：{e}", f.display())))?;
+    }
+    tmp.persist(&f).map_err(|e| BoardError::usage(format!("写不了 {}：{}", f.display(), e.error)))?;
+    Ok(())
 }
 
 fn remove_state(name: &str) {
@@ -320,7 +362,7 @@ fn drop_stale(name: &str, agent_id: Option<&str>) {
         if path.file_stem().and_then(|x| x.to_str()) == Some(key(name).as_str()) {
             continue;
         }
-        let Some(st) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<State>(&t).ok()) else { continue };
+        let Some(st) = readable_state(&path) else { continue };
         if st.agent_id.as_deref() == Some(id) && !other_live_session(&st, me) {
             let _ = std::fs::remove_file(&path);
         }
@@ -436,7 +478,7 @@ fn states() -> Vec<State> {
     entries
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<State>(&t).ok()))
+        .filter_map(|e| readable_state(&e.path()))
         .collect()
 }
 
@@ -592,6 +634,9 @@ pub fn run_loop(name: &str, agent: Option<Proc>) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     #[test]
     fn parse_proc() {
         assert_eq!(Proc::parse("123 456\n"), Some(Proc { pid: 123, start: 456 }));
@@ -615,5 +660,37 @@ mod tests {
         let a = agent_process().expect("应该能找到 agent 进程");
         assert_ne!(a.pid, std::process::id());
         assert!(Procs::new().unwrap().alive(a));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrades_the_existing_heartbeat_dir_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("board-heartbeat");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let state = State { name: "mbp/codex".into(), session: Some("old".into()), ..Default::default() };
+        let file = old.join("mbp_codex.json");
+        std::fs::write(&file, serde_json::to_vec(&state).unwrap()).unwrap();
+
+        let dir = dir_at(tmp.path()).unwrap();
+        assert_eq!(dir, old, "单用户机器升级后接着用原来的名字，读得到旧会话");
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        let restored: State = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert_eq!(restored, state);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn occupied_shared_path_falls_back_to_the_uid_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("board-heartbeat");
+        std::fs::write(&primary, b"not ours").unwrap();
+
+        let dir = dir_at(tmp.path()).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        assert_eq!(dir, tmp.path().join(format!("board-heartbeat-{uid}")));
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::read(&primary).unwrap(), b"not ours", "不能用也不能改占着固定名字的路径");
     }
 }

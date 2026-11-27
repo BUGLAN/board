@@ -215,12 +215,22 @@ impl Host<'_> {
     pub(super) fn start_selftest(&mut self, ask: &board_core::SelfTestAsk) {
         let what = ask.agent.as_deref().map(|a| format!(" {a}")).unwrap_or_default();
         self.say(format!("{} {} 请求自检{what}", self.p.cyan("◇"), ask.by));
-        // 每个请求一个目录（整台机器是 all，单查是 agent 标识）：同时做的几个互不覆盖日志、提示词
-        let tmp = std::env::temp_dir().join(format!("board-selftest-{}", self.name)).join(ask.agent.as_deref().unwrap_or("all"));
+        // 整台机器共用一个目录，单查按 agent 分开：同时做的几个互不覆盖日志、提示词
+        let tmp = match crate::securetmp::selftest_dir(ask.agent.as_deref()).and_then(|dir| {
+            if let Err(e) = crate::securetmp::reset_private_dir(&dir) {
+                return Err(board_core::BoardError::usage(format!("无法重置自检目录 {}：{e}", dir.display())));
+            }
+            Ok(dir)
+        }) {
+            Ok(dir) => dir,
+            Err(e) => {
+                self.say(format!("{} 自检没法开始：{}", self.p.yellow("!"), e.message));
+                self.selftest_seen.insert(ask.id);
+                return;
+            }
+        };
         // 身份也重新问一次（#667）
         self.auth_ver.retain(|id, _| ask.agent.as_deref().is_some_and(|a| a != id));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let _ = std::fs::create_dir_all(&tmp);
         let used: Vec<HostAgent> = self.work.as_ref().map(|w| w.host.agents.clone()).unwrap_or_default();
         let mut agents = vec![];
         for spec in &self.agents {
@@ -363,8 +373,7 @@ impl Host<'_> {
             return Err(format!("本机没找到 {} 的命令", spec.name));
         }
         let env = self.envs.iter().find(|e| e.id == check.env).cloned().ok_or_else(|| format!("本机没有启动环境「{}」", check.env))?;
-        let tmp = std::env::temp_dir().join(format!("board-usage-{}", self.name));
-        let _ = std::fs::create_dir_all(&tmp);
+        let tmp = crate::securetmp::usage_dir(id).map_err(|e| e.message)?;
         let c = self.acp_command(spec, check, &env, &tmp, Path::new(""), 0, None, &["--usage".to_string(), cmd.to_string()])?;
         Ok((c, tmp.join(format!("{id}.log"))))
     }
@@ -405,8 +414,14 @@ impl Host<'_> {
                 continue;
             }
             let Some(env) = self.envs.iter().find(|e| e.id == check.env).cloned() else { continue };
-            let tmp = std::env::temp_dir().join(format!("board-auth-{}", self.name));
-            let _ = std::fs::create_dir_all(&tmp);
+            let tmp = match crate::securetmp::auth_dir(&spec.id) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    self.say(format!("{} 问不了 {} 的身份：{}", self.p.yellow("!"), spec.id, e.message));
+                    self.auth_ver.insert(spec.id.clone(), check.version.clone());
+                    continue;
+                }
+            };
             match self.acp_command(spec, check, &env, &tmp, Path::new(""), 0, None, &["--auth".to_string(), "probe".to_string()]) {
                 Ok(c) => start.push((spec.id.clone(), check.version.clone(), c, tmp.join(format!("{}.log", spec.id)))),
                 Err(_) => {

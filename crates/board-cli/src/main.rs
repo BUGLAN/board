@@ -32,6 +32,7 @@ mod providersync;
 mod redact;
 mod res;
 mod selftest;
+mod securetmp;
 mod service;
 mod session;
 mod skills;
@@ -125,7 +126,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // board host 启动 agent 用的 ACP 那一层（acp.rs）：`--` 之后是 agent 的命令，不按 board 的参数解析
     if args.first().map(String::as_str) == Some("acp") {
-        std::process::exit(acp::main(&args[1..]));
+        let code = acp::main(&args[1..]);
+        gitcmd::cleanup();
+        std::process::exit(code);
     }
     // 在 board host 启动的会话里（BOARD_AGENT_ENV，skill 的包装脚本设的）：有的 agent 不把它该有的 BOARD_* 传给命令，
     // 从这次派发的配置文件 [agent_env] 补上，名字、白板、连接都用得到（见 config::from_agent_env）
@@ -149,6 +152,7 @@ fn main() {
                 }
             }
             let code = emit(out);
+            gitcmd::cleanup();
             if code != 0 {
                 std::process::exit(code);
             }
@@ -177,6 +181,7 @@ fn main() {
                     eprintln!("{} 名字 {name} 已占用，后台心跳在跑；不再领卡时 board heartbeat stop", pe.yellow("!"));
                 }
             }
+            gitcmd::cleanup();
             std::process::exit(1);
         }
     }

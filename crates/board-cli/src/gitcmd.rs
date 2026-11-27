@@ -1,13 +1,15 @@
 //! Board 内部执行 git 时共用的非交互环境。
 //!
 //! `GIT_TERMINAL_PROMPT=0` 只关闭终端提问；Windows 上的 Git Credential Manager 和 askpass
-//! 仍可能打开图形窗口。所有 Board 自己跑的 git 都用 [`command`] 创建，把 askpass 指向一个
-//! 立即退出 1 的临时脚本；脚本创建不了时退回 board 自身，`main` 看到 [`ASKPASS_MARKER`]
-//! 后立即退出 1。
+//! 仍可能打开图形窗口。所有 Board 自己跑的 git 都用 [`command`] 创建，把 askpass 指向一个随机私有目录里、
+//! 立即退出 1 的临时脚本；进程退出时删掉这个目录。脚本创建不了时退回 board 自身，`main` 看到
+//! [`ASKPASS_MARKER`] 后立即退出 1。
 
-use std::path::PathBuf;
+use board_core::private;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 
 /// 区分“作为 askpass 被 git 启动”和正常执行 board。只在 Board 创建 git 命令时设置
 pub const ASKPASS_MARKER: &str = "BOARD_INTERNAL_GIT_ASKPASS";
@@ -24,33 +26,84 @@ pub fn command() -> Command {
 }
 
 fn askpass() -> PathBuf {
-    static HELPER: OnceLock<PathBuf> = OnceLock::new();
     HELPER
         .get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("board-git-askpass-{}", std::process::id()));
+            register_cleanup();
+            Askpass::new().ok()
+        })
+        .as_ref()
+        .map(|a| a.path.clone())
+        .unwrap_or_else(|| {
+            // 脚本也建不了时仍要压住系统 askpass：让 board 自己作为 helper 立即失败
+            std::env::current_exe().unwrap_or_else(|_| std::env::temp_dir().join("board-git-askpass-missing"))
+        })
+}
+
+struct Askpass {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl Askpass {
+    fn new() -> io::Result<Askpass> {
+        Self::new_in(&std::env::temp_dir())
+    }
+
+    fn new_in(base: &Path) -> io::Result<Askpass> {
+        let temp = tempfile::Builder::new().prefix("board-git-askpass-").tempdir_in(base)?;
+        let dir = temp.keep();
+        let made = (|| {
+            crate::securetmp::ensure_private_dir(&dir)?;
             let name = if cfg!(windows) { "askpass.cmd" } else { "askpass.sh" };
             let path = dir.join(name);
             let body = if cfg!(windows) { "@exit /b 1\r\n" } else { "#!/bin/sh\nexit 1\n" };
-            let made = std::fs::create_dir_all(&dir)
-                .and_then(|_| std::fs::write(&path, body))
-                .and_then(|_| {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-                    }
-                    Ok(())
-                })
-                .is_ok();
-            if made {
-                return path;
+            private::write_new(&path, body.as_bytes())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
             }
-            // 脚本也建不了时仍要压住系统 askpass：让 board 自己作为 helper 立即失败
-            std::env::current_exe().unwrap_or_else(|_| {
-                std::env::temp_dir().join(format!("board-git-askpass-missing-{}", std::process::id()))
-            })
-        })
-        .clone()
+            Ok(Askpass { dir: dir.clone(), path })
+        })();
+        if made.is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        made
+    }
+
+    fn remove(&self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl Drop for Askpass {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
+/// 删除当前进程的 askpass 目录。正常退出时也会由 C 运行库的退出处理再调用一次，重复调用无副作用。
+pub(crate) fn cleanup() {
+    if let Some(Some(a)) = HELPER.get() {
+        a.remove();
+    }
+}
+
+static HELPER: OnceLock<Option<Askpass>> = OnceLock::new();
+
+#[cfg(unix)]
+extern "C" fn cleanup_at_exit() {
+    cleanup();
+}
+
+fn register_cleanup() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        #[cfg(unix)]
+        unsafe {
+            libc::atexit(cleanup_at_exit);
+        }
+    });
 }
 
 /// 当前进程是不是 git 启动的 askpass helper
@@ -79,5 +132,29 @@ mod tests {
         let helper = env(&c, "GIT_ASKPASS").expect("askpass helper");
         let body = std::fs::read_to_string(&helper).expect("临时 askpass 脚本");
         assert!(body.contains("exit") && body.contains('1'), "{body:?}");
+    }
+
+    #[test]
+    fn askpass_uses_a_random_private_dir_and_cleans_it_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fixed = tmp.path().join(format!("board-git-askpass-{}", std::process::id()));
+        std::fs::create_dir(&fixed).unwrap();
+        std::fs::write(fixed.join("askpass.sh"), b"sentinel").unwrap();
+
+        let helper = Askpass::new_in(tmp.path()).unwrap();
+        assert_ne!(helper.dir, fixed, "不接收别人预建的固定目录");
+        assert!(helper.dir.file_name().unwrap().to_string_lossy().starts_with("board-git-askpass-"));
+        assert!(helper.path.is_file());
+        assert_eq!(std::fs::read(fixed.join("askpass.sh")).unwrap(), b"sentinel");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&helper.dir).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&helper.path).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+
+        let dir = helper.dir.clone();
+        drop(helper);
+        assert!(!dir.exists(), "askpass 目录在进程结束时删掉");
     }
 }
