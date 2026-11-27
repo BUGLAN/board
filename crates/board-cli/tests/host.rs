@@ -186,6 +186,28 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo "working"
     echo $$ > "$FAKE_DIR/agent.pid"
     exec sleep 120 ;;
+  stubborn)
+    # board host 退出时不要马上结束：让旧 host 和新 host 的启动撞在一起
+    trap '' TERM
+    echo "stubborn"
+    echo $$ > "$FAKE_DIR/agent.pid"
+    exec sleep 120 ;;
+  parent)
+    # board host 被 kill -9 后，board acp 读到标准输入 EOF，发 session/cancel
+    echo "waiting for parent"
+    echo $$ > "$FAKE_DIR/agent.pid"
+    touch "$FAKE_DIR/prompted"
+    while read -r l; do
+      case "$l" in
+        *'"session/cancel"'*)
+          echo "got: $l" >&2
+          : > "$FAKE_DIR/cancelled"
+          echo '{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}'
+          read -r l
+          exit 0 ;;
+      esac
+    done
+    exit 130 ;;
   *)
     echo "sleeping"
     echo $$ > "$FAKE_DIR/agent.pid"
@@ -273,6 +295,13 @@ impl Rig {
         self.host_with(&["host", "--name", name, &ws])
     }
 
+    /// 同名 host 明确还活着时，第二个不要等默认的 60 秒：测试里缩短到 0.5 秒
+    fn host_gives_up(&self, name: &str) -> HostChild {
+        self.ws_ready();
+        let ws = format!("--workspace={}", self.ws().display());
+        self.spawn_host_env(&["host", "--name", name, &ws], false, &[("BOARD_HOST_RESTART_WAIT_MS", "500")])
+    }
+
     fn host_with(&self, args: &[&str]) -> HostChild {
         self.spawn_host(args, false)
     }
@@ -281,7 +310,11 @@ impl Rig {
     fn service(&self, name: &str) -> HostChild {
         self.ws_ready();
         let ws = format!("--workspace={}", self.ws().display());
-        self.spawn_host_env(&["host", "--service", "--name", name, &ws], false, &[("BOARD_HOST_RESTART_MS", "500")])
+        self.spawn_host_env(
+            &["host", "--service", "--name", name, &ws],
+            false,
+            &[("BOARD_HOST_RESTART_MS", "500"), ("BOARD_HOST_RESTART_WAIT_MS", "500")],
+        )
     }
 
     /// 像桌面端那样运行：`BOARD_HOST_STDIN=1`，标准输入接管道（写一行 reload 通知重新读配置，关掉就退出）
@@ -546,7 +579,7 @@ fn host_runs_dispatches_end_to_end() {
     assert!(res["at"].as_i64().unwrap_or(0) > 0 && res.get("age").is_none(), "{res}");
 
     // 同名的第二个 host：HOST_NAME_TAKEN
-    let mut second = rig.host("mbp");
+    let mut second = rig.host_gives_up("mbp");
     let (code, out) = wait_out(&mut second, Duration::from_secs(10));
     assert_eq!(code, 1);
     assert!(out.contains("HOST_NAME_TAKEN"), "{out}");
@@ -1101,6 +1134,61 @@ fn restart_after_kill9_ends_left_agents() {
     assert!(out.contains("结束上一次留下的 agent：default/main#1"), "{out}");
 }
 
+/// 关掉 A 的标准输入后立刻用同一个名字起 B：A 还在结束 agent、名字还占着，B 等它退出后上线
+#[test]
+fn new_host_waits_for_the_previous_host_to_finish() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let repo = rig.ws_ready();
+    let cfg = rig.s.home.join(".board").join("config.toml");
+    let base = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(&cfg, format!("{base}\n[host]\nname = \"mbp\"\nworkspace = \"{}\"\n", repo.parent().unwrap().display())).unwrap();
+    let mut first = rig.host_desktop();
+    let stdin = first.stdin.take().unwrap();
+    rig.online("mbp");
+    rig.mode("stubborn");
+    rig.dispatch_running(1);
+    let pidfile = rig.s.home.join(".board").join("host").join("mbp.pid");
+    let instance = |p: &Path| std::fs::read_to_string(p).ok().and_then(|s| s.split_whitespace().nth(2).map(str::to_string));
+    let before = instance(&pidfile).expect("旧 host 的 pid 文件");
+    drop(stdin);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(first.try_wait().unwrap().is_none(), "旧 host 还在结束 agent");
+
+    let mut second = rig.host("mbp");
+    wait_until("新 host 接回名字", Duration::from_secs(40), || {
+        instance(&pidfile).is_some_and(|i| i != before)
+            && rig.workspace()["hosts"].as_array().is_some_and(|h| h.iter().any(|x| x["name"] == "mbp" && x["online"] == true))
+    });
+    assert!(second.try_wait().unwrap().is_none(), "第二个 host 不能在等旧 host 时退出");
+    let (code, out) = wait_out(&mut first, Duration::from_secs(20));
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = stop(second);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// board host 被 kill -9 后，正在跑的 board acp 读到标准输入 EOF，几秒内取消并退出
+#[test]
+fn host_crash_cancels_a_running_dispatch() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let mut host = rig.host("mbp");
+    rig.online("mbp");
+    rig.mode("parent");
+    let d = rig.dispatch_running(1);
+    let procfile = rig.s.home.join(".board").join("host").join("run").join("mbp").join(format!("{d}.proc"));
+    wait_until("派发的进程文件写好", Duration::from_secs(15), || procfile.exists());
+    let acp = std::fs::read_to_string(&procfile).unwrap().split_whitespace().next().unwrap().parse::<i32>().unwrap();
+    wait_until("agent 收到提示词", Duration::from_secs(15), || rig.fake.parent().unwrap().join("prompted").exists());
+
+    unsafe {
+        libc::kill(host.id() as i32, 9);
+    }
+    host.wait().unwrap();
+    wait_until("board acp 取消这一轮", Duration::from_secs(15), || rig.fake.parent().unwrap().join("cancelled").exists());
+    wait_until("agent 和 board acp 都退出", Duration::from_secs(15), || !running(rig.pid("agent.pid")) && !running(acp));
+}
+
 /// 有派发在跑时同名再启动一个：第二个报 HOST_NAME_TAKEN，不删第一个的派发配置文件
 #[test]
 fn second_host_keeps_first_hosts_run_files() {
@@ -1115,7 +1203,7 @@ fn second_host_keeps_first_hosts_run_files() {
     wait_until("派发的配置和进程文件写好", Duration::from_secs(20), || {
         run.join(format!("{d}.toml")).exists() && run.join(format!("{d}.proc")).exists()
     });
-    let mut second = rig.host("mbp");
+    let mut second = rig.host_gives_up("mbp");
     let (code, out) = wait_out(&mut second, Duration::from_secs(10));
     assert_eq!(code, 1);
     assert!(out.contains("HOST_NAME_TAKEN"), "{out}");

@@ -74,7 +74,8 @@ fn run_limited(mut cmd: Command, log: &Path, limit: Duration, pids: &Pids) -> Ou
         Ok(x) => x,
         Err(e) => return Outcome::Spawn(format!("无法创建日志 {}：{e}", log.display())),
     };
-    cmd.stdin(Stdio::null()).stdout(out).stderr(err);
+    // board acp 靠标准输入判断 board host 还在不在：这里像 host 一样留着写端，不主动关
+    cmd.stdin(Stdio::piped()).stdout(out).stderr(err);
     crate::envs::detach(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,

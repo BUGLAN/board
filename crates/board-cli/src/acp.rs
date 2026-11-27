@@ -43,7 +43,7 @@
 //!
 //! 期间 agent 发来的请求：`session/request_permission` 自动允许（和以前跳过审批的参数同一个口径，Board 没有人工审批）；
 //! 别的（`fs/*`、`terminal/*` 这些没声明的能力）回 `-32601`。收到 SIGTERM、SIGINT（人点停止、board host 退出）时发
-//! `session/cancel`，最多等 5 秒。
+//! `session/cancel`，最多等 5 秒。派发时 board host 还拿着标准输入的写端：读到 EOF 说明 host 不在了，同样取消这一轮。
 //!
 //! 标准输出是派发日志：agent 发来的每一帧、自己发出的每一帧一行一个（JSON），board host 按 `acp` 格式转写、解析成事件
 //! （logfmt.rs、events.rs）。连续的消息片段（`agent_message_chunk`、`agent_thought_chunk`）合成一帧再写，一段话是一行；
@@ -66,7 +66,7 @@ use crate::envs::Env;
 use board_core::hosts::{AgentAuth, LocalModel, LocalModels, Quota, QuotaWindow, AUTH_ACCOUNT, AUTH_NONE, AUTH_UNKNOWN, WINDOW_FIVE_HOUR, WINDOW_SEVEN_DAY};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1439,6 +1439,24 @@ fn on_signals() {
     }
 }
 
+/// 派发模式：board host 拿着标准输入的写端、从不写。读到 EOF 说明 host 不在了，和收到 SIGTERM 一样
+/// 取消这一轮，不再继续耗 agent 的额度。
+fn watch_parent() {
+    std::thread::spawn(|| {
+        let mut buf = [0u8; 16];
+        let mut stdin = std::io::stdin().lock();
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) | Err(_) => {
+                    TERM.store(true, Ordering::SeqCst);
+                    return;
+                }
+                Ok(_) => {}
+            }
+        }
+    });
+}
+
 /// 写一行日志（标准输出）
 fn log(line: &str) {
     let mut out = std::io::stdout().lock();
@@ -1691,6 +1709,7 @@ fn run_auth(o: &Opts) -> i32 {
 }
 
 fn run(o: &Opts) -> i32 {
+    watch_parent();
     let prompt = match std::fs::read_to_string(&o.prompt_file) {
         Ok(p) => p,
         Err(e) => {

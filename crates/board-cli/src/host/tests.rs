@@ -170,7 +170,7 @@ fn old_logs_are_removed_but_recent_and_running_ones_stay() {
     // 1 号派发还在跑：它的日志再老也留着
     std::fs::File::options().write(true).open(dir.path().join("1.log")).unwrap().set_modified(old).unwrap();
     // 删掉 3.log 和 ready、clone 两个：1.log（还在跑）、2.log（30 天内）、10.pid 留着
-    let removed = clean_logs(dir.path(), 30, &[1], now);
+    let removed = clean_logs(dir.path(), 30, &[dir.path().join("1.log")], now);
     assert_eq!(removed, 3);
     let left: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
@@ -180,9 +180,35 @@ fn old_logs_are_removed_but_recent_and_running_ones_stay() {
     assert!(!left.contains(&"3.log".to_string()) && !left.contains(&"clone-default-main.log".to_string()), "{left:?}");
     assert!(left.contains(&"10.pid".to_string()), "不是日志的文件不碰：{left:?}");
     // 天数改成 1：29 天前的也删
-    let removed = clean_logs(dir.path(), 1, &[1], now);
+    let removed = clean_logs(dir.path(), 1, &[dir.path().join("1.log")], now);
     assert_eq!(removed, 1);
     assert!(dir.path().join("1.log").exists(), "还在跑的留着");
+}
+
+/// 正在跑的派发日志按实际路径保护：`board next` 之后目录名仍是第一张卡的 ID；
+/// 对话日志 `chat-<ID>.log` 也要保护。即使超过 50 MB，清理也不删、不截断
+#[test]
+fn live_run_and_chat_logs_are_never_cleaned_or_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = std::time::SystemTime::now();
+    let old = now - Duration::from_secs(31 * 24 * 3600);
+    let run_log = dir.path().join("42.log");
+    let chat_log = dir.path().join("chat-7.log");
+    for path in [&run_log, &chat_log] {
+        let f = std::fs::File::create(path).unwrap();
+        f.set_len(LOG_MAX + 1).unwrap();
+        f.set_modified(old).unwrap();
+    }
+    let run = test_run(&run_log, None);
+    assert_ne!(run.d.id, 42, "派发已经换到下一张，日志还叫第一张的 ID");
+    let chat = test_chat_run(&chat_log);
+    let keep = live_logs(std::slice::from_ref(&run), std::slice::from_ref(&chat));
+    assert_eq!(clean_logs(dir.path(), 30, &keep, now), 0);
+    assert_eq!(std::fs::metadata(&run_log).unwrap().len(), LOG_MAX + 1);
+    assert_eq!(std::fs::metadata(&chat_log).unwrap().len(), LOG_MAX + 1);
+    assert!(trim_logs(dir.path(), &keep, LOG_HEAD, LOG_TAIL, LOG_MAX).is_empty());
+    assert_eq!(std::fs::metadata(&run_log).unwrap().len(), LOG_MAX + 1);
+    assert_eq!(std::fs::metadata(&chat_log).unwrap().len(), LOG_MAX + 1);
 }
 
 /// 上传的行先转写、再脱敏；本机日志文件保留原文
@@ -975,6 +1001,7 @@ fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
             note: String::new(),
         },
         child,
+        _stdin: None,
         env: Env::direct(),
         pidfile: None,
         log: log.to_path_buf(),
@@ -996,6 +1023,37 @@ fn test_run(log: &Path, fmt: Option<Stream>) -> Run {
         timeout: None,
         output_at: Instant::now(),
         seen_len: 0,
+    }
+}
+
+fn test_chat_run(log: &Path) -> ChatRun {
+    #[cfg(windows)]
+    let child = Command::new("cmd").args(["/C", "exit"]).spawn().unwrap();
+    #[cfg(not(windows))]
+    let child = Command::new("true").spawn().unwrap();
+    ChatRun {
+        id: 7,
+        child,
+        env: Env::direct(),
+        stdin: None,
+        state: log.with_extension("state"),
+        log: log.to_path_buf(),
+        procfile: log.with_extension("proc"),
+        pidfile: None,
+        sent: 0,
+        ev_read: 0,
+        parser: events::Parser::new(Stream::Acp),
+        fmt_due: true,
+        took: 0,
+        took_sent: 0,
+        canceled: 0,
+        canceled_sent: 0,
+        idle_sent: 0,
+        acp_sent: None,
+        round_at: None,
+        output_at: Instant::now(),
+        seen_len: 0,
+        limited: None,
     }
 }
 

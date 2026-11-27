@@ -24,7 +24,7 @@ fn bridge(dir: &Path, script: &str) -> std::process::Child {
     let d = dir.display().to_string();
     Command::new(env!("CARGO_BIN_EXE_board"))
         .args(["acp", "--env", "direct", "--cwd", &d, "--prompt-file", &prompt, "--mode", "bypassPermissions", "--", "sh", &fake])
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -177,6 +177,30 @@ read l; exit 0
     let (code, out, err) = finish(c, Duration::from_secs(15));
     assert_eq!(code, 130, "out:\n{out}\nerr:\n{err}");
     assert!(err.contains("session/cancel"), "{err}");
+    assert!(out.contains(r#""stopReason":"cancelled""#), "{out}");
+}
+
+/// 派发时 board host 只拿着标准输入的写端：host 退出、管道关闭后，board acp 也要像收到 SIGTERM 一样取消
+#[test]
+fn closed_parent_stdin_cancels_the_turn() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"read l; echo '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}'
+read l; echo '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}'
+read l; echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'; touch prompted
+read l; echo "got: $l" >&2; echo '{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}'
+read l; exit 0
+"#;
+    let mut c = bridge(d.path(), script);
+    let mark = d.path().join("prompted");
+    let until = Instant::now() + Duration::from_secs(15);
+    while !mark.exists() {
+        assert!(Instant::now() < until, "15 秒内 agent 没收到 prompt");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    drop(c.stdin.take());
+    let (code, out, err) = finish(c, Duration::from_secs(15));
+    assert_eq!(code, 130, "out:\n{out}\nerr:\n{err}");
+    assert!(err.contains("got: ") && err.contains("session/cancel"), "{err}");
     assert!(out.contains(r#""stopReason":"cancelled""#), "{out}");
 }
 
@@ -373,7 +397,7 @@ fn turns_with(s: &Server, dir: &Path, who: &str, script: &str, extra: &[&str], e
     for (k, v) in env {
         c.env(k, v);
     }
-    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
 }
 
 /// 卡片 #454：这一轮结束时名字还持有卡片（没交审、没交给人）→ 在同一个会话里续一轮；续的这一轮交审了 → 收尾
@@ -539,7 +563,7 @@ read l; exit 0
     let dir = d.path().display().to_string();
     let c = Command::new(env!("CARGO_BIN_EXE_board"))
         .args(["acp", "--env", "direct", "--cwd", &dir, "--prompt-file", &prompt, "--quota-file", &quota.display().to_string(), "--", "sh", &fake])
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

@@ -49,7 +49,7 @@
 //! - 每个在跑的 agent 记在 `~/.board/host/run/<机器名>/<派发 ID>.proc`（「进程号 启动时间 启动环境 白板#卡片」）。
 //!   board host 没走完退出流程（被 kill -9、崩溃）时 agent 会留下来接着跑：同名重启、第一次上报成功之后，
 //!   先结束这些文件里还对得上的进程组，再清 run 目录。第一次上报之前不碰 run 目录：同名的 host 还在跑时，
-//!   第二个只报 HOST_NAME_TAKEN，不删前一个的派发配置。
+//!   第二个每 2 秒重试一次、最多等 60 秒，旧 host 退出后接回名字；仍然占着才报 HOST_NAME_TAKEN，不删前一个的派发配置。
 //! - 输出（标准输出）写不进去时（管道读端已关、终端已关）照常运行和退出，不因为打印失败中断退出流程。
 //! - 远程管理（PRD §9.1）：任务里带着界面上发来的请求。「重新检查」重新找启动环境、agent、skill 后马上上报；「重启」「升级」等本机
 //!   没有在跑的 agent 后先回报「开始处理」，再让机器离线、重新启动自己（macOS、Linux 原地 exec；Windows 桌面端退出码 75）。
@@ -122,6 +122,8 @@ const KILL_AFTER: Duration = Duration::from_secs(10);
 const OFFLINE_WARN: Duration = Duration::from_secs(30);
 /// 重启时结束上一次留下的 agent：SIGTERM 后等这么久，还在就 SIGKILL
 const ORPHAN_KILL_AFTER: Duration = Duration::from_secs(5);
+/// 重启后第一次上报撞上旧 board host 还在收尾：每 2 秒重试一次，默认最多等 60 秒
+const RESTART_RETRY: Duration = Duration::from_secs(2);
 /// 异常退出时评论里带的日志行数
 const TAIL: usize = 20;
 /// 单个本机日志超过这么大时，只留开头 1 MB 和最后 10 MB，中间写一行省略说明
@@ -172,6 +174,12 @@ fn under_desktop() -> bool {
 fn interval() -> Duration {
     let secs = std::env::var("BOARD_HOST_INTERVAL").ok().and_then(|s| s.trim().parse::<f64>().ok()).filter(|s| *s > 0.0);
     secs.map(Duration::from_secs_f64).unwrap_or(Duration::from_millis(BEAT_MS as u64))
+}
+
+/// 等旧 board host 退出的上限：`BOARD_HOST_RESTART_WAIT_MS`（毫秒，只给测试用），默认 60 秒
+fn restart_wait() -> Duration {
+    let ms = std::env::var("BOARD_HOST_RESTART_WAIT_MS").ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|n| *n > 0);
+    ms.map(Duration::from_millis).unwrap_or(Duration::from_secs(60))
 }
 
 /// 命令行参数
@@ -438,14 +446,11 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
     let agent_now = models_now(&agents, &envs);
     let hd = host_dir()?;
     let pidfile = hd.join(format!("{name}.pid"));
-    // 上一次在这台机器上用这个名字的 board host：进程不在了就接回它的名字
-    let resume = std::fs::read_to_string(&pidfile).ok().and_then(|s| {
-        let mut it = s.split_whitespace();
-        let proc = Proc::parse(&format!("{} {}", it.next()?, it.next()?))?;
-        let inst = it.next()?.to_string();
-        let alive = Procs::new().is_some_and(|mut ps| ps.alive(proc) && ps.is_board(proc));
-        (!alive).then_some(inst)
-    });
+    // 上一次在这台机器上用这个名字的 board host：进程不在了就接回它的名字；还在收尾就先等它退出
+    let previous = saved_instance(&pidfile);
+    let previous_alive = previous.as_ref().is_some_and(|(proc, _)| board_alive(*proc));
+    let resume = previous.as_ref().filter(|_| !previous_alive).map(|(_, inst)| inst.clone());
+    let predecessor = previous.filter(|_| previous_alive);
     let instance = format!("{:x}{:x}", now_ms(), std::process::id() as u64 * 2654435761 % 0xffff_ffff);
     let run = hd.join("run").join(&name);
     let exe = std::env::current_exe().map_err(|e| BoardError::usage(format!("找不到 board 自己的路径：{e}")))?;
@@ -518,8 +523,9 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         res,
     };
     on_signals();
-    // 第一次上报：名字被占用、令牌不对、连不上，都直接报错退出。在这之前不碰 run 目录：同名的 host 可能还在跑
-    let w = h.beat(false)?;
+    // 第一次上报：名字被旧 host 占着就先等它退出；别的占用、令牌不对、连不上都直接报错退出。
+    // 在这之前不碰 run 目录：同名的 host 可能还在跑
+    let w = h.first_beat(predecessor)?;
     h.set_work(w);
     h.resume = None;
     if let Some(e) = h.ask_error.take() {
@@ -551,6 +557,19 @@ fn conf_name(name: Option<&str>) -> String {
         Some(n) => n.to_string(),
         None => host_name_from(&sysinfo::System::host_name().unwrap_or_default()),
     }
+}
+
+/// 机器 pid 文件里的旧进程和实例标识
+fn saved_instance(path: &Path) -> Option<(Proc, String)> {
+    let s = std::fs::read_to_string(path).ok()?;
+    let mut it = s.split_whitespace();
+    let proc = Proc::parse(&format!("{} {}", it.next()?, it.next()?))?;
+    Some((proc, it.next()?.to_string()))
+}
+
+/// 进程还在，而且是 board
+fn board_alive(proc: Proc) -> bool {
+    Procs::new().is_some_and(|mut ps| ps.alive(proc) && ps.is_board(proc))
 }
 
 /// `board host rename <新机器名>`：让服务端把这台机器的记录原地改名（桌面端「设置 → 本机」保存机器名时调用）。
@@ -634,6 +653,42 @@ impl Host<'_> {
     fn beat(&mut self, done: bool) -> Result<HostWork> {
         let rep = serde_json::to_value(self.report(done)).unwrap_or(Value::Null);
         self.rm().post(&format!("/api/hosts/{}/beat", self.name), rep)
+    }
+
+    /// 第一次上报：旧进程还在收尾时名字被占着，就等它退出；退出后带上它的实例标识接回名字
+    fn first_beat(&mut self, predecessor: Option<(Proc, String)>) -> Result<HostWork> {
+        let Some((prev, instance)) = predecessor else { return self.beat(false) };
+        let begun = Instant::now();
+        let wait = restart_wait();
+        let mut waiting = false;
+        loop {
+            match self.beat(false) {
+                Ok(w) => return Ok(w),
+                Err(e) if e.code == ErrorCode::HostNameTaken => {
+                    if !waiting {
+                        waiting = true;
+                        self.say(format!(
+                            "{} 机器名 {} 还由上一个 board host 使用，等它退出（最多 {} 秒）",
+                            self.p.yellow("!"),
+                            self.name,
+                            wait.as_secs()
+                        ));
+                    }
+                    if !board_alive(prev) {
+                        self.resume = Some(instance.clone());
+                    }
+                    if QUIT.load(Ordering::SeqCst) {
+                        return Err(e);
+                    }
+                    let left = wait.saturating_sub(begun.elapsed());
+                    if left.is_zero() {
+                        return Err(e);
+                    }
+                    std::thread::sleep(RESTART_RETRY.min(left));
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// board host 自己的目录（`~/.board/host`，日志目录的上一级）：同步配置的备份、Git 凭据放在这里

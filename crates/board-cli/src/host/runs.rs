@@ -47,6 +47,8 @@ pub(super) fn exit_code(s: std::process::ExitStatus) -> Option<i64> {
 pub(super) struct Run {
     pub(super) d: Dispatch,
     pub(super) child: Child,
+    /// board acp 的标准输入：host 只拿着写端、从不写，host 退出后管道关闭，board acp 据此取消
+    pub(super) _stdin: Option<std::process::ChildStdin>,
     /// 启动环境
     pub(super) env: Env,
     /// WSL 里 agent 的进程号写在这里（BOARD_PIDFILE），结束时删除
@@ -957,7 +959,7 @@ impl Host<'_> {
             .env("BOARD_HOST_TOKEN", self.rm().token())
             // skill 自带的 scripts/board 看到它就用 host 自己的 board：版本和 host 一致（skill 里打包的 board 可能更旧）
             .env("BOARD_EXE", &self.exe)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(out)
             .stderr(err);
         // WSL：agent 的进程号写进 BOARD_PIDFILE（环境变量经 WSLENV 传进去，见 acp_command）
@@ -969,11 +971,12 @@ impl Host<'_> {
             pidfile = Some(pf);
         }
         envs::detach(&mut c);
-        let child = c.spawn().map_err(|e| {
+        let mut child = c.spawn().map_err(|e| {
             let _ = std::fs::remove_file(&conf);
             let _ = std::fs::remove_file(&prompt_file);
             format!("在{}里启动 {prog}（board acp）失败：{e}", env.name)
         })?;
+        let stdin = child.stdin.take();
         // 记下 agent 的进程号和启动时间：这个 host 没走完退出流程时，同名重启后据此结束它
         let procfile = self.run.join(format!("{}.proc", d.id));
         let start = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
@@ -983,6 +986,7 @@ impl Host<'_> {
         Ok(Run {
             d: d.clone(),
             child,
+            _stdin: stdin,
             env,
             pidfile,
             log,

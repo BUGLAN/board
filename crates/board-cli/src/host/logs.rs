@@ -161,10 +161,19 @@ pub(super) fn truncate_log(path: &Path, head: u64, tail: u64, max: u64) -> std::
     Ok(Some(out.len() as u64))
 }
 
-/// 本机派发日志清理：`~/.board/host/logs` 里结束超过 `days` 天的删掉。`keep` 是正在跑的派发 ID，
-/// 它们的日志不删（改过文件时间的、还在写的都按结束时间算：看修改时间）。
+/// 正在写的日志：派发按实际文件路径（`board next` 后目录还是第一张卡的 ID），对话是 `chat-<ID>.log`
+pub(super) fn live_logs(runs: &[Run], chats: &[ChatRun]) -> Vec<PathBuf> {
+    runs.iter().map(|r| r.log.clone()).chain(chats.iter().map(|c| c.log.clone())).collect()
+}
+
+fn live(path: &Path, keep: &[PathBuf]) -> bool {
+    keep.iter().any(|p| p == path)
+}
+
+/// 本机派发日志清理：`~/.board/host/logs` 里结束超过 `days` 天的删掉。`keep` 是正在写的日志路径，
+/// 它们不删（改过文件时间的、还在写的都按结束时间算：看修改时间）。
 /// 返回删掉的个数。日志文件名是派发 ID 或 `ready-*`、`clone-*`、`update` 这类
-pub(super) fn clean_logs(dir: &Path, days: i64, keep: &[i64], now: std::time::SystemTime) -> usize {
+pub(super) fn clean_logs(dir: &Path, days: i64, keep: &[PathBuf], now: std::time::SystemTime) -> usize {
     let cutoff = now.checked_sub(Duration::from_secs((days.max(1) as u64) * 24 * 3600));
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
     let mut removed = 0;
@@ -174,9 +183,7 @@ pub(super) fn clean_logs(dir: &Path, days: i64, keep: &[i64], now: std::time::Sy
         if !name.ends_with(".log") {
             continue;
         }
-        // 正在跑的派发：文件名就是派发 ID
-        let id: Option<i64> = name.trim_end_matches(".log").parse().ok();
-        if id.is_some_and(|id| keep.contains(&id)) {
+        if live(&p, keep) {
             continue;
         }
         let Ok(m) = e.metadata() else { continue };
@@ -191,29 +198,35 @@ pub(super) fn clean_logs(dir: &Path, days: i64, keep: &[i64], now: std::time::Sy
     removed
 }
 
+/// 已经结束的日志超过 `max` 时只留开头和结尾；正在写的（`keep`）不碰
+pub(super) fn trim_logs(dir: &Path, keep: &[PathBuf], head: u64, tail: u64, max: u64) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let mut trimmed = vec![];
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".log") || live(&p, keep) {
+            continue;
+        }
+        if let Ok(Some(_)) = truncate_log(&p, head, tail, max) {
+            trimmed.push(name);
+        }
+    }
+    trimmed
+}
+
 impl Host<'_> {
     /// 清理本机派发日志：结束超过 `log_days` 天的删掉，正在跑的留着；留下来的单个超过 50 MB 的只保留开头和结尾
     /// （只动已经结束的：agent 可能还拿着文件句柄，换掉内容会在它下次写入时留一段空洞）
     pub(super) fn clean_logs(&mut self) {
-        let keep: Vec<i64> = self.runs.iter().map(|r| r.d.id).collect();
+        let keep = live_logs(&self.runs, &self.chats);
         let days = self.log_days;
         let removed = clean_logs(&self.logs, days, &keep, std::time::SystemTime::now());
         if removed > 0 {
             self.say(format!("{} 删掉了 {removed} 个结束超过 {days} 天的本机日志", self.p.dim("·")));
         }
-        let Ok(rd) = std::fs::read_dir(&self.logs) else { return };
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".log") {
-                continue;
-            }
-            let id: Option<i64> = name.trim_end_matches(".log").parse().ok();
-            if id.is_some_and(|id| keep.contains(&id)) {
-                continue;
-            }
-            if let Ok(Some(_)) = truncate_log(&e.path(), LOG_HEAD, LOG_TAIL, LOG_MAX) {
-                self.say(format!("{} {name} 超过 50 MB，只留了开头 1 MB 和最后 10 MB", self.p.dim("·")));
-            }
+        for name in trim_logs(&self.logs, &keep, LOG_HEAD, LOG_TAIL, LOG_MAX) {
+            self.say(format!("{} {name} 超过 50 MB，只留了开头 1 MB 和最后 10 MB", self.p.dim("·")));
         }
     }
 
