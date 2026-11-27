@@ -998,6 +998,38 @@ mod tests {
             CardCronPatch { place: Some(INBOX.into()), tz: Some("Asia/Shanghai".into()), body: Some("看图 ![a.png](/api/files/77)".into()), ..patch("找改进", "0 9 * * *") },
         )
         .unwrap();
+
+        // 别的卡片引用模板图不会把它抢走；永久删除这张卡后，下一次建卡仍能复制模板图
+        let other = s
+            .write(T0, Origin::ui(None), |w| {
+                let b = w.resolve(B)?;
+                w.exec(
+                    &b,
+                    &Actor::human(),
+                    Cmd::New { title: "先引用模板图".into(), body: None, column: None, top: false, labels: vec![], from: None },
+                )
+            })
+            .unwrap()
+            .card
+            .id;
+        s.write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Comment { id: other, text: "看图 ![a.png](/api/files/77)".into() })
+        })
+        .unwrap();
+        let bound: Option<i64> = s.conn().query_row("SELECT card FROM attachments WHERE id = 77", [], |r| r.get(0)).unwrap();
+        assert_eq!(bound, None, "模板图被卡片引用也不归到卡片");
+        s.write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Delete { id: other })
+        })
+        .unwrap();
+        s.write(T0, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.exec(&b, &Actor::human(), Cmd::Purge { id: other })
+        })
+        .unwrap();
+
         let at = c.next_at.unwrap();
         assert_eq!(due(&mut s, at - MIN), 0, "上海 8:59 不到点");
         assert_eq!(due(&mut s, at + 5_000), 1);

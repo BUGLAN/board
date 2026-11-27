@@ -662,9 +662,14 @@ pub(crate) fn attachments_of(conn: &Connection, board: i64, card: i64) -> Result
 }
 
 impl W<'_> {
-    /// 文字里引用到的、同一块白板上还没归到卡片的附件，归到这张卡片
+    /// 文字里引用到的、同一块白板上还没归到卡片的附件，归到这张卡片；
+    /// 白板说明和定时建卡模板引用着的附件不归（它们不属于卡片）
     pub(crate) fn bind_attachments(&mut self, board: i64, card: i64, text: &str) -> Result<()> {
+        let kept: HashSet<i64> = kept_ids(&self.read())?.into_iter().collect();
         for id in referenced_ids(text) {
+            if kept.contains(&id) {
+                continue;
+            }
             self.tx.execute(
                 "UPDATE attachments SET card = ?1 WHERE id = ?2 AND board = ?3 AND card IS NULL",
                 params![card, id, board],

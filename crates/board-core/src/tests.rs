@@ -1638,6 +1638,17 @@ fn readme_is_saved_and_keeps_its_images() {
     s.write(T0, Origin::ui(None), |w| w.update_board(B, None, None, Some(&text))).unwrap();
     let ws = s.read(|r| r.workspace(T0)).unwrap();
     assert_eq!(ws.projects[0].boards[0].readme, text);
+
+    // 卡片里引用说明图不会把它「抢」走；永久删除卡片后说明图还在
+    let c = exec(&mut s, B, &human(), T0, new("引用说明图")).unwrap().card.id;
+    exec(&mut s, B, &human(), T0, Cmd::Comment { id: c, text: format!("再看一遍 {}", crate::files::url_of(att.id)) }).unwrap();
+    assert_eq!(s.attachment(att.id).unwrap().unwrap().0.card_id, None, "说明里的图不归到卡片");
+    assert!(card(&s, B, c).attachments.is_empty());
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: c }).unwrap();
+    exec(&mut s, B, &human(), T0, Cmd::Purge { id: c }).unwrap();
+    let (_, _, path) = s.attachment(att.id).unwrap().expect("永久删除卡片后说明图还在");
+    assert!(path.exists());
+
     s.gc_files(T0 + 2 * DAY).unwrap();
     assert!(s.attachment(att.id).unwrap().is_some(), "说明引用的图片留着");
     assert!(s.attachment(other.id).unwrap().is_none(), "没被引用的照常清理");
