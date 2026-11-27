@@ -869,7 +869,7 @@ function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: bool
             className="btn sm primary"
             type="button"
             onClick={async () => {
-              const result = await triage(c.id);
+              const result = await triage(useData.getState().path, c.id);
               if (result.failed[0]) {
                 toastError(result.failed[0].error);
                 return;

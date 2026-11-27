@@ -230,9 +230,12 @@ export interface BatchResult {
  * 部分失败时只从这一层去掉失败的 ID，重复执行仍然得到原批次的效果。
  * 保存中的卡片算 BUSY、留在本地失败且不发送；整批请求失败时撤销这一层并抛出。
  */
-export async function batchCards(ids: number[], op: CardBatchOp, patchOf: (id: number) => Patch): Promise<BatchResult> {
-  const path = get().path;
+export async function batchCards(path: string, ids: number[], op: CardBatchOp, patchOf: (id: number) => Patch): Promise<BatchResult> {
   const unique = [...new Set(ids)].filter(id => id > 0 && !isDraft(id));
+  if (path !== get().path) {
+    const error = new ApiError('USAGE', '已经换了白板，回到原来的白板再撤销');
+    return { ok: [], failed: unique.map(id => ({ id, error })) };
+  }
   const failed: BatchResult['failed'] = [];
   const todo: number[] = [];
   for (const id of unique) {
@@ -766,10 +769,10 @@ export function laterPatch(ids: number[], on: boolean): Patch {
 }
 
 /** 收起 / 放回几条：整批一个请求；失败的只撤自己那一条。提示和选择只按实际成功、失败的 ID 更新 */
-export async function setLater(ids: number[], on: boolean): Promise<BatchResult> {
+export async function setLater(path: string, ids: number[], on: boolean): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
   try {
-    return await batchCards(ok, { op: 'later', on }, id => laterPatch([id], on));
+    return await batchCards(path, ok, { op: 'later', on }, id => laterPatch([id], on));
   } catch (e) {
     return { ok: [], failed: ok.map(id => ({ id, error: e })) };
   }
@@ -1099,7 +1102,7 @@ async function load() {
       const s = saved();
       path = paths.includes(s) ? s : paths[0];
       pendingCard = null; // 地址里的白板不在了：地址里的卡片也不打开
-      switchTo(path);
+      switchTo(path, { replace: true });
     }
   }
   // 地址栏里的卡片（刷新页面、从别处打开链接）：和这块白板一起取回来，取回来的那一帧就打开详情。
@@ -1131,6 +1134,7 @@ async function load() {
     again = true;
     return;
   }
+  save(path);
   if ('failed' in got) {
     if (wantFull) fullWanted.delete(path);
     throw got.failed;
@@ -1399,8 +1403,7 @@ export async function reorderLabels(project: string, ids: number[]) {
 /** 打开过的白板的最近一份快照：切回来时先显示它，不闪骨架，refresh 拿到新的再替换 */
 const snapshots = new Map<string, BoardSnapshot>();
 
-function switchTo(path: string, opts: { open?: number | null } = {}) {
-  save(path);
+function switchTo(path: string, opts: { open?: number | null; replace?: boolean } = {}) {
   flip.reset();
   clearLabelSel(); // 标签属于项目，换白板时清掉选中
   base.board = snapshots.get(path) ?? null;
@@ -1408,7 +1411,7 @@ function switchTo(path: string, opts: { open?: number | null } = {}) {
   // open：切过去的同时打开那张卡片（每一张卡片有自己的网址，不是「白板 + 详情」两条）
   render({ path, detailId: opts.open ?? null, generation: get().generation + 1 });
   // 切换白板写进地址栏（新的一块白板是一条新的历史记录：后退能回到原来那块）；地址里开着卡片时连卡片一起写
-  syncUrl(opts.open != null ? 'replace' : get().detailId == null ? 'push' : 'replace');
+  syncUrl(opts.replace || opts.open != null || get().detailId != null ? 'replace' : 'push');
 }
 
 /** 打开另一块白板 */

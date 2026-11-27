@@ -536,7 +536,7 @@ describe('删除、恢复（回收站）', () => {
 
 describe('稍后再做的批量结果（default/main#512）', () => {
   it('全部成功：一个请求并返回每一条的 ID', async () => {
-    const r = D.setLater([1, 2], true);
+    const r = D.setLater('p/a', [1, 2], true);
     await settle();
     expect(server.cardBatches[0].ids).toEqual([1, 2]);
     expect(server.cardBatches[0].op).toEqual({ op: 'later', on: true });
@@ -547,7 +547,7 @@ describe('稍后再做的批量结果（default/main#512）', () => {
   });
 
   it('部分失败：返回成功的 #2 和失败的 #1', async () => {
-    const r = D.setLater([1, 2], true);
+    const r = D.setLater('p/a', [1, 2], true);
     await settle();
     const rev = serverEdit('p/a', 2, { laterAt: 100 });
     server.cardBatches[0].ok({ ok: [2], failed: [{ id: 1, code: 'NOT_IN_TODO', message: '不在未整理里' }], rev });
@@ -555,7 +555,7 @@ describe('稍后再做的批量结果（default/main#512）', () => {
   });
 
   it('全部失败：没有成功项', async () => {
-    const r = D.setLater([1, 2], true);
+    const r = D.setLater('p/a', [1, 2], true);
     await settle();
     const rev = serverEdit('p/a', 1, {});
     server.cardBatches[0].ok({
@@ -720,7 +720,7 @@ describe('批量卡片命令', () => {
   };
 
   it('一个请求、当帧移动全部卡片；部分失败只撤失败的卡片并只刷新一次', async () => {
-    const r = D.batchCards([1, 2, 3], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
+    const r = D.batchCards('p/a', [1, 2, 3], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
     expect(D.useData.getState().board!.cols.review).toEqual([1, 2, 3]);
     expect([D.cardBusy(1), D.cardBusy(2), D.cardBusy(3)]).toEqual([true, true, true]);
     await settle();
@@ -754,7 +754,7 @@ describe('批量卡片命令', () => {
   });
 
   it('整批请求失败：所有卡片恢复原样并抛出', async () => {
-    const r = D.batchCards([1, 2, 3], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
+    const r = D.batchCards('p/a', [1, 2, 3], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
     expect(D.useData.getState().board!.cols.review).toEqual([1, 2, 3]);
     await settle();
     server.cardBatches[0].fail();
@@ -766,7 +766,7 @@ describe('批量卡片命令', () => {
 
   it('正在保存的卡片记 BUSY，不发进这一批；其余卡片照常发', async () => {
     const pending = rename(2, '正在保存');
-    const r = D.batchCards([1, 2], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
+    const r = D.batchCards('p/a', [1, 2], { op: 'move', column: 'review' }, id => D.movePatch(id, 'review'));
     await settle();
     serverEdit('p/a', 2, { title: '正在保存' });
     server.calls[0].ok();
@@ -780,6 +780,29 @@ describe('批量卡片命令', () => {
       ok: [1],
       failed: [{ id: 2, error: expect.objectContaining({ code: 'BUSY' }) }],
     });
+  });
+
+  it('已经换了白板：整批失败，不叠补丁、不发请求、不动新白板', async () => {
+    await D.setPath('p/b');
+    const before = D.useData.getState().board!;
+    const r = await D.batchCards('p/a', [1], { op: 'delete' }, D.removeCard);
+    expect(r).toEqual({
+      ok: [],
+      failed: [{ id: 1, error: expect.objectContaining({ code: 'USAGE', message: '已经换了白板，回到原来的白板再撤销' }) }],
+    });
+    expect(server.cardBatches).toEqual([]);
+    expect(D.useData.getState().board).toBe(before);
+    expect(D.useData.getState().saving).toEqual({});
+  });
+
+  it('删除后换白板再撤销：不发批量请求，新白板的同号卡片不变', async () => {
+    await D.setPath('p/b');
+    const before = D.useData.getState().board!;
+    const r = await T.restoreMany('p/a', [1]);
+    expect(r.failed[0].error).toMatchObject({ code: 'USAGE', message: '已经换了白板，回到原来的白板再撤销' });
+    expect(server.cardBatches).toEqual([]);
+    expect(D.useData.getState().board).toBe(before);
+    expect(D.useData.getState().board!.cards[1].title).toBe('B 白板的卡片');
   });
 });
 

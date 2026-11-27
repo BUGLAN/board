@@ -121,6 +121,19 @@ describe('后退、前进（applyRoute）', () => {
     expect(U.useUI.getState().tab).toBe('stats');
     expect(href()).toBe('/p/a?tab=stats'); // 没有再写一遍
   });
+
+  it('后退到不存在的白板：replace 回记住的白板，不 push，也不把无效白板记下来', async () => {
+    localStorage.setItem('board.current', 'p/a');
+    history.replaceState(null, '', '/gone/board');
+    const push = vi.spyOn(history, 'pushState');
+    D.applyRoute({ path: 'gone/board', card: null, tab: 'board' });
+    expect(localStorage.getItem('board.current')).toBe('p/a');
+    await vi.waitFor(() => expect(D.useData.getState().path).toBe('p/a'));
+    expect(push).not.toHaveBeenCalled();
+    expect(href()).toBe('/p/a');
+    expect(localStorage.getItem('board.current')).toBe('p/a');
+    push.mockRestore();
+  });
 });
 
 describe('详情里的返回 / 前进（#195）', () => {
@@ -219,12 +232,18 @@ describe('打开页面时的地址（卡片链接）', () => {
   });
 
   it('地址里的白板不在了：换成记住的白板，地址跟着改，不打开卡片', async () => {
+    sessionStorage.setItem('board.current', 'p/b');
+    localStorage.setItem('board.current', 'p/b');
     history.replaceState(null, '', '/gone/board/9');
     vi.resetModules();
     D = await import('./data');
+    const push = vi.spyOn(history, 'pushState');
     await D.refresh();
-    expect(D.useData.getState().path).toBe('p/a');
+    expect(D.useData.getState().path).toBe('p/b');
     expect(D.useData.getState().detailId).toBeNull();
-    expect(href()).toBe('/p/a');
+    expect(href()).toBe('/p/b');
+    expect(push).not.toHaveBeenCalled();
+    expect(localStorage.getItem('board.current')).toBe('p/b');
+    push.mockRestore();
   });
 });

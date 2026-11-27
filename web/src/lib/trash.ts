@@ -47,7 +47,7 @@ export async function deleteCards(ids: number[], { silent = false, titles = {} }
   const board = useData.getState().board;
   let result: BatchResult;
   try {
-    result = await batchCards(ok, { op: 'delete' }, removeCard);
+    result = await batchCards(path, ok, { op: 'delete' }, removeCard);
   } catch (e) {
     toastError(e);
     return false;
@@ -113,7 +113,7 @@ export async function restoreMany(path: string, ids: number[]): Promise<BatchRes
   );
   let result: BatchResult;
   try {
-    result = await batchCards(unique, { op: 'restore' }, id => plans.get(id)!);
+    result = await batchCards(path, unique, { op: 'restore' }, id => plans.get(id)!);
   } catch (e) {
     result = { ok: [], failed: unique.map(id => ({ id, error: e })) };
   }
@@ -142,9 +142,10 @@ export function restoredToast(ids: number[], path: string): void {
 
 /** 从回收站永久删除：附件、评论一起删，不能恢复。提示只按实际成功、失败的 ID 更新 */
 export async function purgeCards(ids: number[]): Promise<BatchResult> {
+  const path = useData.getState().path;
   let result: BatchResult;
   try {
-    result = await batchCards(ids, { op: 'purge' }, () => ({}));
+    result = await batchCards(path, ids, { op: 'purge' }, () => ({}));
   } catch (e) {
     result = { ok: [], failed: ids.map(id => ({ id, error: e })) };
   }

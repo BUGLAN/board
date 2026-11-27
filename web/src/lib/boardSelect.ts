@@ -204,9 +204,10 @@ export function moveTargets(board: BoardSnapshot, ids: number[]): MoveTarget[] {
 /** 批量移动：按白板上的顺序一张张排到目标状态末尾（和「移动到」一张一样），失败的提示第一个错误 */
 export async function bulkMove(t: MoveTarget) {
   if (!t.ids.length) return 0;
+  const path = useData.getState().path;
   let result;
   try {
-    result = await batchCards(t.ids, { op: 'move', column: t.key }, batchMovePatch(t.ids, t.key));
+    result = await batchCards(path, t.ids, { op: 'move', column: t.key }, batchMovePatch(t.ids, t.key));
   } catch (e) {
     toastError(e);
     return 0;

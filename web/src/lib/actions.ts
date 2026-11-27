@@ -79,30 +79,30 @@ export function cardFwd() {
 
 /** 未整理 → 首个可领取状态最下面（当帧移过去，被拒绝时回到未整理）。返回实际成功 / 失败的 ID；
     提示和离场动画由调用方按结果更新。桌面的白板页上，落位后定位到它 */
-export async function triage(id: number): Promise<BatchResult> {
+export async function triage(path: string, id: number): Promise<BatchResult> {
   if (isDraft(id)) return { ok: [], failed: [] };
-  const result = await triageMany([id]);
+  const result = await triageMany(path, [id]);
   if (result.ok.length && useUI.getState().tab === 'board' && !isMobile()) setTimeout(() => reveal(id), 60);
   return result;
 }
 
 /** 批量整理到首个可领取状态最下面：整批一个请求；返回实际成功、失败的 ID */
-export async function triageMany(ids: number[]): Promise<BatchResult> {
+export async function triageMany(path: string, ids: number[]): Promise<BatchResult> {
   const ok = ids.filter(id => !isDraft(id));
   if (!ok.length) return { ok: [], failed: [] };
   const start = boardFlow(useData.getState().board).home;
   const to = start?.key ?? 'todo';
   try {
-    return await batchCards(ok, { op: 'move', column: to }, batchMovePatch(ok, to));
+    return await batchCards(path, ok, { op: 'move', column: to }, batchMovePatch(ok, to));
   } catch (e) {
     return { ok: [], failed: ok.map(id => ({ id, error: e })) };
   }
 }
 
 /** 撤销整理：放回「未整理」最下面（只有人能移入，界面上就是人） */
-export async function untriage(ids: number[]) {
+export async function untriage(path: string, ids: number[]) {
   try {
-    const result = await batchCards(ids, { op: 'move', column: INBOX }, batchMovePatch(ids, INBOX));
+    const result = await batchCards(path, ids, { op: 'move', column: INBOX }, batchMovePatch(ids, INBOX));
     if (result.failed[0]) toastError(result.failed[0].error);
   } catch (e) {
     toastError(e);

@@ -4,14 +4,14 @@ import type { Dispatch } from './types';
 
 type LabelBatch = { changed: number[]; skipped: number[]; failed: { id: number; error: unknown }[] };
 const labelCards = vi.fn<(ids: number[], label: number, add: boolean) => Promise<LabelBatch>>();
-const batchCards = vi.fn<(ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => Promise<{ ok: number[]; failed: { id: number; error: unknown }[] }>>();
+const batchCards = vi.fn<(path: string, ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => Promise<{ ok: number[]; failed: { id: number; error: unknown }[] }>>();
 const toastError = vi.fn();
 const toast = vi.fn();
 vi.mock('../store/data', () => ({
   labelCards: (ids: number[], l: number, add: boolean) => labelCards(ids, l, add),
-  batchCards: (ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => batchCards(ids, op, patch),
+  batchCards: (path: string, ids: number[], op: { op: 'move'; column: string }, patch: (id: number) => unknown) => batchCards(path, ids, op, patch),
   batchMovePatch: (_ids: number[], to: string) => (id: number) => ({ move: [id, to] }),
-  useData: { getState: () => ({ detailId: null }) },
+  useData: { getState: () => ({ path: 'p/a', detailId: null }) },
 }));
 vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e), toast: (t: unknown) => toast(t) }));
 
@@ -165,8 +165,9 @@ describe('bulkMove（批量移动）', () => {
   it('整批走一次 cardBatch，提示移了几张、跳过的写明', async () => {
     batchCards.mockResolvedValue({ ok: [1, 2], failed: [] });
     expect(await bulkMove(t)).toBe(2);
-    expect(batchCards.mock.calls[0][0]).toEqual([1, 2]);
-    expect(batchCards.mock.calls[0][1]).toEqual({ op: 'move', column: 'review' });
+    expect(batchCards.mock.calls[0][0]).toBe('p/a');
+    expect(batchCards.mock.calls[0][1]).toEqual([1, 2]);
+    expect(batchCards.mock.calls[0][2]).toEqual({ op: 'move', column: 'review' });
     expect(batchCards.mock.calls).toHaveLength(1);
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: '2 张移到了「待审核」', text: '跳过：1 张本来就在这里，1 张被 agent 持有' }));
   });

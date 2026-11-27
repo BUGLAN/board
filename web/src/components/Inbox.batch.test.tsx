@@ -41,11 +41,12 @@ const { doLater, doTriage, doUnlater, keepBatchSelection, useInbox } = await imp
 
 const error = new Error('NOT_HOLDER');
 const toastTitle = () => (m.toast.mock.calls.at(-1)?.[0] as { title?: string } | undefined)?.title;
+const toastAction = () => (m.toast.mock.calls.at(-1)?.[0] as { action?: { fn: () => void } } | undefined)?.action?.fn;
 
 beforeEach(() => {
   Object.values(m).forEach(fn => fn.mockReset());
   useInbox.setState({ checked: [1, 2], open: null, view: 'list', page: 'inbox' });
-  useData.setState({ board: snapshot('p/a', { inbox: [1, 2] }) });
+  useData.setState({ path: 'p/a', board: snapshot('p/a', { inbox: [1, 2] }) });
 });
 
 describe('keepBatchSelection（批量后的勾选）', () => {
@@ -67,8 +68,18 @@ describe('doTriage（批量整理）', () => {
     m.triageMany.mockResolvedValue({ ok: [1, 2], failed: [] });
     expect(await doTriage([1, 2])).toEqual({ ok: [1, 2], failed: [] });
     expect(toastTitle()).toBe('2 条已整理到「todo」');
+    expect(m.triageMany).toHaveBeenCalledWith('p/a', [1, 2]);
     expect(useInbox.getState().checked).toEqual([]);
     expect(m.toastError).not.toHaveBeenCalled();
+  });
+
+  it('撤销沿用发起时的白板，切走之后也不会去动另一块白板的同号卡片', async () => {
+    m.triageMany.mockResolvedValue({ ok: [1, 2], failed: [] });
+    await doTriage([1, 2]);
+    const undo = toastAction();
+    useData.setState({ path: 'p/b' });
+    undo?.();
+    expect(m.untriage).toHaveBeenCalledWith('p/a', [1, 2]);
   });
 
   it('部分失败：只提示成功的 #2，失败项保留选择并提示一次错误', async () => {
@@ -95,8 +106,18 @@ describe('doLater（稍后再做）', () => {
     m.setLater.mockResolvedValue({ ok: [1, 2], failed: [] });
     await doLater([1, 2]);
     expect(toastTitle()).toBe('2 条已移到「稍后再做」');
+    expect(m.setLater).toHaveBeenCalledWith('p/a', [1, 2], true);
     expect(useInbox.getState()).toMatchObject({ checked: [], open: null });
     expect(m.toastError).not.toHaveBeenCalled();
+  });
+
+  it('撤销沿用发起时的白板', async () => {
+    m.setLater.mockResolvedValue({ ok: [1, 2], failed: [] });
+    await doLater([1, 2]);
+    const undo = toastAction();
+    useData.setState({ path: 'p/b' });
+    undo?.();
+    expect(m.setLater).toHaveBeenLastCalledWith('p/a', [1, 2], false);
   });
 
   it('部分失败：提示 #2，打开的失败项不收起，选择保留失败项', async () => {
@@ -123,6 +144,7 @@ describe('doUnlater（放回未整理）', () => {
     m.setLater.mockResolvedValue({ ok: [1, 2], failed: [] });
     expect(await doUnlater([1, 2])).toEqual({ ok: [1, 2], failed: [] });
     expect(toastTitle()).toBe('2 条已放回「未整理」');
+    expect(m.setLater).toHaveBeenCalledWith('p/a', [1, 2], false);
     expect(m.toastError).not.toHaveBeenCalled();
   });
 

@@ -251,7 +251,8 @@ export async function doTriage(ids: number[], how?: LeaveRow['how']): Promise<Ba
   } else if (how && !reduceMotion()) ok.forEach(id => pressed.set(id, how));
   ok.forEach(id => exits.set(id, 'triage'));
   const home = boardFlow(useData.getState().board).home;
-  const result = ok.length === 1 ? await triage(ok[0]) : await triageMany(ok);
+  const path = useData.getState().path;
+  const result = ok.length === 1 ? await triage(path, ok[0]) : await triageMany(path, ok);
   failExit(result);
   keepFailed(result, selected);
   // 当帧移走；提示等离场做完再出来。撤销只放回实际成功的那些
@@ -261,7 +262,7 @@ export async function doTriage(ids: number[], how?: LeaveRow['how']): Promise<Ba
         type: 'success',
         title: result.ok.length === 1 ? `#${result.ok[0]} 已整理到「${home?.name ?? '待办'}」` : `${result.ok.length} 条已整理到「${home?.name ?? '待办'}」`,
         text: result.ok.length === 1 ? undefined : result.ok.map(i => `#${i}`).join('、'),
-        action: { label: '撤销', fn: () => void untriage(result.ok) },
+        action: { label: '撤销', fn: () => void untriage(path, result.ok) },
       });
     const delay = triageToastDelay();
     if (delay > 0) setTimeout(show, delay);
@@ -277,7 +278,8 @@ export async function doLater(ids: number[], gone = false): Promise<BatchResult>
   if (!ok.length) return { ok: [], failed: [] };
   const selected = new Set(useInbox.getState().checked);
   ok.forEach(id => exits.set(id, gone ? 'gone' : 'later'));
-  const result = await setLater(ok, true);
+  const path = useData.getState().path;
+  const result = await setLater(path, ok, true);
   failExit(result);
   keepFailed(result, selected);
   const st = useInbox.getState();
@@ -287,7 +289,7 @@ export async function doLater(ids: number[], gone = false): Promise<BatchResult>
       type: 'success',
       title: result.ok.length === 1 ? `#${result.ok[0]} 已移到「稍后再做」` : `${result.ok.length} 条已移到「稍后再做」`,
       text: '在标题旁的「稍后再做」里查看，左滑放回',
-      action: { label: '撤销', fn: () => void setLater(result.ok, false).then(r => r.failed[0] && toastError(r.failed[0].error)) },
+      action: { label: '撤销', fn: () => void setLater(path, result.ok, false).then(r => r.failed[0] && toastError(r.failed[0].error)) },
     });
   }
   if (result.failed[0]) toastError(result.failed[0].error);
@@ -299,13 +301,14 @@ export async function doUnlater(ids: number[], gone = false): Promise<BatchResul
   const ok = ids.filter(id => !isDraft(id));
   if (!ok.length) return { ok: [], failed: [] };
   ok.forEach(id => exits.set(id, gone ? 'gone' : 'back'));
-  const result = await setLater(ok, false);
+  const path = useData.getState().path;
+  const result = await setLater(path, ok, false);
   failExit(result);
   if (result.ok.length) {
     toast({
       type: 'success',
       title: result.ok.length === 1 ? `#${result.ok[0]} 已放回「未整理」` : `${result.ok.length} 条已放回「未整理」`,
-      action: { label: '撤销', fn: () => void setLater(result.ok, true).then(r => r.failed[0] && toastError(r.failed[0].error)) },
+      action: { label: '撤销', fn: () => void setLater(path, result.ok, true).then(r => r.failed[0] && toastError(r.failed[0].error)) },
     });
   }
   if (result.failed[0]) toastError(result.failed[0].error);
