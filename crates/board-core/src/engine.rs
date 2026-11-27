@@ -547,8 +547,19 @@ impl<'a> W<'a> {
                         if is_holder(&r) {
                             return self.read().card(board, id);
                         }
+                        // 可领取状态同时打开了锁定：里面别人持有的卡片不能靠再领一次抢走
+                        if r.holder.is_some() {
+                            return Err(BoardError::not_holder(id, r.holder.as_deref()));
+                        }
+                        // 可领取状态同时打开了终点：不能把卡从终点领走
+                        if flow.is_final(&r.col) {
+                            return Err(BoardError::new(
+                                ErrorCode::ForbiddenColumn,
+                                format!("#{id} 在终点状态「{}」，不能领取", flow.name(&r.col)),
+                            ));
+                        }
                         // 派发排队时卡片已经进了锁定状态（没有持有者）：只有这次派发自己能领，在那里原地领取
-                        if r.holder.is_none() && !flow.is_claim(&r.col) {
+                        if !flow.is_claim(&r.col) {
                             if let Some((_, host)) = self.queued_dispatch(b, id)? {
                                 if !self.dispatch_ok {
                                     return Err(BoardError::new(

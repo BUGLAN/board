@@ -280,6 +280,30 @@ fn restoring_a_done_card_does_not_complete_it_again() {
     assert_eq!((card.group, card.moved_at), (Group::None, Some(BASE + 2 * HOUR)), "恢复不改变里程碑分组");
 }
 
+#[test]
+fn deleted_status_key_does_not_turn_old_moves_into_completions() {
+    let mut s = store();
+    let h = Actor::human();
+    let id = new(&mut s, B, BASE, "旧状态里的");
+    let old = s.write(BASE + MIN, Origin::ui(None), |w| w.create_status(B, "测试中", None)).unwrap();
+    mv(&mut s, B, &h, BASE + 2 * MIN, id, &old.key);
+    exec(&mut s, B, &h, BASE + 3 * MIN, Cmd::Delete { id });
+    s.write(BASE + 4 * MIN, Origin::ui(None), |w| w.delete_status(B, &old.key)).unwrap();
+    let archive = s.write(BASE + 5 * MIN, Origin::ui(None), |w| w.create_status(B, "归档", None)).unwrap();
+    assert_eq!(archive.key, "s2");
+    s.write(BASE + 6 * MIN, Origin::ui(None), |w| {
+        w.update_status(B, &archive.key, StatusPatch { fin: Some(true), ..Default::default() })
+    })
+    .unwrap();
+    let restored = exec(&mut s, B, &h, BASE + 7 * MIN, Cmd::Restore { id });
+    assert_eq!(restored.card.column, "todo");
+
+    let now = BASE + HOUR;
+    let st = stats(&s, Scope::Board, Some(B), BASE, now, "UTC", now);
+    assert_eq!(st.cur.done, 0, "旧 s1 的流转不能因为新 s1 是终点就算成完成");
+    assert_eq!(st.series.iter().map(|b| b.done).sum::<i64>(), 0);
+}
+
 /// 验收 4：同一区间 UTC 与 Asia/Shanghai 的分桶整体错开 8 小时，时段热力图也错开
 #[test]
 fn buckets_follow_the_time_zone() {

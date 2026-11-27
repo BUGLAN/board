@@ -91,7 +91,7 @@ fn ac2_concurrent_claim_only_one_wins() {
         .collect();
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
-    assert!(results.iter().filter_map(|r| r.err()).all(|c| c == ErrorCode::NotInTodo), "{results:?}");
+    assert!(results.iter().filter_map(|r| r.err()).all(|c| c == ErrorCode::NotHolder), "{results:?}");
 }
 
 #[test]
@@ -1017,6 +1017,41 @@ fn claim_order_follows_flow() {
 }
 
 #[test]
+fn held_cards_in_claimable_locked_status_cannot_be_claimed_again() {
+    let mut s = store();
+    let test = ui(&mut s, |w| w.create_status(B, "测试中", None)).unwrap();
+    ui(&mut s, |w| w.update_status(B, &test.key, StatusPatch { lock: Some(true), ..Default::default() })).unwrap();
+    ui(&mut s, |w| w.update_edges(B, &[edge("doing", &test.key)], &[])).unwrap();
+    // 「进行中」同时可领取、锁定：已经有人持有的卡片不能被下一次领取抢走
+    ui(&mut s, |w| w.update_status(B, "doing", StatusPatch { claim: Some(true), ..Default::default() })).unwrap();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    let c = exec(&mut s, B, &alpha(), T0, claim(None)).unwrap().card;
+    assert_eq!((c.column.as_str(), c.holder.as_deref()), ("doing", Some("alpha")));
+
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, claim(Some(1)))), ErrorCode::NotHolder);
+    assert_eq!(code(exec(&mut s, B, &beta(), T0, claim(None))), ErrorCode::EmptyTodo);
+    let c = card(&s, B, 1);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("doing", Some("alpha")));
+}
+
+#[test]
+fn cards_in_claimable_final_status_cannot_be_claimed() {
+    let mut s = store();
+    let archive = ui(&mut s, |w| w.create_status(B, "归档", None)).unwrap();
+    ui(&mut s, |w| {
+        w.update_status(B, &archive.key, StatusPatch { claim: Some(true), fin: Some(true), ..Default::default() })
+    })
+    .unwrap();
+    ui(&mut s, |w| w.update_edges(B, &[edge(&archive.key, "doing")], &[])).unwrap();
+    exec(&mut s, B, &human(), T0, new("一")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(1, &archive.key)).unwrap();
+
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(1)))), ErrorCode::ForbiddenColumn);
+    assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(None))), ErrorCode::EmptyTodo);
+    assert_eq!(card(&s, B, 1).card.column, archive.key, "终点里的卡留在原处");
+}
+
+#[test]
 fn agent_moves_follow_edges() {
     let mut s = store();
     for t in ["a", "b", "c"] {
@@ -1128,6 +1163,35 @@ fn unlock_and_delete_status_release_cards() {
     // 没有连到锁定状态时不能领取
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(None))), ErrorCode::EmptyTodo);
     assert_eq!(code(exec(&mut s, B, &alpha(), T0, claim(Some(1)))), ErrorCode::ForbiddenColumn);
+}
+
+#[test]
+fn status_key_skips_deleted_keys_in_trash_and_moves() {
+    let mut s = store();
+    let old = ui(&mut s, |w| w.create_status(B, "测试中", None)).unwrap();
+    exec(&mut s, B, &human(), T0, new("旧状态里的")).unwrap();
+    exec(&mut s, B, &human(), T0, mv(1, &old.key)).unwrap();
+    exec(&mut s, B, &human(), T0 + MIN, Cmd::Delete { id: 1 }).unwrap();
+    ui(&mut s, |w| w.delete_status(B, &old.key)).unwrap();
+
+    let next = ui(&mut s, |w| w.create_status(B, "归档", None)).unwrap();
+    assert_eq!(next.key, "s2", "回收站和流转记录里的 s1 还在，不能再给新状态用");
+    let r = exec(&mut s, B, &human(), T0 + 2 * MIN, Cmd::Restore { id: 1 }).unwrap().card;
+    assert_eq!(r.column, "todo", "恢复时按原状态已删除处理，不能落进新状态");
+    assert!(card(&s, B, 1).activity.iter().any(|a| a.action == "restore" && a.text.contains("原来所在的状态已经删除")));
+}
+
+#[test]
+fn status_key_skips_deleted_keys_in_saved_layout() {
+    let mut s = store();
+    let old = ui(&mut s, |w| w.create_status(B, "测试中", None)).unwrap();
+    let mut saved = std::collections::BTreeMap::new();
+    saved.insert(old.key.clone(), Tile { x: 0, w: 3, y: 1.0 });
+    ui(&mut s, |w| w.save_flow_layout(B, &saved)).unwrap();
+    ui(&mut s, |w| w.delete_status(B, &old.key)).unwrap();
+
+    let next = ui(&mut s, |w| w.create_status(B, "归档", None)).unwrap();
+    assert_eq!(next.key, "s2", "已保存布局里的 s1 还在，不能再给新状态用");
 }
 
 #[test]

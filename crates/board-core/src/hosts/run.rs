@@ -214,7 +214,7 @@ impl<'a> W<'a> {
     }
 
     /// 可领取的卡片，按规则 1 的顺序（连到锁定状态的可领取状态按工作流顺序、状态内从上到下；错误节点、锁定、终点、
-    /// 「未整理」都不算），去掉有排队或在跑的派发的和 `skip` 里的；第二项是所在状态。
+    /// 「未整理」都不算，被持有的也不算），去掉有排队或在跑的派发的和 `skip` 里的；第二项是所在状态。
     /// 在跑的也要去掉（#428）：人强制释放后卡片已经回到可领取状态，旧派发的 agent 还没退出，这时再领就是两个 agent 做同一张，
     /// 自动领取会一轮接一轮地重派。等旧派发结束（停下、或机器掉线后被收掉）再领
     pub(super) fn claimable_order(&self, b: i64, flow: &Flow, skip: &[i64]) -> Result<Vec<(i64, String)>> {
@@ -222,8 +222,13 @@ impl<'a> W<'a> {
             self.collect("SELECT card FROM dispatches WHERE board = ?1 AND state IN ('queued', 'running')", [b], |r| r.get(0))?;
         taken.extend_from_slice(skip);
         let mut out = vec![];
-        for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
-            out.extend(self.col_ids(b, &s.key)?.into_iter().filter(|id| !taken.contains(id)).map(|id| (id, s.key.clone())));
+        for s in flow.0.iter().filter(|s| s.claim && !s.fin && flow.claim_target(&s.key).is_some()) {
+            let ids: Vec<i64> = self.collect(
+                "SELECT id FROM cards WHERE board = ?1 AND col = ?2 AND holder IS NULL AND deleted_at IS NULL ORDER BY pos, id",
+                params![b, s.key],
+                |r| r.get(0),
+            )?;
+            out.extend(ids.into_iter().filter(|id| !taken.contains(id)).map(|id| (id, s.key.clone())));
         }
         Ok(out)
     }

@@ -86,7 +86,7 @@ fn remote_concurrent_claim_only_one_wins() {
     let runs: Vec<Run> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     let ok = runs.iter().filter(|r| r.code == 0).count();
     assert_eq!(ok, 1, "{:?}", runs.iter().map(|r| &r.out).collect::<Vec<_>>());
-    assert!(runs.iter().filter(|r| r.code != 0).all(|r| r.error_code() == "NOT_IN_TODO"));
+    assert!(runs.iter().filter(|r| r.code != 0).all(|r| r.error_code() == "NOT_HOLDER"));
 }
 
 #[test]

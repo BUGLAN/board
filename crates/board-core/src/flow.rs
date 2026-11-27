@@ -66,11 +66,31 @@ impl<'a> W<'a> {
             .ok_or_else(|| BoardError::usage(format!("颜色必须取自色板：{}", STATUS_COLORS.join(" "))))
     }
 
+    /// 新状态的标识取这块白板历史上出现过的最大 sN 加一：删除状态后，回收站里的卡片、流转记录和已保存布局仍引用旧标识
+    fn next_status_key(&self, b: i64, flow: &Flow) -> Result<String> {
+        let mut keys: Vec<String> = flow.0.iter().map(|s| s.key.clone()).collect();
+        keys.extend(self.collect(
+            "SELECT from_key FROM moves WHERE board = ?1 AND from_key IS NOT NULL
+             UNION ALL SELECT to_key FROM moves WHERE board = ?1 AND to_key IS NOT NULL
+             UNION ALL SELECT col FROM cards WHERE board = ?1
+             UNION ALL SELECT del_col FROM cards WHERE board = ?1 AND del_col IS NOT NULL",
+            [b],
+            |r| r.get(0),
+        )?);
+        let saved: Option<String> =
+            self.tx.query_row("SELECT saved_layout FROM boards WHERE id = ?1", [b], |r| r.get(0))?;
+        if let Some(map) = saved.and_then(|j| serde_json::from_str::<BTreeMap<String, Tile>>(&j).ok()) {
+            keys.extend(map.into_keys());
+        }
+        let n = keys.iter().filter_map(|k| k.strip_prefix('s')?.parse::<i64>().ok()).max().unwrap_or(0) + 1;
+        Ok(format!("s{n}"))
+    }
+
     fn flow_status<'f>(flow: &'f Flow, key: &str) -> Result<&'f Status> {
         flow.get(key).ok_or_else(|| BoardError::usage(format!("没有状态「{key}」")))
     }
 
-    /// 新增状态：加在工作流最后，标识依次是 s1、s2…
+    /// 新增状态：加在工作流最后，标识依次是 s1、s2…（不复用历史上删除过的标识）
     pub fn create_status(&mut self, path: &str, name: &str, color: Option<&str>) -> Result<Status> {
         let b = self.resolve_exact(path)?;
         let flow = flow_of(self.tx, b.id)?;
@@ -80,8 +100,7 @@ impl<'a> W<'a> {
             Some(c) => Self::status_color(c)?,
             None => STATUS_COLORS[4 + custom % (STATUS_COLORS.len() - 4)].to_string(),
         };
-        let n = flow.0.iter().filter_map(|s| s.key.strip_prefix('s')?.parse::<i64>().ok()).max().unwrap_or(0) + 1;
-        let key = format!("s{n}");
+        let key = self.next_status_key(b.id, &flow)?;
         let sort: i64 = self.tx.query_row("SELECT COALESCE(MAX(sort), -1) + 1 FROM statuses WHERE board = ?1", [b.id], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO statuses (board, key, name, color, sort) VALUES (?1, ?2, ?3, ?4, ?5)",
