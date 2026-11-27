@@ -39,7 +39,7 @@ const server = vi.hoisted(() => ({
   }[],
   hosts: null as null | ((r: { hosts: []; dispatches: [] }) => void),
   /** 推送：boot() 之后由用例调用 */
-  push: null as null | ((m: { rev: number; events: BoardEvent[] }) => void),
+  push: null as null | ((m: { rev: number; events: BoardEvent[]; ran?: number[]; chats?: number[] }) => void),
   /** 推送的连接状态：boot() 之后由用例调用 */
   status: null as null | ((s: 'connecting' | 'live' | 'offline') => void),
   /** 各接口被调用的次数 */
@@ -796,6 +796,29 @@ describe('推送与刷新', () => {
     server.push!({ rev: server.ws.rev, events: [] });
     await settle();
     expect(server.n).toEqual({ workspace: 0, board: 0 });
+  });
+
+  it('一个推送监听抛错：控制台记下错误，其余监听照常收到', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runs: number[][] = [];
+    const chats: number[][] = [];
+    const stop = [
+      D.onRuns(() => {
+        throw new Error('boom');
+      }),
+      D.onRuns(v => runs.push(v)),
+      D.onChatRuns(v => chats.push(v)),
+    ];
+    try {
+      server.push!({ rev: server.ws.rev, events: [], ran: [7], chats: [8] });
+      await settle();
+      expect(runs).toEqual([[7]]);
+      expect(chats).toEqual([[8]]);
+      expect(error).toHaveBeenCalledWith('推送监听出错', expect.any(Error));
+    } finally {
+      stop.forEach(fn => fn());
+      error.mockRestore();
+    }
   });
 
   it('断开后重新连上：取一遍，补上断开期间的变化', async () => {

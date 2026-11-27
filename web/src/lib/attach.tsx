@@ -20,6 +20,13 @@ export function fileSize(n: number) {
   return `${(n / 1048576).toFixed(1)} MB`;
 }
 
+/** 把上传占位换成附件链接；失败（md 为空）时连同占位所在的换行一起去掉。
+    用回调当替换值：文件名、地址里的 `$'`、`$&`、`$$` 不会被当成 String.replace 的替换模式 */
+export function replaceMark(v: string, mark: string, md: string) {
+  if (md) return v.replace(mark, () => md);
+  return v.replace(`${mark}\n`, '').replace(`\n${mark}`, '').replace(mark, '');
+}
+
 /** 粘贴的截图常常叫 image.png 或没有扩展名：按类型补一个带时间的名字 */
 function named(f: File): File {
   const ext = IMAGE_EXT[f.type];
@@ -78,9 +85,7 @@ export function useAttach(o: Opts) {
 
   const replace = (mark: string, md: string) => {
     latest.current.setValue(v => {
-      if (md) return v.replace(mark, md);
-      // 失败：连同占位所在的换行一起去掉
-      return v.replace(`${mark}\n`, '').replace(`\n${mark}`, '').replace(mark, '');
+      return replaceMark(v, mark, md);
     });
     requestAnimationFrame(() => autosize(latest.current.textarea.current));
   };

@@ -4,6 +4,7 @@
    ========================================================================== */
 import { CtxMenu } from './overlays/CtxMenu';
 import { ConfirmDialog, FormModal } from './overlays/Dialogs';
+import { ErrorBoundary } from './ErrorBoundary';
 import { LabelManager, LabelPicker } from './overlays/Labels';
 import { Lightbox } from './overlays/Lightbox';
 import { MigrationGuard } from './overlays/MigrationGuard';
@@ -13,7 +14,7 @@ import { Toasts } from './overlays/Toasts';
 
 export function Overlays() {
   return (
-    <>
+    <ErrorBoundary>
       <MigrationGuard />
       <Palette />
       <FormModal />
@@ -24,6 +25,6 @@ export function Overlays() {
       <Lightbox />
       <TextViewer />
       <Toasts />
-    </>
+    </ErrorBoundary>
   );
 }

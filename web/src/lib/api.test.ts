@@ -1,6 +1,6 @@
 /* lib/api：超时、断线、2xx 但不是 JSON 的响应 */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from './api';
+import { api, connect } from './api';
 
 const respond = (body: string, status = 200) => vi.fn(async () => new Response(body, { status }));
 
@@ -58,5 +58,43 @@ describe('请求', () => {
       return c.signal;
     });
     await expect(api.cmd('p/a', { op: 'edit', id: 1, title: 'x' })).rejects.toMatchObject({ code: 'NETWORK', message: expect.stringContaining('超时') });
+  });
+
+  it('列文件夹单独用 25 秒超时：服务端最多等 board host 20 秒', async () => {
+    const seen: number[] = [];
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      seen.push(ms);
+      return new AbortController().signal;
+    });
+    vi.stubGlobal('fetch', respond('{"dirs":[]}'));
+    await api.hostLs('mbp', '~');
+    expect(seen[0]).toBeGreaterThanOrEqual(20000);
+  });
+});
+
+describe('推送', () => {
+  class Source {
+    static last: Source;
+    readyState = 1;
+    onopen: (() => void) | null = null;
+    onmessage: ((e: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() {
+      Source.last = this;
+    }
+    close() {
+      this.readyState = 2;
+    }
+  }
+
+  it('只吞掉 JSON 解析失败；正常推送交给 onMessage', () => {
+    vi.stubGlobal('EventSource', Source);
+    const onMessage = vi.fn();
+    const stop = connect(onMessage, () => {});
+    Source.last.onmessage!({ data: '{"rev":3,"events":[]}' });
+    expect(onMessage).toHaveBeenCalledWith({ rev: 3, events: [] });
+    Source.last.onmessage!({ data: '不是 JSON' });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    stop();
   });
 });

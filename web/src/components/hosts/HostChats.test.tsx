@@ -272,6 +272,28 @@ describe('手机上：列表 → 整屏聊天，放大 / 还原', () => {
     expect(document.querySelector('.hc-full')).toBeNull();
     expect(localStorage.getItem('board.chatFull.d')).toBe('0');
   });
+
+  it('浏览器禁用站点存储：对话页照常渲染，放大 / 还原仍可用', async () => {
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+    try {
+      const c = chat(1);
+      calls.views.set(1, view(c, []));
+      await render(host(), [c]);
+      expect(el.querySelector('.hc')).not.toBeNull();
+      expect(zoom().getAttribute('aria-label')).toBe('放大');
+      await act(async () => zoom().click());
+      expect(document.querySelector('.hc-full.in-drawer')).not.toBeNull();
+      expect(zoom().getAttribute('aria-label')).toBe('还原');
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
+  });
 });
 
 describe('新对话：在哪个目录里跑（#624）', () => {

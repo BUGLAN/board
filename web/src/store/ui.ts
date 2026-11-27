@@ -294,8 +294,14 @@ export const closePalette = () => set(s => ({ palette: { ...s.palette, open: fal
 export const openSwitcher = () => set({ switcher: true });
 export const closeSwitcher = () => set({ switcher: false });
 
+/** 已经打开、正等着的确认框；后来的排在后面，前一个 settle 之后才显示 */
+const confirmQueue: ConfirmReq[] = [];
+
 export function confirm(req: Omit<ConfirmReq, 'resolve'>): Promise<boolean> {
-  return new Promise(resolve => set({ confirm: { ...req, resolve } }));
+  return new Promise(resolve => {
+    confirmQueue.push({ ...req, resolve });
+    if (confirmQueue.length === 1) set({ confirm: confirmQueue[0] });
+  });
 }
 /** 带一个勾选项的确认框：返回点没点确认、勾没勾 */
 export async function confirmCheck(req: Omit<ConfirmReq, 'resolve' | 'check'> & { check: { label: string; why?: string } }) {
@@ -305,8 +311,10 @@ export async function confirmCheck(req: Omit<ConfirmReq, 'resolve' | 'check'> & 
 }
 export function settleConfirm(v: boolean) {
   const c = get().confirm;
-  set({ confirm: null });
-  c?.resolve(v);
+  if (!c) return;
+  c.resolve(v);
+  confirmQueue.shift();
+  set({ confirm: confirmQueue[0] ?? null });
 }
 
 export const openForm = (form: FormCfg) => set({ form });

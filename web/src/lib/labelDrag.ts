@@ -210,14 +210,28 @@ function onUp(e: PointerEvent) {
   if (id != null) add(id, label);
 }
 
+/** 把看得见的标签拖动顺序换算成项目全部标签的顺序：
+    在 shown 里挪到 to 之前，落进全部标签时插到落点那个看得见的标签之前；落在末尾时插到最后一个看得见的之后。
+    不改原数组；不该移动（位置没变、目标不在了）时返回 null */
+export function moveLabel(ids: number[], shown: number[], id: number, to: number): number[] | null {
+  const from = shown.indexOf(id);
+  if (from < 0 || to < 0 || to > shown.length || to === from || to === from + 1) return null;
+  const out = ids.filter(x => x !== id);
+  if (out.length !== ids.length - 1) return null;
+  const at = to < shown.length ? out.indexOf(shown[to]) : out.indexOf(shown[shown.length - 1]) + 1;
+  if (at < 0) return null;
+  out.splice(at, 0, id);
+  return out;
+}
+
 /** 在标签区里松手：当帧换位，其余胶囊从旧位置补间到新位置，被拖的胶囊从 ghost 的位置落进空位 */
 function drop(slot: Slot) {
   if (!st?.field || !st.item) return cleanup();
   const { field, item, project, label, ghost } = st;
-  const ids = items(field).map(el => Number(el.dataset.label));
-  const from = ids.indexOf(label.id);
-  ids.splice(from, 1);
-  ids.splice(slot.index > from ? slot.index - 1 : slot.index, 0, label.id);
+  const shown = items(field).map(el => Number(el.dataset.label));
+  const all = useData.getState().ws?.projects.find(p => p.key === project)?.labels.map(l => l.id) ?? [];
+  const ids = moveLabel(all, shown, label.id, slot.index);
+  if (!ids) return cleanup();
   const animate = !reduceMotion();
   const before = new Map(items(field).map(el => [el, el.getBoundingClientRect()]));
   const g = ghost?.getBoundingClientRect();

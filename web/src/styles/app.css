@@ -231,6 +231,8 @@
 
 /* 错误边界（components/ErrorBoundary.tsx）：渲染出错时代替整页白屏 */
 .crash { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); }
+/* 页面里的错误边界只盖住主内容区（.main），顶部、侧栏和其他 Tab 照常可用 */
+.crash.area { position: absolute; inset: 0; z-index: 1; }
 .crash-box { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: min(520px, 100%); }
 .crash-box b { font-size: 18px; font-weight: 600; }
 .crash-box p { margin: 0; color: var(--text-2); line-height: 1.6; }

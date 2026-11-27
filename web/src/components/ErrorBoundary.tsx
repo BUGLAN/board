@@ -27,7 +27,7 @@ export function crashReport(e: Error | null, stack: string): string {
   return [`原因：${String(e.message || e)}`, stack && `组件：\n${stack}`].filter(Boolean).join('\n\n');
 }
 
-export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
+export class ErrorBoundary extends Component<{ children: ReactNode; area?: boolean }, State> {
   state: State = { error: null, stack: '' };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
@@ -42,15 +42,15 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   render() {
     const { error, stack } = this.state;
     if (!error) return this.props.children;
-    return <CrashView error={error} stack={stack} />;
+    return <CrashView error={error} stack={stack} area={this.props.area} />;
   }
 }
 
-function CrashView({ error, stack }: { error: Error; stack: string }) {
+function CrashView({ error, stack, area }: { error: Error; stack: string; area?: boolean }) {
   const [copied, setCopied] = useState(false);
   const report = crashReport(error, stack);
   return (
-    <div className="crash" role="alert">
+    <div className={area ? 'crash area' : 'crash'} role="alert">
       <div className="crash-box">
         <b>界面出错了</b>
         <p>这一页没能画出来。已经保存的数据不受影响，重新加载一般就好了；反复出现时请把下面的原因和出错的组件发给维护者。</p>

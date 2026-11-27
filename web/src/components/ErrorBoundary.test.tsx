@@ -85,4 +85,11 @@ describe('ErrorBoundary（界面出错时不整页白屏）', () => {
     expect(text).toContain(stack);
     expect(button('已复制')).toBeTruthy();
   });
+
+  it('局部边界只替换出错的那一块，其他内容照常保留', () => {
+    act(() => root.render(<><h1>Board</h1><ErrorBoundary area><Boom /></ErrorBoundary><p>其他 Tab</p></>));
+    expect(host.querySelector('.crash')?.classList.contains('area')).toBe(true);
+    expect(host.querySelector('h1')?.textContent).toBe('Board');
+    expect(host.textContent).toContain('其他 Tab');
+  });
 });

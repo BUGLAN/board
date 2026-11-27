@@ -19,7 +19,7 @@ import { api } from '../../lib/api';
 import { hostsOf, since } from '../../lib/hosts';
 import { mergeEvents, groupEvents, runningTool } from '../../lib/runEvents';
 import type { Chat, ChatView, HostInfo, Workspace } from '../../lib/types';
-import { cx, hhmm } from '../../lib/util';
+import { cx, hhmm, pref } from '../../lib/util';
 import { chatPromptPatch, onChatRuns, optimistic, useData } from '../../store/data';
 import { toastError, useUI } from '../../store/ui';
 import { Tip } from '../bits';
@@ -57,20 +57,21 @@ function useCompact() {
 
 /** 「放大 / 还原」记在本机：手机和桌面各记各的，手机默认放大（#621 原型） */
 function useChatFull(mobile: boolean): [boolean, () => void] {
-  const key = mobile ? 'board.chatFull.m' : 'board.chatFull.d';
+  const key = mobile ? 'chatFull.m' : 'chatFull.d';
   const read = () => {
-    const v = localStorage.getItem(key);
-    return v == null ? mobile : v === '1';
+    const v = pref.get<boolean | number>(key, mobile);
+    return typeof v === 'boolean' ? v : v === 1;
   };
   const [full, set] = useState(read);
   useEffect(() => set(read()), [key]);
+  const toggle = () => {
+    const next = !full;
+    set(next);
+    pref.set(key, next ? 1 : 0);
+  };
   return [
     full,
-    () =>
-      set(f => {
-        localStorage.setItem(key, f ? '0' : '1');
-        return !f;
-      }),
+    toggle,
   ];
 }
 

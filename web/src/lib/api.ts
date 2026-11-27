@@ -58,6 +58,8 @@ export class ApiError extends Error {
 const TIMEOUT_MS = 15000;
 /** 上传附件（≤ 10 MB）给得长一些 */
 const UPLOAD_TIMEOUT_MS = 120000;
+/** 列文件夹要等 board host 回传，服务端最多等 20 秒 */
+const HOST_LS_TIMEOUT_MS = 25000;
 
 const timeout = (ms: number) => (typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined);
 const netError = (e: unknown, what: string) =>
@@ -65,7 +67,7 @@ const netError = (e: unknown, what: string) =>
     ? new ApiError('NETWORK', `${what}超时：网络可能断了，稍后再试`)
     : new ApiError('NETWORK', '连不上 Board 服务，请确认 board-server 正在运行');
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(method: string, path: string, body?: unknown, ms = TIMEOUT_MS): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
@@ -73,7 +75,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-board-client': CLIENT_ID },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: timeout(TIMEOUT_MS),
+      signal: timeout(ms),
     });
     return await parse<T>(res);
   } catch (e) {
@@ -301,7 +303,7 @@ export const api = {
   /** 照另一台机器配：dry 只列出要变哪些，确认后再不带 dry 调一次写进去 */
   copyHost: (name: string, from: string, dry: boolean) => req<HostCopy>('POST', `/api/hosts/${q(name)}/copy`, { from, dry }),
   /** 列那台机器上一个文件夹的子文件夹（服务端转给它的 board host，最多等 20 秒）；空路径是最上面一层 */
-  hostLs: (name: string, path: string) => req<DirList>('POST', `/api/hosts/${q(name)}/ls`, { path }),
+  hostLs: (name: string, path: string) => req<DirList>('POST', `/api/hosts/${q(name)}/ls`, { path }, HOST_LS_TIMEOUT_MS),
   /** 自检：整台机器，或只查一个 agent（PRD §10.12「自检」） */
   selfTest: (name: string, agent?: string) => req<HostInfo>('POST', `/api/hosts/${q(name)}/selftest`, agent ? { agent } : {}),
   /** 全部暂停 / 全部恢复：所有机器一起设成暂停接单（排队的派发照样排队） */
@@ -373,11 +375,14 @@ export function connect(onMessage: (m: PushMessage) => void, onStatus: (s: LiveS
       opened = true;
     };
     es.onmessage = e => {
+      let m: PushMessage;
       try {
-        onMessage(JSON.parse(e.data));
+        m = JSON.parse(e.data) as PushMessage;
       } catch {
         /* 忽略 */
+        return;
       }
+      onMessage(m);
     };
     es.onerror = () => {
       onStatus('offline');

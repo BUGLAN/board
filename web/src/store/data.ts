@@ -1678,6 +1678,17 @@ export function onRuns(fn: RunListener) {
   };
 }
 
+/** 一条推送可能有多个监听：一个出错只记下来，不拦住后面的（default/main#706） */
+function notify<T>(listeners: Set<(v: T) => void>, value: T) {
+  for (const fn of listeners) {
+    try {
+      fn(value);
+    } catch (e) {
+      console.error('推送监听出错', e);
+    }
+  }
+}
+
 /** 还有没确认的修改（保存中、发送中）时关窗口：浏览器弹离开确认，免得丢 */
 function beforeUnload(e: BeforeUnloadEvent) {
   const s = get();
@@ -1709,9 +1720,9 @@ export function boot() {
         wantWs = Math.max(wantWs, m.rev);
         done = pump();
       }
-      if (events.length) done.then(() => listeners.forEach(fn => fn(events)));
-      if (m.ran?.length) runListeners.forEach(fn => fn(m.ran!));
-      if (m.chats?.length) chatListeners.forEach(fn => fn(m.chats!));
+      if (events.length) done.then(() => notify(listeners, events));
+      if (m.ran?.length) notify(runListeners, m.ran);
+      if (m.chats?.length) notify(chatListeners, m.chats);
     },
     status => {
       set({ status });

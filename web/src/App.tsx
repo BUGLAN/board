@@ -8,6 +8,7 @@ import { CardDetail } from './components/CardDetail';
 import { Creator } from './components/Creator';
 import { DispatchDialog, HostModal, HostsPage } from './components/Hosts';
 import { CopyDialog } from './components/CopyDialog';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProjectSettings } from './components/ProjectSettings';
 import { SessionModal } from './components/hosts/Session';
 import { ReviewDesk } from './components/ReviewDesk';
@@ -378,7 +379,7 @@ function Page({ show, children }: { show: boolean; children: React.ReactNode }) 
         if (e.animationName === 'page-in') (e.target as HTMLElement).classList.remove('page-in');
       }}
     >
-      {children}
+      <ErrorBoundary area>{children}</ErrorBoundary>
     </div>
   );
 }

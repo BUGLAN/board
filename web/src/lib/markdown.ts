@@ -20,7 +20,8 @@ purify.addHook('uponSanitizeAttribute', (_node, data) => {
 const SANITIZE = {
   USE_PROFILES: { html: true }, // 不要 SVG、MathML
   ADD_ATTR: ['target', 'rel'],
-  FORBID_TAGS: ['style', 'link', 'meta', 'base', 'form', 'button', 'textarea', 'select', 'option', 'optgroup', 'fieldset', 'iframe', 'frame', 'object', 'embed', 'video', 'audio', 'source', 'track', 'picture'],
+  ALLOW_DATA_ATTR: false,
+  FORBID_TAGS: ['style', 'link', 'meta', 'base', 'form', 'button', 'textarea', 'select', 'option', 'optgroup', 'fieldset', 'iframe', 'frame', 'object', 'embed', 'video', 'audio', 'source', 'track', 'picture', 'dialog'],
   FORBID_ATTR: ['style', 'id', 'name', 'action', 'formaction', 'srcset', 'ping', 'background', 'poster'],
 };
 

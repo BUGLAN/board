@@ -67,6 +67,15 @@ describe('markdown 不能改写界面、拼表单、向外站发请求（卡片 
     expect(d.querySelector('svg, image, video, iframe')).toBeNull();
     expect(d.querySelector('img')!.hasAttribute('srcset')).toBe(false);
   });
+
+  it('用户写的 data-* 和 <dialog> 去掉；卡片链接、附件链接上装饰加的 data-* 仍在', () => {
+    const refs: Refs = { path: 'default/main', find: () => ({ title: '标题', status: '待办' }) };
+    const d = dom(markdown('<div data-flip="c12" data-card="fake">x</div>\n\n<dialog open>假弹窗</dialog>\n\n见 #7 [a.txt](/api/files/3/a.txt)', { refs }));
+    expect(d.querySelector('[data-flip], [data-card="fake"], dialog')).toBeNull();
+    const card = d.querySelector('a.xref')!;
+    expect([card.getAttribute('data-card'), card.getAttribute('data-tip')]).toEqual(['default/main#7', '#7 标题 · 待办']);
+    expect(d.querySelector('a.file-link')!.hasAttribute('data-text')).toBe(true);
+  });
 });
 
 describe('markdown 正常内容不受影响', () => {
