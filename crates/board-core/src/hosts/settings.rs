@@ -100,6 +100,8 @@ impl<'a> W<'a> {
         // 本机 `--dir` 启动的白板由启动参数决定，界面上改不了：提交里没带上时替它补回去；
         // 不配工作空间（路径留空）时一块都不留
         let fixed: Vec<HostDirOverride> = stored.iter().flat_map(|w| w.overrides.iter().cloned()).collect();
+        let (fixed, stale): (Vec<HostDirOverride>, Vec<HostDirOverride>) =
+            fixed.into_iter().partition(|o| self.override_exists(&o.board));
         if !next.path.is_empty() {
             for f in &fixed {
                 match next.overrides.iter().find(|o| o.board == f.board) {
@@ -111,6 +113,8 @@ impl<'a> W<'a> {
                 }
             }
         }
+        // 界面会把读到的覆盖原样带回来：已经删掉的项目、白板不算这次新提交的覆盖
+        next.overrides.retain(|o| !stale.iter().any(|f| f.board == o.board && f.path == o.path));
         for o in &next.overrides {
             if !crate::valid_dir_key(&o.board) {
                 return Err(BoardError::usage(format!("要写成 <项目> 或 <项目>/<白板>：{}", o.board)));
@@ -138,12 +142,10 @@ impl<'a> W<'a> {
         // 已经摆着的老白板（升级前逐块配的、board host 报过的）跟着换成工作空间派生的路径
         // 派生时带上项目目录（#488）；存的 next 不带
         let with_projects = HostWorkspace { projects: h.proj_dirs.clone(), ..next.clone() };
-        let dirs = derived_dirs(&derived_dirs(&h.dirs, stored.as_ref(), &h.os), Some(&with_projects), &h.os);
+        let mut dirs = derived_dirs(&derived_dirs(&h.dirs, stored.as_ref(), &h.os), Some(&with_projects), &h.os);
+        dirs.retain(|d| self.resolve(&d.board).is_ok());
         if same_workspace(stored.as_ref(), Some(&next)) && derived_dirs(&h.dirs, stored.as_ref(), &h.os).iter().map(|d| &d.board).eq(dirs.iter().map(|d| &d.board)) {
             return Ok(());
-        }
-        for d in &dirs {
-            self.resolve(&d.board)?;
         }
         self.tx.execute(
             "UPDATE hosts SET workspace = ?2, dirs = ?3, dirs_rev = ?4, dirs_at = ?5, dirs_by = ?6 WHERE id = ?1",
@@ -158,6 +160,14 @@ impl<'a> W<'a> {
         )?;
         self.touch_hosts();
         Ok(())
+    }
+
+    fn override_exists(&self, board: &str) -> bool {
+        if board.contains('/') {
+            self.resolve(board).is_ok()
+        } else {
+            self.project_exists(board).is_ok()
+        }
     }
 
     /// 旧界面提交的「白板与目录」：换成工作空间（同一台机器上几块白板取共同的上两级，对不上的留成 `--dir` 覆盖），

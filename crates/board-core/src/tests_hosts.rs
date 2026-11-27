@@ -324,6 +324,69 @@ fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
 }
 
 #[test]
+fn workspace_update_drops_deleted_boards_and_stale_overrides() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| {
+        w.create_project(
+            "OSS",
+            "oss",
+            "",
+            None,
+            None,
+            NewBoard { name: "主".into(), key: "x".into(), desc: String::new(), pos: None },
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.workspace = Some(HostWorkspace {
+        path: "/tmp".into(),
+        overrides: vec![HostDirOverride { board: "oss/x".into(), path: "/elsewhere/oss".into() }],
+        ..Default::default()
+    });
+    rep.dirs.push(HostDir { board: "oss/x".into(), path: "/elsewhere/oss".into(), fixed: true, ..Default::default() });
+    beat(&mut s, T0, &rep).unwrap();
+    assert!(host(&s, T0).dirs.iter().any(|d| d.board == "oss/x"));
+
+    s.write(T0 + S, Origin::ui(None), |w| w.delete_project("oss")).unwrap();
+    let stale = host(&s, T0 + S).workspace.unwrap().overrides;
+    assert_eq!(stale, vec![HostDirOverride { board: "oss/x".into(), path: "/elsewhere/oss".into() }]);
+
+    // 界面改工作空间时会把读到的覆盖原样带回来：已删项目的那条跳过，派生目录里的过期项也一起清掉
+    let h = s
+        .write(T0 + 2 * S, Origin::ui(None), |w| {
+            w.host_update(
+                "mbp",
+                &HostPatch {
+                    workspace: Some(HostWorkspace { path: "/tmp/new".into(), overrides: stale, ..Default::default() }),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert!(!h.dirs.iter().any(|d| d.board == "oss/x"), "{:?}", h.dirs.iter().map(|d| &d.board).collect::<Vec<_>>());
+    assert!(h.workspace.unwrap().overrides.is_empty());
+
+    // 人这次新加的覆盖指向不存在的项目：仍然报错
+    let e = s
+        .write(T0 + 3 * S, Origin::ui(None), |w| {
+            w.host_update(
+                "mbp",
+                &HostPatch {
+                    workspace: Some(HostWorkspace {
+                        path: "/tmp/new".into(),
+                        overrides: vec![HostDirOverride { board: "nope".into(), path: "/elsewhere/nope".into() }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotFound);
+}
+
+#[test]
 fn board_dir_uses_the_machines_separator() {
     // 一个项目一个目录：项目下的几块白板共用 `<工作空间>/<项目>`
     assert_eq!(hosts::board_dir("/repo", "default/main", "macOS 15.4").as_deref(), Some("/repo/default"));
