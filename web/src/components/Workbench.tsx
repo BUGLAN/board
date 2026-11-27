@@ -27,7 +27,7 @@ import { Skeleton } from './Skeleton';
 import { visibleInbox } from '../lib/split';
 import { SideSelect } from './BoardSelect';
 
-/** 每个标签的名称、提示和图标；顺序由 store/ui 的 TAB_ORDER 决定（和数字快捷键一致），设置固定在底部 */
+/** 每个标签的名称、提示和图标；顺序由 lib/tabs 的 TAB_ORDER 决定（和数字快捷键一致），设置固定在底部 */
 const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
   board: { label: '白板', tip: '白板', icon: <BoardIcon24 /> },
   inbox: { label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },

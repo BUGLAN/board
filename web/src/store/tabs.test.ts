@@ -1,7 +1,7 @@
 /* 活动栏顺序：界面（Workbench 的 TAB_META / TAB_ORDER）、数字快捷键（App）、命令面板（Palette 的 TAB_ITEM）
-   都从 store/ui 的 TAB_ORDER 来，设置固定在底部。这里守住顺序本身，免得改一处漏一处、按 2 却打开第 4 个标签 */
+   都从 lib/tabs 的 TAB_ORDER 来，设置固定在底部。这里守住顺序本身，免得改一处漏一处、按 2 却打开第 4 个标签 */
 import { describe, expect, it } from 'vitest';
-import { TAB_ORDER } from './ui';
+import { TAB_ORDER } from '../lib/tabs';
 
 describe('活动栏顺序', () => {
   it('白板 → 未整理 → 里程碑 → 大盘 → 项目 → 机器 → Agent → 设置', () => {

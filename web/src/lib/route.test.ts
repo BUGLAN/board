@@ -2,6 +2,7 @@
    /<项目>/<白板> 打开这块白板；/<项目>/<白板>/<ID> 再打开这张卡片的详情；其他 Tab 沿用 ?tab= */
 import { describe, expect, it } from 'vitest';
 import { parseRoute, routeUrl } from './route';
+import { TAB_ORDER } from './tabs';
 
 describe('parseRoute', () => {
   it('白板和卡片', () => {
@@ -14,6 +15,12 @@ describe('parseRoute', () => {
     expect(parseRoute('/default/main/3', '?tab=stats')).toEqual({ path: 'default/main', card: 3, tab: 'stats' });
     // Agent tab：刷新后还在
     expect(parseRoute('/default/main', '?tab=agent')).toEqual({ path: 'default/main', card: null, tab: 'agent' });
+  });
+
+  it('TAB_ORDER 里的每一项都认得它的 ?tab=', () => {
+    for (const tab of TAB_ORDER) {
+      expect(parseRoute('/default/main', `?tab=${tab}`)).toEqual({ path: 'default/main', card: null, tab });
+    }
   });
 
   it('根路径、认不出的 Tab：没有白板', () => {

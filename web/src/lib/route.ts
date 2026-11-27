@@ -7,7 +7,7 @@
    parseRoute 只认「项目/白板」都是标识、ID 是正整数的路径，认不出的路径当作没打开白板（用本地记住的）；
    这样服务端的单页应用回退（任何路径都返回 index.html）不会把奇怪的地址带进界面。
    ========================================================================== */
-import type { Tab } from '../store/ui';
+import { isTab, type Tab } from './tabs';
 
 /** 地址里的白板路径必须是「项目/白板」，两段都是标识 */
 const KEY = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -25,8 +25,7 @@ export interface Route {
 export function parseRoute(pathname: string, search = ''): Route {
   const parts = pathname.split('/').filter(Boolean);
   const tab = new URLSearchParams(search).get('tab');
-  const known: Tab[] = ['board', 'projects', 'inbox', 'milestones', 'stats', 'hosts', 'agent', 'settings'];
-  const found = known.includes(tab as Tab) ? (tab as Tab) : null;
+  const found = isTab(tab) ? tab : null;
   if (parts.length < 2 || parts.length > 3) return { path: null, card: null, tab: found };
   const [project, board, raw] = parts;
   if (!KEY.test(project) || !KEY.test(board)) return { path: null, card: null, tab: found };

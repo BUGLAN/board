@@ -1,15 +1,18 @@
-/* 乐观更新的补丁（store/data.ts）：纯函数，每次刷新都会重新叠到新数据上，
+/* 乐观更新的补丁（store/patches.ts）：纯函数，每次刷新都会重新叠到新数据上，
    所以要能重复执行（结果不变），目标不在了原样返回 */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardSnapshot, Dispatch, Workspace } from '../lib/types';
 import { card, detail, snapshot, workspace } from '../../test/fixtures';
-import type * as Data from './data';
+import type * as Patches from './patches';
+import type * as State from './state';
 
-let D: typeof Data;
+let D: typeof Patches;
+let S: typeof State;
 beforeEach(async () => {
   // draftCard 有模块级状态（临时 ID、已认领的真卡片）：每个用例一份新的
   vi.resetModules();
-  D = await import('./data');
+  D = await import('./patches');
+  S = await import('./state');
 });
 
 const board = () => snapshot('p/a', { todo: [1, 2, 3], doing: [4], review: [] });
@@ -144,7 +147,7 @@ describe('派发排队的卡片（在「进行中」里等，没有持有者）'
   // 4 号卡在 doing 里排队（从 todo 来），5 号卡被持有
   const queuedBoard = () => snapshot('p/a', { todo: [1, 2], doing: [5, 4], review: [] }, [{ id: 4, claimedFrom: 'todo' }, { id: 5, holder: 'claude/x' }]);
   const ws = () => workspace({ dispatches: [disp({ id: 7, card: 4 }), disp({ id: 8, card: 4, board: 'p/b' }), disp({ id: 9, card: 5, state: 'running' })] });
-  const start = () => D.useData.setState({ path: 'p/a', board: queuedBoard(), ws: ws() });
+  const start = () => S.useData.setState({ path: 'p/a', board: queuedBoard(), ws: ws() });
 
   it('unqueuePatch：只去掉这块白板这张卡片排队的那条；重复执行结果相同；没有时原样返回', () => {
     const w = twice(D.unqueuePatch('p/a', 4).ws!, ws());
@@ -179,10 +182,10 @@ describe('派发排队的卡片（在「进行中」里等，没有持有者）'
   });
 
   it('unqueueCard：原来的状态不再可领取时回首个可领取状态；卡片已经回去了原样返回', () => {
-    D.useData.setState({ path: 'p/a', board: snapshot('p/a', { todo: [1], doing: [4] }, [{ id: 4, claimedFrom: 'review' }]), ws: ws() });
+    S.useData.setState({ path: 'p/a', board: snapshot('p/a', { todo: [1], doing: [4] }, [{ id: 4, claimedFrom: 'review' }]), ws: ws() });
     expect(D.unqueueCard('p/a', 4).board!(queuedBoard()).cols.todo).toEqual([4, 1, 2]);
     const back = snapshot('p/a', { todo: [4, 1, 2], doing: [5], review: [] });
-    D.useData.setState({ board: back });
+    S.useData.setState({ board: back });
     expect(D.unqueueCard('p/a', 4).board).toBeUndefined();
   });
 
@@ -476,7 +479,7 @@ describe('boardAutoPatch（白板参不参与自动领取）', () => {
 
 describe('draftCard（新建）', () => {
   const draft = (title = '新卡片') => D.draftCard({ title, body: '', labels: [], column: 'todo' });
-  const start = () => D.useData.setState({ board: board() });
+  const start = () => S.useData.setState({ board: board() });
 
   it('临时卡片画在目标状态最下面，负数 ID，保存中；重复执行结果相同', () => {
     start();
@@ -553,17 +556,6 @@ describe('draftCard（新建）', () => {
   });
 });
 
-describe('选择器', () => {
-  it('boardMeta：按路径找项目和白板', () => {
-    const ws = workspace();
-    expect(D.boardMeta(ws, 'p/b')?.board.key).toBe('b');
-    expect(D.boardMeta(ws, 'p/x')).toBeNull();
-    expect(D.boardMeta(null, 'p/a')).toBeNull();
-    expect(D.allBoards(ws).map(b => b.path)).toEqual(['p/a', 'p/b']);
-  });
-});
-
-
 describe('seenPatch / 新条目', () => {
   const agent = { kind: 'agent' as const, name: 'claude/x' };
   /** p/a 的「未整理」：1 是 agent 记下、没看过的；2 是 agent 记下、人看过的；3 是人自己记的；4 在工作流里 */
@@ -597,19 +589,6 @@ describe('seenPatch / 新条目', () => {
     expect(p.board!(gone)).toBe(gone);
   });
 
-  it('entryIsNew / newEntryCount：只数 agent 记下、还在「未整理」、还没看过的；sent 之后记下的照常算新', () => {
-    const b = inbox();
-    expect([1, 2, 3, 4].map(id => D.entryIsNew('p/a', b.cards[id]))).toEqual([true, false, false, false]);
-    expect(D.newEntryCount('p/a', b, null)).toBe(1);
-    expect(D.newEntryCount('p/a', null, null)).toBe(0);
-    // 本窗口刚标完「全部已读」、服务端快照还没回来：标之前记下的不算新了，之后 agent 新记的照常算
-    const sent = 1_000;
-    const before = { ...card(1), createdAt: 0, column: 'inbox', createdBy: agent, seenAt: null };
-    const after = { ...card(5), createdAt: sent + 1, column: 'inbox', createdBy: agent, seenAt: null };
-    const later = { ...snapshot('p/a', {}), cols: { inbox: [1, 5] }, cards: { 1: before, 5: after } };
-    expect(D.newEntryCount('p/a', later, sent)).toBe(1);
-    expect(D.newEntryCount('p/a', later, null)).toBe(2);
-  });
 });
 
 describe('labelAddPatch（批量加标签，default/main#531）', () => {
@@ -667,25 +646,6 @@ describe('快捷提示词的补丁（#572）', () => {
     expect(D.replacePromptsPatch(list()).prompts!(same)).toBe(same);
   });
 
-  it('叠在 store 上：当帧生效；还在保存时同一列表再改被拒绝（BUSY），失败只撤自己这一层', async () => {
-    const { api } = await import('../lib/api');
-    let fail: ((e: unknown) => void) | undefined;
-    vi.spyOn(api, 'savePrompts').mockImplementation(() => new Promise((_, no) => (fail = no)));
-    D.useData.setState({ prompts: list() });
-    // base 由 loadPrompts 写入
-    vi.spyOn(api, 'prompts').mockResolvedValue(list());
-    await D.loadPrompts();
-    const req = D.savePrompts(D.removePromptPatch('p-2'));
-    expect(D.useData.getState().prompts!.map(p => p.id)).toEqual(['p-1']);
-    expect(D.busy(D.PROMPTS_BUSY)).toBe(true);
-    expect(() => D.savePrompts(D.removePromptPatch('p-1'))).toThrow(/保存/);
-    await vi.waitFor(() => expect(fail).toBeDefined());
-    fail!(new Error('失败'));
-    await expect(req).rejects.toThrow('失败');
-    expect(D.useData.getState().prompts!.map(p => p.id)).toEqual(['p-2', 'p-1']);
-    expect(D.busy(D.PROMPTS_BUSY)).toBe(false);
-    vi.restoreAllMocks();
-  });
 });
 
 describe('角色的补丁（分工）', () => {

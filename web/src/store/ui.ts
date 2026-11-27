@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import type { ApiError } from '../lib/api';
 import { syncUrl } from '../lib/route';
+import { isTab, TAB_ORDER, type Tab } from '../lib/tabs';
 import type { ColumnKey, Dispatch, Label } from '../lib/types';
 import { pref } from '../lib/util';
 
@@ -12,7 +13,7 @@ export interface ImageRef {
   src: string;
   alt: string;
 }
-export type Tab = 'board' | 'projects' | 'inbox' | 'milestones' | 'stats' | 'hosts' | 'agent' | 'settings';
+export { TAB_ORDER, isTab, type Tab };
 
 export interface Toast {
   id: number;
@@ -179,9 +180,6 @@ interface UIState {
   boardSheet: boolean;
 }
 
-/** 活动栏从上到下的顺序，也是数字快捷键 ⌘/Ctrl 1~8 的顺序（设置固定在活动栏底部） */
-export const TAB_ORDER: Tab[] = ['board', 'inbox', 'milestones', 'stats', 'projects', 'hosts', 'agent', 'settings'];
-export const isTab = (t: unknown): t is Tab => TAB_ORDER.includes(t as Tab);
 const initialTab = (): Tab => {
   const q = new URLSearchParams(location.search).get('tab');
   if (isTab(q)) return q;
