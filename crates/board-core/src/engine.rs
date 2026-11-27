@@ -11,6 +11,7 @@ use crate::store::{R, W};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 
 /// 对一张卡片的操作。界面通过 HTTP 发送同样的 JSON（`{"op": "move", ...}`）
 #[derive(Debug, Clone, Deserialize)]
@@ -239,7 +240,7 @@ struct Row {
     body: String,
 }
 
-/// 回收站里一张卡片删除前所在的状态和在状态里的位置，以及删除前领取它的那个可领取状态
+/// 回收站里一张卡片删除前所在的状态和在状态里的名次，以及删除前领取它的那个可领取状态
 /// （只有删掉时还被持有的卡片才有；恢复时据此回到「当初领取它的可领取状态」）
 struct TrashMeta {
     del_col: Option<String>,
@@ -259,7 +260,7 @@ impl TrashCard {
 impl R<'_> {
     /// 回收站里的一张卡片的详情（不在回收站里时为 None）
     pub fn trash_of(&self, board: &BoardRef, id: i64) -> Result<Option<CardDetail>> {
-        Ok(self.trash(board)?.into_iter().find(|t| t.card.id == id).map(TrashCard::into_detail))
+        Ok(self.trash_one(board, id)?.map(TrashCard::into_detail))
     }
 }
 
@@ -767,6 +768,10 @@ impl<'a> W<'a> {
                         &format!("删除了卡片，{who} 的领取已释放{}", took(run)),
                     )?;
                 }
+                let del_pos = {
+                    let col = detail.card.column.clone();
+                    self.rank(b, &col, id)?.unwrap_or(0) as i64
+                };
                 self.tx.execute(
                     "UPDATE cards SET deleted_at = ?1, deleted_by_kind = ?2, deleted_by_name = ?3, del_col = ?4, del_pos = ?5,
                             del_from = ?6, del_held = ?7
@@ -776,7 +781,7 @@ impl<'a> W<'a> {
                         actor.kind.as_str(),
                         actor.name,
                         detail.card.column,
-                        self.row_pos(b, id)?,
+                        del_pos,
                         from,
                         holder.is_some() as i64,
                         b,
@@ -821,11 +826,11 @@ impl<'a> W<'a> {
                 self.tx.execute(
                     "UPDATE cards SET deleted_at = NULL, deleted_by_kind = NULL, deleted_by_name = NULL, del_col = NULL, del_pos = NULL,
                             del_from = NULL, del_held = NULL,
-                            holder = NULL, claimed_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL, moved_at = ?1
-                     WHERE board = ?2 AND id = ?3",
-                    params![self.now, b, id],
+                            holder = NULL, claimed_at = NULL, beat_at = NULL, final_at = NULL, claimed_from = NULL
+                     WHERE board = ?1 AND id = ?2",
+                    params![b, id],
                 )?;
-                self.place(b, id, None, &target, at)?;
+                self.place(b, id, Some(&saved), &target, at)?;
                 self.changed = true;
                 let text = if target == saved {
                     format!("从回收站恢复，放回「{}」", flow.name(&target))
@@ -1108,6 +1113,22 @@ impl<'a> W<'a> {
             return Err(BoardError::usage(format!("一次最多对 {BATCH_MAX} 张卡片执行批量操作，这次选了 {} 张", ids.len())));
         }
 
+        // 批量删除时一张张执行，后一张的名次会因前一张已进回收站而塌缩；先按批次开始时的位置记下来，
+        // 删除成功后再写回，恢复整批时不改变它们之间的顺序
+        let delete_pos: HashMap<i64, i64> = if matches!(op, CardBatchOp::Delete) {
+            let mut pos = HashMap::new();
+            for id in &ids {
+                if let Ok(row) = self.row(board.id, *id) {
+                    if let Some(rank) = self.rank(board.id, &row.col, *id)? {
+                        pos.insert(*id, rank as i64);
+                    }
+                }
+            }
+            pos
+        } else {
+            HashMap::new()
+        };
+
         let mut out = CardBatch::default();
         for id in ids {
             let cmd = match op {
@@ -1133,6 +1154,12 @@ impl<'a> W<'a> {
             let config_by = self.config_by.clone();
             match self.exec(board, actor, cmd) {
                 Ok(_) => {
+                    if let Some(pos) = delete_pos.get(&id) {
+                        self.tx.execute(
+                            "UPDATE cards SET del_pos = ?1 WHERE board = ?2 AND id = ?3 AND deleted_at IS NOT NULL",
+                            params![pos, board.id, id],
+                        )?;
+                    }
                     self.tx.execute_batch("RELEASE card_batch_item")?;
                     out.ok.push(id);
                 }
@@ -1288,11 +1315,6 @@ impl<'a> W<'a> {
         Ok(self.tx.query_row("SELECT holder FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?)
     }
 
-    /// 卡片在所属状态里的位置（pos）；不在回收站里时才能取
-    fn row_pos(&self, b: i64, id: i64) -> Result<i64> {
-        Ok(self.tx.query_row("SELECT pos FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?)
-    }
-
     /// 回收站里这张卡片删除前在哪个状态、排第几位、领取它的那个可领取状态（不在回收站里时为 None）
     fn trash_row(&self, b: i64, id: i64) -> Result<Option<TrashMeta>> {
         Ok(self
@@ -1361,7 +1383,7 @@ impl<'a> W<'a> {
                 None => None,
             };
             let (n, max): (i64, Option<i64>) = self.tx.query_row(
-                "SELECT COUNT(*), MAX(pos) FROM cards WHERE board = ?1 AND col = ?2 AND id != ?3",
+                "SELECT COUNT(*), MAX(pos) FROM cards WHERE board = ?1 AND col = ?2 AND id != ?3 AND deleted_at IS NULL",
                 params![b, to, id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;

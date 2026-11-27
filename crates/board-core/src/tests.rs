@@ -2556,6 +2556,51 @@ fn trash_restore_from_inbox_goes_back_to_inbox() {
 }
 
 #[test]
+fn trash_restore_uses_live_rank_when_the_column_has_a_gap() {
+    let mut s = store();
+    for title in ["一", "二", "三"] {
+        exec(&mut s, B, &human(), T0, new(title)).unwrap();
+    }
+    // 领取时只改这一张的 pos，待办里留下空位：按 pos 看 #2 是第 1 位，按名次看是第 0 位
+    exec(&mut s, B, &alpha(), T0, claim(Some(1))).unwrap();
+    assert_eq!(snapshot(&s, B, T0).cols["todo"], vec![2, 3]);
+
+    exec(&mut s, B, &human(), T0 + SEC, Cmd::Delete { id: 2 }).unwrap();
+    let t = s.read(|r| r.trash(&r.resolve(B).unwrap())).unwrap();
+    assert_eq!(t[0].pos, 0, "删除时存下的是实时名次，不是原始 pos");
+
+    exec(&mut s, B, &human(), T0 + 2 * SEC, Cmd::Restore { id: 2 }).unwrap();
+    assert_eq!(snapshot(&s, B, T0 + 2 * SEC).cols["todo"], vec![2, 3], "恢复到原来这一列的名次");
+}
+
+#[test]
+fn trash_cards_do_not_count_for_same_column_bottom_move() {
+    let mut s = store();
+    for title in ["一", "二", "三"] {
+        exec(&mut s, B, &human(), T0, new(title)).unwrap();
+    }
+    exec(&mut s, B, &human(), T0, Cmd::Delete { id: 3 }).unwrap();
+
+    // #2 本来就在活卡片里的最后一位；回收站里的 #3 不能把它算成第 3 位
+    exec(&mut s, B, &human(), T0 + SEC, Cmd::Move {
+        id: 2,
+        column: "todo".into(),
+        top: false,
+        index: None,
+        order: None,
+        before: None,
+        after: None,
+    })
+    .unwrap();
+    assert_eq!(snapshot(&s, B, T0 + SEC).cols["todo"], vec![1, 2]);
+    let reorders: i64 = s
+        .conn()
+        .query_row("SELECT COUNT(*) FROM activity WHERE card = 2 AND action = 'reorder'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(reorders, 0, "顺序没变，不记调整顺序的动态");
+}
+
+#[test]
 fn trash_restore_of_held_card_goes_back_to_claimed_from() {
     // 删除会释放领取并清空 claimed_from：恢复要回到「当初领取它的可领取状态」，不能一律回首个可领取状态
     let mut s = store();

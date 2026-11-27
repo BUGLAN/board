@@ -2,7 +2,7 @@
 //! 待复盘最久的卡片、领取明细。白板说明和附件相关的用例在 `tests.rs`。
 
 use crate::hosts::EndHow;
-use crate::releases::{ReleaseCommit, ReleaseSync};
+use crate::releases::{Group, ReleaseCommit, ReleaseSync};
 use crate::stats::{Progress, Scope, Stats, StatsQuery};
 use crate::*;
 
@@ -250,6 +250,34 @@ fn lead_time_quantiles_and_first_pass() {
     assert_eq!(all.bucket, "day");
     let life = all.life.unwrap();
     assert_eq!((life.cards, life.finals, life.reworks, life.agents), (4, 4, 1, 4));
+}
+
+#[test]
+fn restoring_a_done_card_does_not_complete_it_again() {
+    let mut s = store();
+    let h = Actor::human();
+    let id = new(&mut s, B, BASE, "完成过的");
+    mv(&mut s, B, &h, BASE + 2 * HOUR, id, "done");
+    sync_version(&mut s, BASE + 3 * HOUR, "v0.1.0", &[]);
+    let before = s.read(|r| r.milestones("default")).unwrap();
+    let card = before.cards.iter().find(|c| c.id == id).unwrap();
+    assert_eq!((card.group, card.moved_at), (Group::None, Some(BASE + 2 * HOUR)));
+
+    exec(&mut s, B, &h, BASE + DAY, Cmd::Delete { id });
+    exec(&mut s, B, &h, BASE + 2 * DAY, Cmd::Restore { id });
+
+    let now = BASE + 3 * DAY;
+    let st = stats(&s, Scope::Board, Some(B), BASE, now, "UTC", now);
+    assert_eq!(st.cur.done, 1);
+    assert_eq!(st.cur.lead_p50, Some(2 * HOUR), "交付周期仍从新建算到第一次完成");
+    assert_eq!(
+        st.series.iter().filter(|b| b.done > 0).map(|b| (b.t, b.done)).collect::<Vec<_>>(),
+        vec![(BASE + 2 * HOUR, 1)],
+        "只在完成的那一桶算一次，不由恢复再算一次"
+    );
+    let after = s.read(|r| r.milestones("default")).unwrap();
+    let card = after.cards.iter().find(|c| c.id == id).unwrap();
+    assert_eq!((card.group, card.moved_at), (Group::None, Some(BASE + 2 * HOUR)), "恢复不改变里程碑分组");
 }
 
 /// 验收 4：同一区间 UTC 与 Asia/Shanghai 的分桶整体错开 8 小时，时段热力图也错开

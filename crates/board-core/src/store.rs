@@ -991,21 +991,15 @@ impl<'a> R<'a> {
     pub fn trash(&self, board: &BoardRef) -> Result<Vec<TrashCard>> {
         // 「删除前在哪个状态」「谁删的」都在 cards 上，和卡片的其余字段一起读出来
         cards_from(self.conn, "AND c.board = ?1 AND c.deleted_at IS NOT NULL AND ?2 IS NULL", params![board.id, None::<i64>], &[])
-            .map(|v| {
-                v.into_iter()
-                    .map(|(card, row)| {
-                        let deleted_at = row.deleted_at.unwrap_or(card.created_at);
-                        TrashCard {
-                            card,
-                            deleted_at,
-                            deleted_by: row.deleted_by,
-                            col: row.del_col.unwrap_or_default(),
-                            pos: row.del_pos.unwrap_or(0),
-                            held_from: row.del_from,
-                        }
-                    })
-                    .collect()
-            })
+            .map(|v| v.into_iter().map(to_trash_card).collect())
+    }
+
+    /// 回收站里的这一张卡片（只读这一张，不在回收站里时为 None）
+    pub(crate) fn trash_one(&self, board: &BoardRef, id: i64) -> Result<Option<TrashCard>> {
+        Ok(cards_from(self.conn, "AND c.board = ?1 AND c.id = ?2 AND c.deleted_at IS NOT NULL", params![board.id, id], &[])?
+            .into_iter()
+            .next()
+            .map(to_trash_card))
     }
 
     /// 这张卡片在不在回收站里（给卡片命令用：在回收站里的卡片不能编辑、移动、加标签、评论，报 IN_TRASH）
@@ -1357,6 +1351,18 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
         Ok((card, row))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn to_trash_card((card, row): (Card, TrashRow)) -> TrashCard {
+    let deleted_at = row.deleted_at.unwrap_or(card.created_at);
+    TrashCard {
+        card,
+        deleted_at,
+        deleted_by: row.deleted_by,
+        col: row.del_col.unwrap_or_default(),
+        pos: row.del_pos.unwrap_or(0),
+        held_from: row.del_from,
+    }
 }
 
 fn events_query(conn: &Connection, tail: &str, p: impl rusqlite::Params) -> Result<Vec<Event>> {

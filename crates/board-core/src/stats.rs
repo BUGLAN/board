@@ -499,7 +499,12 @@ struct CardD {
 impl CardD {
     fn derive(&mut self, b: &BoardD) {
         let r = &b.roles;
-        self.done_at = self.moves.iter().filter(|m| Roles::is(&r.fin, m.to.as_deref())).map(|m| m.at).collect();
+        self.done_at = self
+            .moves
+            .iter()
+            .filter(|m| m.kind != "restore" && Roles::is(&r.fin, m.to.as_deref()))
+            .map(|m| m.at)
+            .collect();
         let claims: Vec<i64> = self.moves.iter().filter(|m| m.kind == "claim").map(|m| m.at).collect();
         self.first_claim = claims.iter().copied().chain(self.runs.iter().map(|x| x.start)).min();
         self.rework_at = self
