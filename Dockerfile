@@ -18,7 +18,10 @@ RUN npm --prefix web run build
 # ---- 服务端 ----
 FROM rust:1.91-bookworm AS server
 WORKDIR /src
+ARG BOARD_COMMIT
+ENV BOARD_COMMIT=${BOARD_COMMIT}
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo .cargo
 COPY crates crates
 # 服务端把安装脚本（/install.sh、/install.ps1）和 skills 库里固定的 board-skills 打包进来（.dockerignore 去掉了 bin/）
 COPY scripts/install.sh scripts/install.ps1 scripts/

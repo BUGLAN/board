@@ -3,7 +3,8 @@
 # 服务端在 <服务端>/install.ps1 提供这个文件，下面三个 @…@ 由服务端换成它自己的版本号、地址和发版附件的地址：
 #
 #   irm <服务端>/install.ps1 | iex
-#   & ([scriptblock]::Create((irm '<服务端>/install.ps1'))) -Token <令牌> -Name <机器名> -Workspace '<工作空间>' [-Dir '<项目>/<白板>=<路径>'] [-Service]
+#   & ([scriptblock]::Create((irm '<服务端>/install.ps1'))) -Token <令牌> -Name <机器名> -Workspace '<工作空间>' [-Dir '<项目>=<路径>'] [-Service]
+#   & ([scriptblock]::Create((irm '<服务端>/install.ps1'))) -Help
 #
 # 依次做：
 #   1. 下载发版附件里的 board-windows-x64.zip 和校验文件 board-sha256.txt，SHA-256 对不上就中止（不动现有的 board）
@@ -17,7 +18,8 @@ param(
   [string]$Name = '',
   [string]$Workspace = '',
   [string[]]$Dir = @(),
-  [switch]$Service
+  [switch]$Service,
+  [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -25,6 +27,30 @@ $ProgressPreference = 'SilentlyContinue'
 $BoardVersion = '@BOARD_VERSION@'
 $BoardServer = '@BOARD_SERVER@'
 $BoardDownload = if ($env:BOARD_DOWNLOAD) { $env:BOARD_DOWNLOAD } else { '@BOARD_DOWNLOAD@' }
+
+if ($Help) {
+  $helpText = @'
+Board 命令行安装脚本（Windows）
+
+用法：
+  irm <服务端>/install.ps1 | iex
+  & ([scriptblock]::Create((irm '<服务端>/install.ps1'))) [选项]
+
+选项：
+  -Token <令牌>       登录服务端（board login）
+  -Name <机器名>      装好后运行 board host 的机器名
+  -Workspace <工作空间>
+                      常驻接任务的工作空间；每个项目的目录是 <工作空间>/<项目>
+  -Dir <项目>=<路径>  单独指定某个项目的目录，可以重复
+  -Service            把 board host 装成开机自动运行
+  -Help               显示这份帮助
+
+不带参数只安装 board；安装目录默认 %LOCALAPPDATA%\Board\bin，可用 BOARD_INSTALL_DIR 修改。
+发版附件默认从 <服务端> 对应的 GitHub Releases 下载，可用 BOARD_DOWNLOAD 换成镜像或本机目录。
+'@
+  Write-Host $helpText
+  return
+}
 
 function Fail([string]$msg) {
   Write-Host "✗ $msg" -ForegroundColor Red

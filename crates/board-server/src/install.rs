@@ -78,12 +78,10 @@ pub async fn ps1(State(s): State<AppState>, h: HeaderMap) -> Response {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    // 下面两个用例真的跑一遍 install.sh（需要 sh）
+    use std::process::Command;
+    // 下面几个用例真的跑一遍 install.sh（需要 sh）
     #[cfg(unix)]
-    use std::process::Command;
-    // Windows 上真的跑一遍 install.ps1（需要 Windows PowerShell）
-    #[cfg(windows)]
-    use std::process::Command;
+    use std::process::Stdio;
 
     #[test]
     fn placeholders_are_filled_and_unsafe_values_refused() {
@@ -133,6 +131,113 @@ mod tests {
         let out = Command::new("sh").arg(&f).output().unwrap();
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("没有经过服务端"));
+    }
+
+    #[test]
+    fn shell_scripts_checkout_as_lf() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let out = Command::new("git").arg("-C").arg(&root).args(["ls-files", "--eol", "*.sh"]).output().unwrap();
+        assert!(out.status.success(), "git ls-files --eol 失败：{}", String::from_utf8_lossy(&out.stderr));
+        let output = String::from_utf8_lossy(&out.stdout);
+        assert!(!output.is_empty(), "没查到 shell 脚本");
+        for line in output.lines() {
+            assert!(line.contains("attr/text eol=lf"), "shell 脚本没有按 LF 检出：{line}");
+        }
+    }
+
+    /// `curl ... | sh -s -- --help` 时脚本从标准输入运行，帮助文本不能再从 `$0` 读。
+    #[cfg(unix)]
+    #[test]
+    fn install_sh_help_works_from_stdin() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("install.sh");
+        std::fs::write(&f, SH).unwrap();
+        let out = Command::new("sh")
+            .args(["-s", "--", "--help"])
+            .stdin(Stdio::from(std::fs::File::open(&f).unwrap()))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+        assert!(text.contains("--dir <项目>=<路径>"), "{text}");
+        assert!(text.contains("每个项目的目录是 <工作空间>/<项目>"), "{text}");
+        assert!(!text.contains("<项目>/<白板>="), "{text}");
+    }
+
+    #[cfg(unix)]
+    fn host_platform() -> &'static str {
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => "darwin-arm64",
+            ("macos", _) => "darwin-x64",
+            ("linux", "aarch64") => "linux-arm64",
+            ("linux", _) => "linux-x64",
+            (os, arch) => unreachable!("install.sh 只支持 darwin、linux：{os} {arch}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn sha256(path: &std::path::Path) -> String {
+        let out = Command::new("sh")
+            .args(["-c", "sha256sum \"$1\" 2>/dev/null || shasum -a 256 \"$1\"", "sh"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "算 SHA-256 失败：{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap().to_lowercase()
+    }
+
+    /// 在 noexec 的临时目录里直接运行下载的 board 会失败，所以版本核对要在安装目录里的临时文件上做。
+    #[cfg(unix)]
+    #[test]
+    fn install_sh_verifies_binary_in_install_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = tempfile::tempdir().unwrap();
+        let assets = d.path().join("assets");
+        let bin = d.path().join("bin");
+        let unpacked = d.path().join("unpacked");
+        let log = d.path().join("calls.log");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::create_dir_all(&unpacked).unwrap();
+
+        let board = unpacked.join("board");
+        std::fs::write(&board, "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$BOARD_TEST_LOG\"\nprintf 'board 9.9.9\\n'\n").unwrap();
+        std::fs::set_permissions(&board, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let platform = host_platform();
+        let archive = format!("board-{platform}.tar.gz");
+        let status = Command::new("tar")
+            .current_dir(&unpacked)
+            .args(["-czf"])
+            .arg(assets.join(&archive))
+            .arg("board")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(assets.join("board-sha256.txt"), format!("{}  {archive}\n", sha256(&assets.join(&archive)))).unwrap();
+
+        let f = d.path().join("install.sh");
+        std::fs::write(&f, render(SH, "9.9.9", "http://127.0.0.1:1", "unused").unwrap()).unwrap();
+        let out = Command::new("sh")
+            .arg(&f)
+            .env("BOARD_DOWNLOAD", &assets)
+            .env("BOARD_INSTALL_DIR", &bin)
+            .env("BOARD_TEST_LOG", &log)
+            .env("HOME", d.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let calls: Vec<_> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_string).collect();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let staged = std::path::Path::new(&calls[0]);
+        assert_eq!(staged.parent(), Some(bin.as_path()), "第一次 --version 没有在安装目录里执行：{calls:?}");
+        assert!(staged.file_name().unwrap().to_string_lossy().starts_with(".board.new."), "{calls:?}");
+        assert_eq!(std::path::Path::new(&calls[1]), bin.join("board"), "{calls:?}");
     }
 
     /// 脚本里后面紧跟非 ASCII 字符的 `$VAR`：(行号, 变量名)
@@ -216,13 +321,7 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("board"), "old").unwrap();
         // 平台名要和本机一致：脚本按 uname 找发版附件
-        let plat = match (std::env::consts::OS, std::env::consts::ARCH) {
-            ("macos", "aarch64") => "darwin-arm64",
-            ("macos", _) => "darwin-x64",
-            ("linux", "aarch64") => "linux-arm64",
-            ("linux", _) => "linux-x64",
-            (os, arch) => unreachable!("install.sh 只支持 darwin、linux：{os} {arch}"),
-        };
+        let plat = host_platform();
         let archive = format!("board-{plat}.tar.gz");
         std::fs::write(assets.join(&archive), "not really a tarball").unwrap();
         std::fs::write(assets.join("board-sha256.txt"), format!("{}  {archive}\n", "0".repeat(64))).unwrap();

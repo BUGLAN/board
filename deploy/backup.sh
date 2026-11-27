@@ -1,8 +1,9 @@
 #!/bin/sh
-# 在线备份 Board 数据库，保留最近 14 天。在 docker-compose.yml 所在目录的 deploy/ 下运行。
-# 宿主机 crontab（每天 4:00）：
-#   0 4 * * * <部署目录>/deploy/backup.sh >> /var/log/board-backup.log 2>&1
-# 备份文件在宿主机的 data/backups/ 下。
+# 在线备份 Board 数据库，保留最近 14 天。放在部署目录的 deploy/ 下运行。
+# 自动识别两种部署方式：
+#   - launchd 直接运行：部署目录根部有 bin/board-server
+#   - Docker：在 docker-compose.yml 所在目录运行
+# 每天 4:00 的 crontab 见 docs/deploy.md；备份文件在 data/backups/ 下。
 # 可选异地同步：在 .env 里配置 BOARD_BACKUP_REMOTE 后，每次备份完把新备份和附件同步过去：
 #   - user@host:/path/to/backup  用 rsync（需要 SSH 免密和 rsync）
 #   - /mnt/backup/board          本地目录（挂载的移动硬盘、NFS 等），用 cp
@@ -23,13 +24,19 @@ fi
 
 name="board-$(date +%Y%m%d-%H%M%S).db"
 
-# 容器在跑时照旧用 exec；容器不在跑（崩溃循环、已经停了）时用一次性容器做同样的备份，
-# 否则线上已经坏掉的时候，部署会卡在备份这一步，修复版本推不上去。
-if [ "$(docker inspect -f '{{.State.Running}}' board 2>/dev/null || echo false)" = "true" ]; then
+# launchd 直接部署：用服务器目录里正在运行的二进制。先写相对路径，备份命令会按部署目录解析。
+if [ -x bin/board-server ]; then
+    ./bin/board-server --db data/board.db backup "data/backups/$name" || fail "备份数据库失败"
+    [ -f "data/backups/$name" ] || fail "备份命令没有生成 data/backups/$name"
+    find data/backups -name 'board-*.db' -mtime +14 -delete || fail "清理过期备份失败"
+elif [ "$(docker inspect -f '{{.State.Running}}' board 2>/dev/null || echo false)" = "true" ]; then
+    # 容器在跑时照旧用 exec
     docker compose exec -T board board-server backup "/data/backups/$name" || fail "备份数据库失败"
     # 文件属于容器里的用户，在容器里删
     docker compose exec -T board find /data/backups -name 'board-*.db' -mtime +14 -delete || fail "清理过期备份失败"
 else
+    # 容器不在跑（崩溃循环、已经停了）时用一次性容器做同样的备份，
+    # 否则线上已经坏掉的时候，部署会卡在备份这一步，修复版本推不上去。
     docker compose run --rm --no-deps -T board backup "/data/backups/$name" || fail "备份数据库失败"
     # 一次性容器没有常驻的 find，用 --entrypoint 绕过镜像入口清理旧备份
     docker compose run --rm --no-deps -T --entrypoint find board /data/backups -name 'board-*.db' -mtime +14 -delete || fail "清理过期备份失败"

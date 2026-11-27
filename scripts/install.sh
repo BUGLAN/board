@@ -4,13 +4,14 @@
 # 服务端在 <服务端>/install.sh 提供这个文件，下面三个 @…@ 由服务端换成它自己的版本号、地址和发版附件的地址：
 #
 #   curl -fsSL <服务端>/install.sh | sh
-#   curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --workspace <工作空间> [--dir <项目>/<白板>=<路径>] [--service]
+#   curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名> --workspace <工作空间> [--dir <项目>=<路径>] [--service]
 #
 # 依次做：
 #   1. 按平台下载发版附件里的 board-<平台>.tar.gz 和校验文件 board-sha256.txt，SHA-256 对不上就中止（不动现有的 board）
 #   2. 装到 ~/.local/bin（环境变量 BOARD_INSTALL_DIR 可改）；这个目录不在 PATH 里时写进 shell 配置，只追加一次
 #   3. 带 --token：board login --url <服务端> --token <令牌>
 #   4. 带 --name / --workspace / --dir：带 --service 时装成系统服务、开机自动接任务（board host --install），否则给出前台运行的命令
+#      每个项目的目录是 <工作空间>/<项目>；--dir 可以单独指定某个项目的目录
 #
 # 环境变量 BOARD_DOWNLOAD 换下载地址（镜像，或本机目录，测试用）。
 #
@@ -26,6 +27,28 @@ say() { printf '%s\n' "$*"; }
 die() {
   printf '✗ %s\n' "$*" >&2
   exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Board 命令行安装脚本（macOS、Linux）
+
+用法：
+  curl -fsSL <服务端>/install.sh | sh
+  curl -fsSL <服务端>/install.sh | sh -s -- [选项]
+
+选项：
+  --token <令牌>       登录服务端（board login）
+  --name <机器名>      装好后运行 board host 的机器名
+  --workspace <工作空间>
+                       常驻接任务的工作空间；每个项目的目录是 <工作空间>/<项目>
+  --dir <项目>=<路径>  单独指定某个项目的目录，可以重复
+  --service            把 board host 装成系统服务、开机自动接任务
+  -h, --help           显示这份帮助
+
+不带参数只安装 board；安装目录默认 ~/.local/bin，可用 BOARD_INSTALL_DIR 修改。
+发版附件默认从 <服务端> 对应的 GitHub Releases 下载，可用 BOARD_DOWNLOAD 换成镜像或本机目录。
+EOF
 }
 
 # 发版附件里的平台名：<uname -s> <uname -m> → darwin-arm64、darwin-x64、linux-x64、linux-arm64；不支持时返回 1
@@ -118,11 +141,11 @@ while [ $# -gt 0 ]; do
     --token) token=${2:?--token 需要一个值}; shift 2 ;;
     --name) name=${2:?--name 需要一个值}; shift 2 ;;
     --workspace)
-      workspace=${2:?--workspace 需要一个值，每块白板的目录是 <工作空间>/<项目>/<白板>}
+      workspace=${2:?--workspace 需要一个值，每个项目的目录是 <工作空间>/<项目>}
       shift 2
       ;;
     --dir)
-      d=${2:?--dir 需要一个值，写成 <项目>/<白板>=<路径>}
+      d=${2:?--dir 需要一个值，写成 <项目>=<路径>}
       dirs="$dirs$d
 "
       shift 2
@@ -134,10 +157,10 @@ while [ $# -gt 0 ]; do
       exit 0
       ;;
     -h | --help)
-      sed -n '2,15p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
+      usage
       exit 0
       ;;
-    *) die "未知参数 $1（可用：--token、--name、--workspace、--dir、--service）" ;;
+    *) die "未知参数 $1（可用：--token、--name、--workspace、--dir、--service、--help）" ;;
   esac
 done
 
@@ -150,10 +173,11 @@ esac
 platform=$(host_platform) || die "发版附件里没有这个平台（$(uname -s) $(uname -m)）的 board：用 cargo install 从源码装"
 archive="board-$platform.tar.gz"
 dir="${BOARD_INSTALL_DIR:-$HOME/.local/bin}"
-say "→ 安装 board ${BOARD_VERSION}（${platform}）到 $dir"
+say "→ 安装 board ${BOARD_VERSION}（${platform}）到 ${dir}"
 
 tmp=$(mktemp -d 2>/dev/null || mktemp -d -t board)
-trap 'rm -rf "$tmp"' EXIT INT TERM
+staged=
+trap 'if [ -n "$staged" ]; then rm -f "$staged"; fi; rm -rf "$tmp"' EXIT INT TERM
 fetch board-sha256.txt "$tmp/board-sha256.txt"
 fetch "$archive" "$tmp/$archive"
 want=$(sum_in "$tmp/board-sha256.txt" "$archive")
@@ -165,13 +189,15 @@ mkdir -p "$tmp/x"
 tar -xzf "$tmp/$archive" -C "$tmp/x" || die "解压 $archive 失败"
 [ -f "$tmp/x/board" ] || die "压缩包里没有 board"
 chmod 755 "$tmp/x/board"
-v=$("$tmp/x/board" --version 2>/dev/null || true)
-[ "$v" = "board $BOARD_VERSION" ] || die "下载到的 board 版本不对（${v:-运行不了}，应为 ${BOARD_VERSION}），没有安装"
 
 mkdir -p "$dir" || die "建不了目录 $dir"
-cp "$tmp/x/board" "$dir/.board.new.$$" || die "写不了 ${dir}：换一个目录（BOARD_INSTALL_DIR=<目录>）或用有权限的用户运行"
-chmod 755 "$dir/.board.new.$$"
-mv -f "$dir/.board.new.$$" "$dir/board"
+staged="$dir/.board.new.$$"
+cp "$tmp/x/board" "$staged" || die "写不了 ${dir}：换一个目录（BOARD_INSTALL_DIR=<目录>）或用有权限的用户运行"
+chmod 755 "$staged"
+v=$("$staged" --version 2>/dev/null || true)
+[ "$v" = "board $BOARD_VERSION" ] || die "下载到的 board 版本不对（${v:-运行不了}，应为 ${BOARD_VERSION}），没有安装"
+mv -f "$staged" "$dir/board"
+staged=
 bin="$dir/board"
 say "✓ 已安装 $("$bin" --version)：$bin"
 ensure_path "$dir"

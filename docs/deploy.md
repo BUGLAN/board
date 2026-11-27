@@ -44,7 +44,7 @@ GitHub → Settings → Developer settings → OAuth Apps → New OAuth App：
 把仓库同步到服务器（不带 `target`、`node_modules`、`.git` 等）：
 
 ```bash
-rsync -az --exclude .git/ --exclude /target/ --exclude node_modules/ --exclude /web/dist/ --exclude /.dev/ --exclude /src-tauri/gen/ --exclude /data/ --exclude /.env ./ <用户>@<服务器>:<部署目录>/
+rsync -az --exclude .git/ --exclude /target/ --exclude node_modules/ --exclude /web/dist/ --exclude /.dev/ --exclude /src-tauri/gen/ --exclude /data/ --exclude /.env --exclude .claude/ --exclude .omx/ --exclude prototype/ ./ <用户>@<服务器>:<部署目录>/
 ```
 
 之后在服务器上：
@@ -67,6 +67,7 @@ cp .env.example .env
 | `TZ` | 动态里时间的时区，默认 `Asia/Shanghai` |
 | `RUST_LOG` | 日志级别，默认 `info` |
 | `BOARD_BUILD` | `prebuilt`：镜像用 `deploy/bin/board-server`；`source`（默认）：在镜像里编译，需要 2 GB 以上内存和磁盘 |
+| `BOARD_COMMIT` | Docker 构建时写进 `/api/health` 的提交号；构建前设为 `git rev-parse --short=7 HEAD`，不设置时是 `unknown` |
 
 `BOARD_DB`、`BOARD_HOST`、`BOARD_PORT` 已在 `docker-compose.yml` 里设好。
 
@@ -79,14 +80,14 @@ mkdir -p data && sudo chown -R 10001:10001 data
 ## 3. 启动
 
 ```bash
-docker compose up -d --build
+BOARD_COMMIT=$(git rev-parse --short=7 HEAD) docker compose up -d --build
 ```
 
 ```bash
 curl -s http://127.0.0.1:7420/api/health
 ```
 
-返回里 `ok:true`、`mode:"github"`、`ui:true` 才是线上正常。容器自带健康检查（`board-server healthcheck`），它还会请求 `/`，确认返回的是 Board 的界面 HTML；`docker compose ps` 里能看到状态。
+返回里 `ok:true`、`mode:"github"`、`ui:true`，并且 `commit` 是刚刚构建的提交号，才是线上正常。容器自带健康检查（`board-server healthcheck`），它还会请求 `/`，确认返回的是 Board 的界面 HTML；`docker compose ps` 里能看到状态。
 
 ## 4. Cloudflare Tunnel
 
@@ -155,10 +156,23 @@ docker compose exec board board-server token revoke 3
 
 ## 6. 备份与恢复
 
-[`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做在线备份（SQLite `VACUUM INTO`，服务运行时也能得到一致的快照），存到 `data/backups/`，保留 14 天。卡片附件在 `data/files/`（按内容命名、写入后不变），备份时把还没有的文件补到 `data/backups/files/`，所有备份共用这一份。宿主机 crontab：
+[`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做在线备份（SQLite 在线备份 API，服务运行时也能得到一致的快照），存到 `data/backups/`，保留 14 天。卡片附件在 `data/files/`（按内容命名、写入后不变），备份时把还没有的文件补到 `data/backups/files/`，所有备份共用这一份。
+
+脚本放在部署目录的 `deploy/` 下，自动识别部署方式：
+
+- 部署目录根部有 `bin/board-server`（launchd 直接部署）：执行 `./bin/board-server --db data/board.db backup data/backups/<名字>`；
+- 没有这个二进制（Docker）：用 `docker compose exec`，容器没在运行时用一次性容器。
+
+Docker 的宿主机 crontab：
 
 ```cron
 0 4 * * * <部署目录>/deploy/backup.sh >> /var/log/board-backup.log 2>&1
+```
+
+launchd 直接部署用当前用户（`<用户>`）的 crontab，日志放进服务器目录，避免用户没有 `/var/log` 的写权限：
+
+```cron
+0 4 * * * <服务器目录>/deploy/backup.sh >> <服务器目录>/data/board-backup.log 2>&1
 ```
 
 ### 异地同步（可选）
@@ -171,11 +185,11 @@ docker compose exec board board-server token revoke 3
 | `/mnt/backup/board` | `cp -R` 到本地目录 | 目录已挂载（移动硬盘、NFS 等） |
 | `rclone:gdrive:board-backup` | `rclone copy` | 宿主机装 rclone 并配好 remote |
 
-不配置时和以前一样，只写 `data/backups/`。脚本任何一步失败都会返回非零，并在最后一行打印「失败」；crontab 把输出重定向到 `/var/log/board-backup.log` 后，可以据此做告警。
+不配置时和以前一样，只写 `data/backups/`。脚本任何一步失败都会返回非零，并在最后一行打印「失败」；crontab 把输出重定向到备份日志后，可以据此做告警。
 
 `data/backups/` 还在同一台服务器上，数据库很小，但服务器磁盘小的话，附件（单个不超过 10 MB）会占用空间，留意 `df -h`。
 
-恢复：
+### Docker 恢复
 
 ```bash
 docker compose stop board
@@ -195,6 +209,22 @@ sudo mkdir -p data/files && sudo cp -n data/backups/files/* data/files/ && sudo 
 docker compose start board
 ```
 
+### launchd 直接部署恢复
+
+```bash
+sudo launchctl bootout system/com.buglan.board-server
+sudo cp data/backups/board-20261107-040000.db data/board.db
+sudo rm -f data/board.db-wal data/board.db-shm
+sudo chown <用户>:staff data/board.db
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.buglan.board-server.plist
+```
+
+附件同样补回 `data/files/`（已有的不覆盖）：
+
+```bash
+mkdir -p data/files && cp -n data/backups/files/* data/files/ && chown -R <用户>:staff data/files
+```
+
 ### 恢复演练
 
 建议每次大版本发版前在本机走一遍，确认备份真的能恢复：
@@ -206,7 +236,7 @@ docker compose start board
    mkdir -p /tmp/board-restore
    cp data/backups/board-YYYYMMDD-HHMMSS.db /tmp/board-restore/board.db
    cp -R data/backups/files /tmp/board-restore/files
-   cargo run --release -p board-server -- --local --db /tmp/board-restore/board.db --port 7421
+   <服务器目录>/bin/board-server --local --db /tmp/board-restore/board.db --port 7421
    ```
 
 3. 浏览器打开 `http://127.0.0.1:7421`，核对：卡片、项目数量与线上一致，随机打开一张带附件的卡片能看到附件。
@@ -408,7 +438,25 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 tail -f <服务器目录>/data/board.log
 ```
 
-每个请求一行：方法、路径（不含查询参数）、状态码、耗时、是谁（GitHub 账号，或 `claude/opus-5.5（令牌#3）`）。令牌和 Cookie 不写进日志。成功的心跳（`/api/agents/beat`、`/api/hosts/<机器>/beat`）和日志上传（`POST /api/dispatches/<ID>/log`）默认只记 DEBUG，不会刷掉有用的行；排查时用 `RUST_LOG=debug` 打开。用 Docker 部署时日志按 10 MB 轮转、保留 5 个（`docker-compose.yml` 的 `logging`）；直接运行二进制时由 launchd 写到上面的 `board.log`。
+每个请求一行：方法、路径（不含查询参数）、状态码、耗时、是谁（GitHub 账号，或 `claude/opus-5.5（令牌#3）`）。令牌和 Cookie 不写进日志。成功的心跳（`/api/agents/beat`、`/api/hosts/<机器>/beat`）和日志上传（`POST /api/dispatches/<ID>/log`）默认只记 DEBUG，不会刷掉有用的行；排查时用 `RUST_LOG=debug` 打开。用 Docker 部署时日志按 10 MB 轮转、保留 5 个（`docker-compose.yml` 的 `logging`）；直接运行二进制时由 launchd 写到上面的 `board.log`，按下面的 newsyslog 配置轮转。
+
+### launchd 日志轮转
+
+macOS 自带的 `newsyslog` 每 30 分钟检查一次。以 root 新建 `/etc/newsyslog.d/board.conf`（路径、用户换成服务器上的实际值）：
+
+```conf
+# logfilename                       owner:group  mode count size  when flags
+<服务器目录>/data/board.log         <用户>:staff  640  5     10240 *    JN
+<服务器目录>/data/board.err.log     <用户>:staff  640  3     1024  *    JN
+```
+
+`J` 压缩旧日志，`N` 表示没有需要收 HUP 的 syslogd。`newsyslog` 改名后，launchd 拉起的进程还拿着旧文件的句柄；轮转后要重启服务，让它重新打开新的 `board.log`：
+
+```bash
+sudo launchctl kickstart -k system/com.buglan.board-server
+```
+
+先用 `sudo /usr/sbin/newsyslog -n -v -f /etc/newsyslog.d/board.conf` 检查配置（`-n` 只打印会做什么，不改文件）。
 
 ### 线上出问题怎么查
 
@@ -416,7 +464,7 @@ tail -f <服务器目录>/data/board.log
 2. 需要更细的日志（例如成功的心跳、日志上传）：在 `.env` 里设 `RUST_LOG=debug`，再 `docker compose up -d board`。排查完改回 `RUST_LOG=info` 重启，避免日志被心跳刷掉。
 3. 确认线上版本：`curl -s https://board.example.com/api/health`，核对返回的 `version` 和 `commit` 与部署记录、tag 的提交号一致。
 4. 从客户端检查：`board doctor` 看服务端地址、令牌和名字；带白板再跑一次 `board doctor --as <名字> --board <项目>/<白板>`。
-5. 日志按 10 MB 轮转、保留 5 个；旧记录被挤掉时用 `--since` 缩小时间范围，或先看宿主机上的备份和监控。
+5. Docker 的日志按 10 MB 轮转、保留 5 个；launchd 直接部署按 `/etc/newsyslog.d/board.conf` 轮转。旧记录被挤掉时用 `--since` 缩小时间范围，或先看宿主机上的备份和监控。
 
 ## 局域网机器直接部署（不用 Docker）
 
