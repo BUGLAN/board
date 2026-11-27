@@ -1,6 +1,6 @@
 //! MCP 服务器共用配置的接口（PRD §10.16「共用配置」）：
 //!
-//! - `GET /api/mcp`：列表，密钥只给末尾 4 位（界面、访问令牌都能读）
+//! - `GET /api/mcp`：列表，密钥只给末尾 4 位（只给界面）
 //! - `POST /api/mcp {name, kind, command, args, env, url, headers, agents}`：新增或修改（只能在登录后的界面上做）；密钥留空保留原来的值
 //! - `DELETE /api/mcp/{名称}`：删掉（只能在界面上做）；各台机器上同步加的条目随后删掉
 //! - `GET /api/hosts/{名字}/mcp`：完整内容（含密钥原文），只给这台机器用的访问令牌（board host 上报时记下的那个）；

@@ -13,10 +13,10 @@
 //! - `/auth/github`、`/auth/github/callback`：GitHub 登录
 //! - `GET /install.sh`、`/install.ps1`：命令行版 board 的安装脚本，不需要登录（`install`）
 //! - `/api/skills`：skills 共用库（列出、取内容、上传、删除；`skills`）
-//! - `/api/mcp`：MCP 服务器共用配置（列表打码、增删改只在界面上做；`/api/hosts/{名字}/mcp` 给 board host 原文，只给这台机器上报时用的令牌；`mcp`）
-//! - `/api/providers`：模型供应商共用配置（列表打码、增删改只在界面上做；`/api/hosts/{名字}/providers` 给 board host 原文，只给这台机器上报时用的令牌；`providers`）
+//! - `/api/mcp`：MCP 服务器共用配置（打码列表和增删改只给界面；`/api/hosts/{名字}/mcp` 给 board host 原文，只给这台机器上报时用的令牌；`mcp`）
+//! - `/api/providers`：模型供应商共用配置（打码列表和增删改只给界面；`/api/hosts/{名字}/providers` 给 board host 原文，只给这台机器上报时用的令牌；`providers`）
 //! - `/api/prompts`：新建卡片的快捷提示词，整个服务器一份（读整列、整列保存，只给界面；`prompts`）
-//! - `/api/git`：Git 凭据共用配置（同上：令牌打码、改只在界面上做；`/api/hosts/{名字}/git` 给 board host 原文；`gitcred`）
+//! - `/api/git`：Git 凭据共用配置（同上：令牌打码的列表和修改只给界面；`/api/hosts/{名字}/git` 给 board host 原文；`gitcred`）
 //! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`、批量打标签 `POST /api/labels/batch`）/ 画布位置的增删改
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/layout/saved`、`…/layout/apply`（白板设置：保存、应用布局）、`…/order`（白板设置：保存顺序）、`…/{状态}`（修改、删除）
 //! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
@@ -389,7 +389,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/dispatches/move", post(hosts::move_to))
         .route("/dispatches/{id}/end", post(hosts::end))
         .route("/dispatches/{id}/wip", post(hosts::wip))
-        .route("/dispatches/{id}/log", get(hosts::log).post(hosts::append_log).layer(axum::middleware::map_response(quiet)))
+        .route("/dispatches/{id}/log", post(hosts::append_log).layer(axum::middleware::map_response(quiet)))
         .route("/dispatches/{id}/events", post(hosts::append_events).layer(axum::middleware::map_response(quiet)))
         .route("/stream", get(stream))
         .route("/me", get(auth::me))

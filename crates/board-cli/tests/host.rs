@@ -2164,10 +2164,12 @@ fn mcp_servers_sync_to_claude_and_codex() {
     assert_eq!(last(&rig)["replaced"], serde_json::json!(["shared"]));
     let saved = std::fs::read_to_string(home.join(".board").join("host").join("mcp-backup.json")).unwrap();
     assert!(saved.contains("user-own"), "{saved}");
-    // dsh 找不到命令，不报；列表接口（令牌也能读）只给末尾 4 位
-    let mut res = ureq::get(format!("{}/api/mcp", rig.s.url)).header("authorization", format!("Bearer {}", rig.s.token)).call().unwrap();
-    let list = res.body_mut().read_to_string().unwrap();
+    // dsh 找不到命令，不报；列表接口只给界面，并只给密钥末尾 4 位
+    let list = rig.ui_get("/api/mcp").to_string();
     assert!(!list.contains(secret) && list.contains("cdef"), "{list}");
+    let (code, body) = get_raw(&format!("{}/api/mcp", rig.s.url), &rig.s.token);
+    assert_eq!(code, 401, "{body}");
+    assert!(body.contains("NOT_LOGGED_IN") && !body.contains(secret), "{body}");
     // 密钥原文只给 board host 的令牌接口，而且只给这台机器上报时用的令牌
     let (code, body) = get_raw(&format!("{}/api/hosts/mbp/mcp", rig.s.url), &rig.s.token);
     assert_eq!(code, 200, "{body}");

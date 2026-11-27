@@ -21,7 +21,7 @@
 //! `POST /api/hosts/{名字}/sync`（同步配置写入失败后「重试」：重新下发同步请求）、
 //! `POST /api/hosts/{名字}/ls {path}`（列那台机器上一个文件夹的子文件夹：服务端把请求放进它的任务，等 board host 回传，最多 20 秒）、
 //! `POST /api/hosts/{名字}/selftest {agent?}`（自检）、`POST /api/hosts/{名字}/selftested {instance, id, items}`（board host 回报自检结果）、`GET /api/hosts/{名字}/recent`、
-//! `GET /api/dispatches/{ID}/log`、`GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
+//! `GET /api/dispatches?board=<白板>&card=<ID>`（一张卡的全部派发）、
 //! `GET /api/sessions/{派发 ID}[?since=<runs>]`（一个会话的全部派发、输出和事件；带 since 时事件只取之后新增、改过的）。这些用令牌调用时 NOT_LOGGED_IN。
 //! 登录或令牌：`POST /api/dispatches`（派发；不带 `host` 是任意机器）、`POST /api/dispatches/move`（改派排队中的派发）、
 //! `POST /api/dispatches/cancel`（取消排队 / 停止在跑）。
@@ -432,19 +432,6 @@ pub(crate) async fn append_events(State(s): State<AppState>, Extension(caller): 
         s.poke();
     }
     Ok(Json(json!({ "ok": true })))
-}
-
-pub(crate) async fn log(State(s): State<AppState>, Extension(caller): Extension<Caller>, Path(id): Path<i64>) -> ApiResult<Value> {
-    let token = token_of(&caller);
-    let lines = s
-        .db(move |st| {
-            st.read(|r| {
-                r.dispatch_owned_by(id, token)?;
-                r.dispatch_log(id)
-            })
-        })
-        .await?;
-    Ok(Json(json!({ "lines": lines })))
 }
 
 /* ------------------------------ 界面 ------------------------------ */

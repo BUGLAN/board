@@ -107,7 +107,7 @@ fn provider_cannot_be_named_models() {
 }
 
 /// board host 用自己的令牌取供应商原文：`GET /api/hosts/{名字}/providers` 要放行给 agent 令牌，
-/// 别的令牌拿不到；`GET /api/providers` 的列表（API key 打码）访问令牌能读（PRD §10.16「共用配置」）
+/// 别的令牌拿不到；`GET /api/providers` 的列表（API key 打码）只给界面（PRD §10.16「共用配置」）
 #[test]
 fn host_token_can_read_provider_config() {
     let s = Server::start(Auth::Local);
@@ -126,8 +126,10 @@ fn host_token_can_read_provider_config() {
     let other_bearer = format!("Bearer {other}");
     let r = send("GET", &format!("{}/api/hosts/win/providers", s.url), &[("authorization", other_bearer.as_str())], None);
     assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
-    // 列表（打码）访问令牌能读
+    // 列表（打码）只给界面，访问令牌读不到
     let r = send("GET", &format!("{}/api/providers", s.url), &headers, None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+    let r = send("GET", &format!("{}/api/providers", s.url), &[UI], None);
     assert_eq!(r.status, 200, "{}", r.text);
     assert!(r.body["providers"].is_array(), "{}", r.text);
 }
@@ -155,13 +157,14 @@ fn git_credential_is_masked_and_only_the_host_token_reads_it() {
     assert_eq!((r.body["host"].as_str(), r.body["tail"].as_str()), (Some("github.com"), Some("1234")));
     assert_eq!((r.body["commitName"].as_str(), r.body["commitEmail"].as_str()), (Some("BUGLAN"), Some("me@example.com")));
     assert!(!r.text.contains("ghp_secret"), "{}", r.text);
-    // 界面、访问令牌读列表：打码
-    for h in [&[UI][..], &headers[..]] {
-        let r = send("GET", &format!("{}/api/git", s.url), h, None);
-        assert_eq!(r.body["cred"]["tail"], json!("1234"), "{}", r.text);
-        assert_eq!((r.body["cred"]["commitName"].as_str(), r.body["cred"]["commitEmail"].as_str()), (Some("BUGLAN"), Some("me@example.com")));
-        assert!(!r.text.contains("ghp_secret"), "{}", r.text);
-    }
+    // 界面读列表：打码
+    let r = send("GET", &format!("{}/api/git", s.url), &[UI], None);
+    assert_eq!(r.body["cred"]["tail"], json!("1234"), "{}", r.text);
+    assert_eq!((r.body["cred"]["commitName"].as_str(), r.body["cred"]["commitEmail"].as_str()), (Some("BUGLAN"), Some("me@example.com")));
+    assert!(!r.text.contains("ghp_secret"), "{}", r.text);
+    // 访问令牌读不到打码列表
+    let r = send("GET", &format!("{}/api/git", s.url), &headers, None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
     // 这台机器的令牌拿到原文；界面、别的令牌不行
     let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &headers, None);
     assert_eq!(r.body["cred"]["token"], json!("ghp_secret1234"), "{}", r.text);

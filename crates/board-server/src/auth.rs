@@ -1,6 +1,7 @@
 //! 登录与访问令牌：只在服务端入口这一层，规则引擎不知道它的存在（PRD §3）。
 //!
-//! - 人：用 GitHub 登录，得到会话 Cookie（`board_session`）。只有 `BOARD_GITHUB_USER` 指定的账号能登录。
+//! - 人：用 GitHub 登录，得到会话 Cookie（`board_session`）。只有 `BOARD_GITHUB_USER` 指定的账号能登录；
+//!   第一次登录成功时记下这个账号的数字 id，之后要求 id 一致（改名后旧用户名被抢也不能登录）。
 //!   桌面端在系统默认浏览器里登录（用上浏览器里已有的 GitHub 登录状态），登录结果经本机回环地址交回桌面端，
 //!   见 [`login`]、[`desktop`]。
 //! - agent：`Authorization: Bearer bd_…` 访问令牌，只能调用 `board` 命令行用到的接口。
@@ -125,6 +126,12 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   -- 机器令牌：界面「添加机器」新建时绑定的机器名，只有它能登记这台新机器（#507）。普通访问令牌为空
   host         TEXT
 );
+-- 允许登录的 GitHub 账号：首次登录记下数字 id，之后只认 id（GitHub 用户名可以改名、被抢注）
+CREATE TABLE IF NOT EXISTS auth_github (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  login     TEXT NOT NULL,
+  id        INTEGER NOT NULL
+);
 "#;
 
 pub fn setup(conn: &Connection) -> Result<()> {
@@ -216,6 +223,7 @@ fn check_token(conn: &Connection, raw: &str, now: i64) -> Result<Option<i64>> {
 
 #[derive(Debug, Clone, Deserialize)]
 struct GhUser {
+    id: i64,
     login: String,
     #[serde(default)]
     name: Option<String>,
@@ -223,19 +231,38 @@ struct GhUser {
     avatar_url: Option<String>,
 }
 
-fn create_session(conn: &Connection, u: &GhUser, now: i64) -> Result<String> {
+/// 校验允许登录的 GitHub 账号：第一次登录时记下数字 id，之后必须一致。
+/// `BOARD_GITHUB_USER` 换成别的账号时，旧记录不再是这台服务器的允许账号，清掉后按新账号第一次登录处理。
+fn check_github_id(conn: &Connection, allowed: &str, login: &str, id: i64) -> Result<bool> {
+    let stored: Option<(String, i64)> = conn
+        .query_row("SELECT login, id FROM auth_github WHERE singleton = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    match stored {
+        Some((stored, stored_id)) if stored.eq_ignore_ascii_case(allowed) => Ok(stored_id == id),
+        Some(_) => {
+            conn.execute("DELETE FROM auth_github", [])?;
+            conn.execute(
+                "INSERT INTO auth_github (singleton, login, id) VALUES (1, ?1, ?2)",
+                params![login, id],
+            )?;
+            Ok(true)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO auth_github (singleton, login, id) VALUES (1, ?1, ?2)",
+                params![login, id],
+            )?;
+            Ok(true)
+        }
+    }
+}
+
+fn create_session(conn: &Connection, login: &str, name: Option<&str>, avatar: Option<&str>, now: i64) -> Result<String> {
     conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?1", [now])?;
     let raw = random_hex(32);
     conn.execute(
         "INSERT INTO auth_sessions (hash, login, name, avatar, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            hash(&raw),
-            u.login,
-            u.name.clone().unwrap_or_default(),
-            u.avatar_url.clone().unwrap_or_default(),
-            now,
-            now + SESSION_MS
-        ],
+        params![hash(&raw), login, name.unwrap_or_default(), avatar.unwrap_or_default(), now, now + SESSION_MS],
     )?;
     Ok(raw)
 }
@@ -270,8 +297,7 @@ fn redeem_handoff(conn: &Connection, raw: &str, allowed: &str, now: i64) -> Resu
     if expires <= now || !login.eq_ignore_ascii_case(allowed) {
         return Ok(None);
     }
-    let u = GhUser { login, name: Some(name), avatar_url: Some(avatar) };
-    create_session(conn, &u, now).map(Some)
+    create_session(conn, &login, Some(&name), Some(&avatar), now).map(Some)
 }
 
 #[derive(Debug, Clone)]
@@ -394,15 +420,14 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
             // 任务下发：board host 的上报、取任务、开始 / 结束派发、机器改名、回报自检结果、同步配置的结果、从机器导入的结果、列目录的结果、
             // 机器对话的回报（开对话、发消息、停止这一轮、读对话只能在界面上）、
             // 上传和读取日志、上传结构化事件、订阅实时推送，board dispatch 派发和取消；
-            // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP / 模型供应商 / Git 凭据共用配置：读列表（打码）、board host 取原文
+            // skills 共用库：board skills ls / push / rm / sync，board host 同步；MCP / 模型供应商 / Git 凭据共用配置：board host 取原文，打码列表只在界面上读
             // 里程碑：board versions sync 写入版本记录（PRD §10.15）
             let m = req.method().clone();
             let cli = (m == Method::GET
-                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/mcp" | "/hosts/mine" | "/providers" | "/git")
+                && (matches!(path.as_str(), "/workspace" | "/board" | "/card" | "/agents" | "/stream" | "/search" | "/skills" | "/hosts/mine")
                     || path.starts_with("/skills/")
                     || path.starts_with("/files/")
-                    || host_path(&path, &["work", "mcp", "providers", "git"])
-                    || dispatch_path(&path, "log")))
+                    || host_path(&path, &["work", "mcp", "providers", "git"])))
                 || (m == Method::POST
                     && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/dispatches/move" | "/releases")
                         || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested", "synced"])
@@ -616,6 +641,15 @@ pub(crate) async fn callback(State(s): State<AppState>, headers: HeaderMap, Quer
         tracing::warn!(login = %user.login, "拒绝登录：不是允许的 GitHub 账号");
         return fail("denied", Some(&user.login));
     }
+    let (allowed, login, id) = (gh.user.clone(), user.login.clone(), user.id);
+    let ok = match s.db(move |st| check_github_id(st.conn(), &allowed, &login, id)).await {
+        Ok(ok) => ok,
+        Err(e) => return ApiError(e).into_response(),
+    };
+    if !ok {
+        tracing::warn!(login = %user.login, id = user.id, "拒绝登录：GitHub 账号数字 id 不一致");
+        return fail("denied", Some(&user.login));
+    }
     let now = board_core::now_ms();
     let u = user.clone();
     // 桌面端：浏览器这边不登录，只把一次性登录码交给桌面端
@@ -629,7 +663,7 @@ pub(crate) async fn callback(State(s): State<AppState>, headers: HeaderMap, Quer
         res.headers_mut().append(header::SET_COOKIE, clear_state);
         return res;
     }
-    let sid = match s.db(move |st| create_session(st.conn(), &u, now)).await {
+    let sid = match s.db(move |st| create_session(st.conn(), &u.login, u.name.as_deref(), u.avatar_url.as_deref(), now)).await {
         Ok(sid) => sid,
         Err(e) => return ApiError(e).into_response(),
     };

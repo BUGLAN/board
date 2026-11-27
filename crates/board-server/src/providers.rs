@@ -1,6 +1,6 @@
 //! 模型供应商共用配置的接口（PRD §10.16「共用配置」）：
 //!
-//! - `GET /api/providers`：列表，API key 只给末尾 4 位（界面、访问令牌都能读）；
+//! - `GET /api/providers`：列表，API key 只给末尾 4 位（只给界面）；
 //!   `meta` 是内置 agent 的说明（认哪些接口、角色里能选哪几档强度，只在 board-core 留一份）
 //! - `POST /api/providers {name, endpoints, apiKey, models, efforts}`：新增或修改（只能在登录后的界面上做）；API key 留空保留原来的值；
 //!   地址保存时规范化（Anthropic 的去掉结尾的 `/v1`），`efforts` 是每个模型支持的强度

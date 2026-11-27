@@ -44,8 +44,9 @@ fn mock_github() -> String {
             "/user",
             get(|h: axum::http::HeaderMap| async move {
                 let tok = h.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or_default();
-                let login = tok.trim_start_matches("Bearer gho_").to_string();
-                Json(json!({ "login": login, "name": format!("{login} 本人"), "avatar_url": "https://example.com/a.png" }))
+                let who = tok.trim_start_matches("Bearer gho_");
+                let (login, id) = who.split_once('@').map_or((who, 1), |(login, id)| (login, id.parse().unwrap_or(1)));
+                Json(json!({ "id": id, "login": login, "name": format!("{login} 本人"), "avatar_url": "https://example.com/a.png" }))
             }),
         );
     format!("http://{}", serve_router(app))
@@ -254,6 +255,38 @@ fn github_login_rejections() {
     assert_eq!(r.location(), "/?login_error=cancelled");
 }
 
+/// 登录成功后记住 GitHub 数字 id：同名账号换了 id（改名后旧用户名被抢注）不能再登录
+#[test]
+fn github_login_rejects_a_reused_username_with_another_id() {
+    let s = github("buglan");
+    session(&s);
+    let r = login(&s, "buglan@2");
+    assert_eq!(r.status, 303);
+    assert_eq!(r.location(), "/?login_error=denied&login=buglan");
+    assert!(r.cookie("board_session").is_none());
+    // 原来的 id 照常登录
+    let r = login(&s, "buglan");
+    assert_eq!(r.location(), "/");
+    assert!(r.cookie("board_session").is_some());
+}
+
+/// BOARD_GITHUB_USER 换成别的账号：旧记录清掉，新账号第一次登录重新绑定数字 id
+#[test]
+fn github_login_rebinds_after_the_allowed_user_changes() {
+    let s = github("buglan");
+    session(&s);
+    let store = board_core::Store::open(&s.db).unwrap();
+    store.conn().execute("UPDATE auth_github SET login = 'old-name'", []).unwrap();
+    let r = login(&s, "buglan@2");
+    assert_eq!(r.location(), "/");
+    assert!(r.cookie("board_session").is_some());
+    let saved: (String, i64) = store
+        .conn()
+        .query_row("SELECT login, id FROM auth_github WHERE singleton = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap();
+    assert_eq!(saved, ("buglan".into(), 2));
+}
+
 /// 卡片 #649：删除会话失败时不能装作退出成功——服务端会话还在，响应必须是 5xx，也不清 Cookie
 #[test]
 fn logout_failure_keeps_the_session() {
@@ -376,6 +409,23 @@ fn tokens_are_for_cli_only() {
         ("GET", "/api/tokens", None),
         ("POST", "/api/tokens", Some(json!({ "name": "y" }))),
         ("GET", "/api/me", None),
+        // 共用配置的打码列表只给界面（default/main#688）：访问令牌不再能读
+        ("GET", "/api/mcp", None),
+        ("GET", "/api/providers", None),
+        ("GET", "/api/git", None),
+        // 只靠守卫白名单挡令牌的写接口
+        ("PATCH", "/api/sched", Some(json!({ "rules": [] }))),
+        ("POST", "/api/hosts/pause-all", Some(json!({ "paused": true }))),
+        ("POST", "/api/hosts/stop-all", None),
+        ("POST", "/api/profiles", Some(json!({ "name": "x" }))),
+        ("POST", "/api/mcp", Some(json!({ "name": "x", "kind": "stdio", "command": "x" }))),
+        ("DELETE", "/api/mcp/x", None),
+        ("POST", "/api/providers", Some(json!({ "name": "x" }))),
+        ("DELETE", "/api/providers/x", None),
+        ("POST", "/api/providers/models", Some(json!({ "endpoints": [] }))),
+        ("PUT", "/api/layout", Some(json!({ "kind": "project", "id": "x", "x": 1, "y": 2 }))),
+        ("POST", "/api/labels", Some(json!({ "project": "default", "name": "x" }))),
+        ("PUT", "/api/labels/order", Some(json!({ "project": "default", "ids": [] }))),
     ] {
         let r = send(m, &format!("{}{p}", s.url), &a, body);
         assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{m} {p}");
@@ -449,7 +499,6 @@ fn host_and_dispatch_routes_only_take_that_hosts_token() {
         ("POST", format!("/dispatches/{d}/end"), Some(json!({ "exitCode": 0 }))),
         ("POST", format!("/dispatches/{d}/wip"), Some(json!({ "branch": "wip/main/1" }))),
         ("POST", format!("/dispatches/{d}/log"), Some(json!({ "lines": ["伪造的日志"] }))),
-        ("GET", format!("/dispatches/{d}/log"), None),
         ("POST", format!("/dispatches/{d}/events"), Some(json!({ "events": [] }))),
     ] {
         let r = send(m, &url(&p), &b, body);
@@ -460,8 +509,11 @@ fn host_and_dispatch_routes_only_take_that_hosts_token() {
     assert_eq!(w.status, 200, "{}", w.text);
     assert_eq!(w.body["host"]["name"], "host-a");
     assert_eq!(w.body["running"][0]["id"], json!(d), "{}", w.text);
-    let log = send("GET", &url(&format!("/dispatches/{d}/log")), &a, None);
-    assert!(!log.text.contains("伪造"), "{}", log.text);
+    let session = send("GET", &url(&format!("/sessions/{d}")), &[UI], None);
+    assert!(!session.text.contains("伪造"), "{}", session.text);
+    // 这个接口已经没有 GET：会话弹窗用 GET /api/sessions/{id}
+    let r = send("GET", &url(&format!("/dispatches/{d}/log")), &[UI], None);
+    assert_eq!(r.status, 405, "{}", r.text);
 
     // 令牌 B 冒充 host-a 上报：在线时不行；host-a 下线后也不行，令牌和密钥原文仍只给 A
     let r = send("POST", &url("/hosts/host-a/beat"), &b, Some(report("b1")));
@@ -481,16 +533,16 @@ fn host_and_dispatch_routes_only_take_that_hosts_token() {
     assert_eq!(send("POST", &url("/hosts/host-a/beat"), &a, Some(back)).status, 200);
     assert_eq!(send("GET", &url("/hosts/host-a/mcp"), &a, None).status, 200);
     assert_eq!(send("POST", &url(&format!("/dispatches/{d}/log")), &a, Some(json!({ "lines": ["真的日志"] }))).status, 200);
-    let log = send("GET", &url(&format!("/dispatches/{d}/log")), &a, None);
-    assert!(log.text.contains("真的日志"), "{}", log.text);
+    let session = send("GET", &url(&format!("/sessions/{d}")), &[UI], None);
+    assert!(session.text.contains("真的日志"), "{}", session.text);
     let r = send("POST", &url(&format!("/dispatches/{d}/end")), &a, Some(json!({ "exitCode": 0 })));
     assert_eq!(r.status, 200, "{}", r.text);
     assert_eq!(send("POST", &url("/hosts/host-a/round"), &a, Some(json!({}))).status, 200);
 
-    // 界面（人）不受影响：取任务、领一轮、读日志、改名
+    // 界面（人）不受影响：取任务、领一轮、读会话、改名
     assert_eq!(send("GET", &url("/hosts/host-a/work"), &[UI], None).status, 200);
     assert_eq!(send("POST", &url("/hosts/host-a/round"), &[UI], Some(json!({}))).status, 200);
-    assert_eq!(send("GET", &url(&format!("/dispatches/{d}/log")), &[UI], None).status, 200);
+    assert_eq!(send("GET", &url(&format!("/sessions/{d}")), &[UI], None).status, 200);
     let r = send("POST", &url("/hosts/host-a/rename"), &[UI], Some(json!({ "name": "host-a2" })));
     assert_eq!(r.status, 200, "{}", r.text);
     // 改名后 A 用新名字照常
