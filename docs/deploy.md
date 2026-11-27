@@ -156,7 +156,7 @@ docker compose exec board board-server token revoke 3
 
 ## 6. 备份与恢复
 
-[`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做在线备份（SQLite 在线备份 API，服务运行时也能得到一致的快照），存到 `data/backups/`，保留 14 天。卡片附件在 `data/files/`（按内容命名、写入后不变），备份时把还没有的文件补到 `data/backups/files/`，所有备份共用这一份。
+[`deploy/backup.sh`](../deploy/backup.sh) 用 `board-server backup` 做 SQLite 在线备份，服务运行时也能得到一致的快照，存到 `data/backups/`，保留 14 天。卡片附件在 `data/files/`（按内容命名、写入后不变），备份时把还没有的文件补到 `data/backups/files/`，所有备份共用这一份。
 
 脚本放在部署目录的 `deploy/` 下，自动识别部署方式：
 

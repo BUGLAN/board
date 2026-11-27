@@ -250,9 +250,16 @@ async fn shutdown() {
 /* ------------------------------ 子命令 ------------------------------ */
 
 fn open_store(o: &Opts) -> Store {
+    require_db(o);
     let store = Store::open(&o.db).unwrap_or_else(|e| fail(&format!("打开数据库 {} 失败：{e}", o.db.display())));
     auth::setup(store.conn()).unwrap_or_else(|e| fail(&format!("初始化登录数据失败：{e}")));
     store
+}
+
+fn require_db(o: &Opts) {
+    if !o.db.is_file() {
+        fail(&format!("数据库 {} 不存在，请检查 --db 或 BOARD_DB", o.db.display()));
+    }
 }
 
 fn ts(ms: Option<i64>) -> String {
@@ -293,6 +300,7 @@ fn token(o: &Opts) {
 
 /// 用 SQLite 在线备份得到一份一致的快照，服务运行时也可以执行
 fn backup(o: &Opts) {
+    require_db(o);
     let Some(dest) = o.rest.get(1) else { fail("backup 需要目标文件路径") };
     let dest = PathBuf::from(dest);
     if dest.exists() {
@@ -308,10 +316,7 @@ fn backup(o: &Opts) {
         let _ = std::fs::remove_file(&dest);
         fail(&format!("打开备份 {} 失败：{e}", dest.display()))
     });
-    let copied = match rusqlite::backup::Backup::new(&conn, &mut target) {
-        Ok(backup) => backup.run_to_completion(100, std::time::Duration::from_millis(10), None).map_err(|e| e.to_string()),
-        Err(e) => Err(e.to_string()),
-    };
+    let copied = copy_backup(&conn, &mut target);
     drop(target);
     drop(conn);
     if let Err(e) = copied {
@@ -325,6 +330,19 @@ fn backup(o: &Opts) {
     match board_core::files::copy_new(&src, &dst) {
         Ok(n) => println!("附件：新复制 {n} 个文件到 {}", dst.display()),
         Err(e) => fail(&format!("备份附件失败：{e}")),
+    }
+}
+
+fn copy_backup(conn: &rusqlite::Connection, target: &mut rusqlite::Connection) -> Result<(), String> {
+    use rusqlite::backup::StepResult;
+
+    let backup = rusqlite::backup::Backup::new(conn, target).map_err(|e| e.to_string())?;
+    loop {
+        match backup.step(-1).map_err(|e| e.to_string())? {
+            StepResult::Done => return Ok(()),
+            StepResult::Busy | StepResult::Locked => std::thread::sleep(std::time::Duration::from_millis(100)),
+            _ => {}
+        }
     }
 }
 

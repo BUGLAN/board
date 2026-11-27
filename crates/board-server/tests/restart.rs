@@ -3,8 +3,14 @@
 use board_core::*;
 use board_server::auth::Auth;
 use board_server::{AppState, Config};
+use rusqlite::params;
+use std::io::Read;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const S: i64 = 1000;
 const B: &str = "default/main";
@@ -97,6 +103,72 @@ fn beats(db: &Path) -> (i64, i64, Option<i64>) {
     (a, h, card(&s, 1).beat_at)
 }
 
+fn enlarge_db(db: &Path) {
+    let s = Store::open(db).unwrap();
+    let conn = s.conn();
+    conn.execute_batch("CREATE TABLE backup_bulk (id INTEGER PRIMARY KEY, body BLOB NOT NULL)").unwrap();
+    let chunk = vec![0x5au8; 64 * 1024];
+    for id in 0..96 {
+        conn.execute("INSERT INTO backup_bulk (id, body) VALUES (?1, ?2)", params![id, &chunk]).unwrap();
+    }
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+    drop(s);
+    let len = std::fs::metadata(db).unwrap().len();
+    assert!(len >= 5 * 1024 * 1024, "测试库只有 {len} 字节，需要至少 5 MB");
+}
+
+fn read_all(mut reader: impl Read) -> String {
+    let mut out = String::new();
+    reader.read_to_string(&mut out).unwrap();
+    out
+}
+
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let out = child.stdout.take().unwrap();
+    let err = child.stderr.take().unwrap();
+    let out = std::thread::spawn(move || read_all(out));
+    let err = std::thread::spawn(move || read_all(err));
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr = err.join().unwrap();
+            panic!("命令超过 {timeout:?} 没有结束：{stderr}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::process::Output { status, stdout: out.join().unwrap().into_bytes(), stderr: err.join().unwrap().into_bytes() }
+}
+
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn wait_listening(child: &mut Child, port: u16) {
+    let addr = ([127, 0, 0, 1], port).into();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("服务端提前退出：{status}");
+        }
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
+            return;
+        }
+        assert!(Instant::now() < until, "服务端 10 秒内没有开始监听 127.0.0.1:{port}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn token_and_backup_do_not_touch_heartbeats() {
     let dir = tempfile::tempdir().unwrap();
@@ -120,4 +192,95 @@ fn token_and_backup_do_not_touch_heartbeats() {
         assert_eq!(mode(&dest), 0o600, "备份数据库");
     }
     assert_eq!(beats(&db), before, "token ls / backup 不能改动心跳时间");
+}
+
+#[test]
+fn backup_completes_while_server_keeps_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("b.db");
+    seed(&db, board_core::now_ms());
+    enlarge_db(&db);
+
+    let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let exe = env!("CARGO_BIN_EXE_board-server");
+    let server = Command::new(exe)
+        .arg("--local")
+        .arg("--db")
+        .arg(&db)
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .env_remove("BOARD_PUBLIC_URL")
+        .env_remove("BOARD_DB")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut server = ChildGuard(server);
+    wait_listening(&mut server.0, port);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let db = db.clone();
+        let stop = Arc::clone(&stop);
+        let writes = Arc::clone(&writes);
+        std::thread::spawn(move || {
+            let mut store = Store::open(&db).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                store
+                    .write(board_core::now_ms(), Origin::cli(), |w| w.agent_beat_by("claude/alpha", false, BeatBy::Cli(None)))
+                    .unwrap();
+                writes.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+    };
+    let until = Instant::now() + Duration::from_secs(2);
+    while writes.load(Ordering::Relaxed) == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(writes.load(Ordering::Relaxed) > 0, "并发写入没有开始");
+
+    let dest = dir.path().join("backup.db");
+    let started = Instant::now();
+    let out = run_with_timeout(
+        {
+            let mut cmd = Command::new(exe);
+            cmd.arg("backup").arg(&dest).arg("--db").arg(&db).env_remove("BOARD_DB");
+            cmd
+        },
+        Duration::from_secs(8),
+    );
+    let elapsed = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+
+    assert!(out.status.success(), "并发写入时备份失败：{}", String::from_utf8_lossy(&out.stderr));
+    assert!(elapsed < Duration::from_secs(8), "备份用了 {elapsed:?}");
+    let copy = rusqlite::Connection::open(&dest).unwrap();
+    let integrity: String = copy.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+    assert_eq!(integrity, "ok");
+    let cards: i64 = copy.query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0)).unwrap();
+    assert_eq!(cards, 2);
+}
+
+#[test]
+fn backup_and_token_refuse_missing_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("missing.db");
+    let dest = dir.path().join("copy.db");
+    let exe = env!("CARGO_BIN_EXE_board-server");
+
+    let out = Command::new(exe).arg("backup").arg(&dest).arg("--db").arg(&db).env_remove("BOARD_DB").output().unwrap();
+    assert!(!out.status.success());
+    assert!(!db.exists(), "backup 不能新建源库");
+    assert!(!dest.exists(), "源库不存在时不能留下空备份");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--db"));
+
+    let out = Command::new(exe).args(["token", "new", "ci", "--db"]).arg(&db).env_remove("BOARD_DB").output().unwrap();
+    assert!(!out.status.success());
+    assert!(!db.exists(), "token 不能新建源库");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--db"));
 }

@@ -698,6 +698,7 @@ fn server_side_token_command_works() {
 fn server_side_token_command_rejects_reserved_machine_names() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("board.db");
+    let _ = board_core::Store::open(&db).unwrap();
     for name in ["mine", "pause-all", "stop-all"] {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_board-server"))
             .args(["token", "new", "测试", "--machine", name, "--db"])
