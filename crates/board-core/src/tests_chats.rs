@@ -1,6 +1,6 @@
 //! 机器对话（hosts/chat.rs，PRD §9.1「机器对话」）：开始、发消息、停止这一轮、board host 回报、不占会话位、离线、掉线。
 
-use crate::hosts::{Chat, ChatReport, HOST_GAP_MS};
+use crate::hosts::{Chat, ChatReport, EndHow, HOST_GAP_MS};
 use crate::runlog::RunEvent;
 use crate::*;
 
@@ -38,6 +38,30 @@ fn beat(s: &mut Store, at: i64, chats: Option<Vec<i64>>) -> HostWork {
 
 fn start(s: &mut Store, at: i64, text: &str) -> Result<Chat> {
     s.write(at, Origin::ui(None), |w| w.chat_start("mbp", None, Some("claude"), None, text, "lan"))
+}
+
+fn new_card(s: &mut Store, at: i64, title: &str) -> i64 {
+    s.write(at, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.exec(&b, &Actor::human(), Cmd::New { title: title.into(), body: None, column: None, top: false, labels: vec![], from: None })
+    })
+    .unwrap()
+    .card
+    .id
+}
+
+fn crash_once(s: &mut Store, at: i64) {
+    let card = new_card(s, at, "崩一次");
+    let d = s
+        .write(at, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, card, "mbp", Some("claude"), None, &Actor::human())
+        })
+        .unwrap();
+    let d = s.write(at + S, Origin::cli(), |w| w.dispatch_begin("mbp", "i1", d.id, Some(1))).unwrap();
+    s.write(at + 2 * S, Origin::cli(), |w| w.host_beat(&report("mbp", "i1", vec![d.id], Some(vec![])), Some(1))).unwrap();
+    let d = s.write(at + 3 * S, Origin::cli(), |w| w.dispatch_end(d.id, Some(1), &[], EndHow::Exit, None)).unwrap();
+    assert_eq!(d.result.as_deref(), Some("crashed"));
 }
 
 fn prompt(s: &mut Store, at: i64, id: i64, text: &str) -> Result<Chat> {
@@ -175,6 +199,34 @@ fn chats_do_not_take_a_session_slot() {
     // 派发、会话位不受影响：在跑的还是那一张卡
     let ws = s.read(|r| r.workspace(T0 + 2 * S)).unwrap();
     assert_eq!(ws.dispatches.iter().map(|x| x.card).collect::<Vec<_>>(), vec![card]);
+}
+
+/// 连续异常退出暂停接单只挡派发：人还能开对话，手动派发仍被拒
+#[test]
+fn chat_starts_even_when_the_agent_is_tripped() {
+    let mut s = store();
+    beat(&mut s, T0, Some(vec![]));
+    let mut t = T0;
+    for _ in 0..3 {
+        crash_once(&mut s, t);
+        t += 10 * S;
+    }
+    beat(&mut s, t, Some(vec![]));
+    let h = s.read(|r| r.host("mbp", t)).unwrap();
+    assert!(h.agents.iter().find(|a| a.id == "claude").unwrap().tripped);
+
+    let c = start(&mut s, t + S, "清理磁盘").unwrap();
+    assert_eq!((c.agent.as_str(), c.turn.as_str()), ("claude", "busy"));
+
+    let card = new_card(&mut s, t + S, "手动派发");
+    let e = s
+        .write(t + S, Origin::ui(None), |w| {
+            let b = w.resolve(B)?;
+            w.dispatch_create(&b, card, "mbp", Some("claude"), None, &Actor::human())
+        })
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::AgentNotOnHost);
+    assert!(e.message.contains("暂停接单"), "{}", e.message);
 }
 
 #[test]

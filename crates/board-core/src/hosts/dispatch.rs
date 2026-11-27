@@ -429,9 +429,8 @@ impl<'a> W<'a> {
         Ok(format!("从「{}」", flow.name(k)))
     }
 
-    /// 这次派发在这台机器上用哪个 agent：指定了就要找得到命令，没指定用机器的默认 agent；
-    /// 连续异常退出、暂停了接单的不接新的派发（`fit.rs`）
-    pub(super) fn dispatch_agent(&self, h: &HostRow, agent: Option<&str>) -> Result<HostAgent> {
+    /// 这台机器上的 agent：指定了就要找得到命令，没指定用机器的默认 agent
+    pub(super) fn agent_on_host(&self, h: &HostRow, agent: Option<&str>) -> Result<HostAgent> {
         let host = h.name.as_str();
         let all = h.resolved();
         let a = match agent.map(str::trim).filter(|s| !s.is_empty()) {
@@ -457,17 +456,25 @@ impl<'a> W<'a> {
                 .default_agent()
                 .ok_or_else(|| BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」上一个 agent 也没找到")))?,
         };
+        Ok(a)
+    }
+
+    /// 这次派发在这台机器上用哪个 agent：指定了就要找得到命令，没指定用机器的默认 agent；
+    /// 连续异常退出、暂停了接单的不接新的派发（`fit.rs`）
+    pub(super) fn dispatch_agent(&self, h: &HostRow, agent: Option<&str>) -> Result<HostAgent> {
+        let a = self.agent_on_host(h, agent)?;
         // 连续异常退出、暂停了接单的 agent 不接新的派发（`fit.rs`）
         if self.read().agent_tripped(h, &a.id)? {
             return Err(BoardError::new(
                 ErrorCode::AgentNotOnHost,
                 format!(
-                    "机器「{host}」上的 {} 连续 {} 次异常退出，已经暂停接单：修好后在机器详情里点「恢复」",
+                    "机器「{}」上的 {} 连续 {} 次异常退出，已经暂停接单：修好后在机器详情里点「恢复」",
+                    h.name,
                     a.name,
                     crate::fit::TRIP_AFTER
                 ),
             )
-            .with_detail(json!({ "host": host, "agent": a.id })));
+            .with_detail(json!({ "host": h.name, "agent": a.id })));
         }
         Ok(a)
     }

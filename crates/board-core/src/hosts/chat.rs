@@ -348,7 +348,7 @@ impl W<'_> {
                     .with_detail(json!({ "host": host, "profile": p.id })));
             }
         }
-        let a = self.dispatch_agent(&h, role.as_ref().map(|p| p.agent.as_str()).or(agent))?;
+        let a = self.agent_on_host(&h, role.as_ref().map(|p| p.agent.as_str()).or(agent))?;
         // 模型、强度：角色的（角色没指定模型时用机器上这个 agent 现在的）；直接选 agent 的用机器上它现在的
         let (mut model, mut effort) = h.run_opts(&a.id);
         if let Some(p) = &role {

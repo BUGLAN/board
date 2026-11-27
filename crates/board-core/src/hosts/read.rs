@@ -434,11 +434,20 @@ pub(crate) fn named_host(conn: &rusqlite::Connection, name: &str, now: i64) -> R
 }
 
 /// 令牌是某台在线机器的 board host 最后一次上报用的那个：`board check --agent <标识>` 没带机器名时按它认机器。
-/// 没有时为空（同时有多台机器用同一个令牌时取名字排在前面的，不该发生）
+/// 没有时为空（同时有多台机器用同一个令牌时取名字排在最前面的在线那台）
 pub(crate) fn host_by_token(conn: &rusqlite::Connection, token: i64, now: i64) -> Result<Option<HostInfo>> {
-    let h: Option<HostRow> =
-        conn.query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE token = ?1 ORDER BY name LIMIT 1"), [token], host_row).optional()?;
-    Ok(h.filter(|h| h.online(now)).map(|h| h.info(now)))
+    let h: Option<HostRow> = conn
+        .query_row(
+            &format!(
+                "SELECT {HOST_COLS} FROM hosts
+                 WHERE token = ?1 AND off_at IS NULL AND beat_at + ?3 > ?2
+                 ORDER BY name LIMIT 1"
+            ),
+            params![token, now, HOST_GAP_MS],
+            host_row,
+        )
+        .optional()?;
+    Ok(h.map(|h| h.info(now)))
 }
 
 /// 令牌表有没有 `host` 列（机器令牌绑定的机器名，#507；服务端启动时加上）

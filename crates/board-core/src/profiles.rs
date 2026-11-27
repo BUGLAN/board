@@ -247,7 +247,8 @@ fn radix36(mut v: u64) -> String {
 
 impl W<'_> {
     /// 新建（`id` 为空）或修改一个角色。校验：名字不空、不重复；agent 是内置的或某台机器上报过的；用供应商时供应商存在、
-    /// 这个 agent 认它的某种接口、模型在它的模型列表里；强度是这个 agent 能设的一档；「只在这些机器上跑」只留存在的机器
+    /// 这个 agent 认它的某种接口、模型在它的模型列表里；强度是这个 agent 能设的一档；「只在这些机器上跑」只留存在的机器，
+    /// 选的机器都被移除了要重新选，不能悄悄变成所有机器
     pub fn profile_put(&mut self, p: &Profile, by: &str) -> Result<Profile> {
         let name = p.name.trim().to_string();
         if name.is_empty() {
@@ -297,6 +298,9 @@ impl W<'_> {
         }
         // 本机配置、官方订阅（#666）：选中的机器（「只在这些机器上跑」，没选就是全部）报过的模型表
         let picked: Vec<i64> = p.only.iter().copied().filter(|id| hosts.iter().any(|h| h.id == *id)).collect();
+        if !p.only.is_empty() && picked.is_empty() {
+            return Err(BoardError::usage("选的机器都已经移除了，重新选，或选『所有机器』"));
+        }
         let tables: Vec<crate::hosts::LocalModels> = if provider.is_empty() || provider == SUBSCRIPTION {
             hosts
                 .iter()
@@ -348,7 +352,7 @@ impl W<'_> {
             return Err(BoardError::usage(format!("附加说明最长 {NOTE_MAX} 个字")));
         }
         // 勾了几台就存几台，等于现在的全部机器也照存（以后新接的机器不算进来，#664）；空 = 所有能跑的机器，只由调用方明确给
-        let mut only: Vec<i64> = p.only.iter().copied().filter(|id| hosts.iter().any(|h| h.id == *id)).collect();
+        let mut only = picked;
         only.sort_unstable();
         only.dedup();
         let only_raw = serde_json::to_string(&only).unwrap_or_else(|_| "[]".into());

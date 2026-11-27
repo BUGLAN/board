@@ -585,15 +585,17 @@ impl<'a> W<'a> {
         self.start(&h, d, token)
     }
 
-    /// `<机器名>/<模型名>-<强度>` 这个名字没被在线 agent 用就返回它，否则按 [`dispatch_agent_name`] 的规则
-    /// 依次试末尾的 `-1`、`-2` …（只有在线的名字算占用）。派发开始时和 `board check --agent <标识>` 都用它
+    /// `<机器名>/<模型名>-<强度>` 这个名字没被在线 agent 用、也没持有卡片就返回它，否则按 [`dispatch_agent_name`] 的规则
+    /// 依次试末尾的 `-1`、`-2` …。派发开始时和 `board check --agent <标识>` 都用它
     pub(crate) fn free_agent_name(&self, agent: &str, host: &str, model: &str, effort: &str) -> Result<String> {
         let gap = crate::agents::NAME_GAP_MS;
         let mut seq = 0u32;
         loop {
             let n = dispatch_agent_name(agent, host, model, effort, seq);
             let taken: bool = self.tx.query_row(
-                "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1 AND off_at IS NULL AND beat_at + ?3 > ?2",
+                "SELECT COUNT(*) > 0 FROM agents WHERE name = ?1
+                   AND ((off_at IS NULL AND beat_at + ?3 > ?2)
+                        OR EXISTS (SELECT 1 FROM cards WHERE holder = ?1 AND deleted_at IS NULL))",
                 params![n, self.now, gap],
                 |r| r.get(0),
             )?;

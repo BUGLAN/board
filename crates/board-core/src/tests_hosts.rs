@@ -895,6 +895,32 @@ fn dispatch_names_unique_while_concurrent_and_reused_after() {
     assert_eq!(d.cards.len(), 0);
 }
 
+/// 异常退出后卡片还由这个名字持有（工作流没有能接住它的状态）：马上开始的下一张换个名字，不能报 ALREADY_HOLDING
+#[test]
+fn crashed_dispatch_name_stays_in_use_until_the_card_is_released() {
+    let mut s = store();
+    s.write(T0, Origin::ui(None), |w| w.delete_status(B, "check")).unwrap();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let a = new_card(&mut s, T0, "A");
+    let first = dispatch(&mut s, T0, a, "mbp", Some("claude")).unwrap();
+    let first = begin(&mut s, T0 + S, first.id).unwrap();
+    let name = first.name.clone().unwrap();
+    let first = end(&mut s, T0 + 2 * S, first.id, Some(1), &["boom"]);
+    assert_eq!(first.result.as_deref(), Some("crashed"));
+    let c = card(&s, a);
+    assert_eq!((c.card.column.as_str(), c.card.holder.as_deref()), ("doing", Some(name.as_str())));
+
+    let b = new_card(&mut s, T0 + 3 * S, "B");
+    let second = dispatch(&mut s, T0 + 3 * S, b, "mbp", Some("claude")).unwrap();
+    let second = begin(&mut s, T0 + 4 * S, second.id).unwrap();
+    assert_eq!(second.name, Some(format!("{name}-1")));
+    assert_eq!(second.state, "running");
+    assert_eq!(card(&s, b).card.holder, second.name);
+    let recent = s.read(|r| r.host_recent(1, 50)).unwrap();
+    assert!(!recent.iter().any(|d| d.result.as_deref() == Some("unclaimed")), "{recent:?}");
+    assert!(!card(&s, b).activity.iter().any(|x| x.text.contains("派发没领到")));
+}
+
 #[test]
 fn crash_moves_card_to_check_with_exit_code_and_log() {
     let mut s = store();
@@ -2695,6 +2721,33 @@ fn profile_only_keeps_the_single_host_when_it_is_the_only_one() {
         })
         .unwrap();
     assert_eq!(d.host, "mbp", "任意机器只在 mbp 里挑");
+}
+
+/// 角色勾的机器后来都被移除了：原样再存一次不能悄悄变成「所有机器」，明确选「所有机器」才清空
+#[test]
+fn profile_only_all_removed_is_rejected_and_keeps_the_old_choices() {
+    let mut s = store();
+    two_hosts(&mut s);
+    let desk = s.read(|r| r.host("desk", T0)).unwrap().id;
+    let mut p = role("只在桌面", "claude", "", "", "");
+    p.only = vec![desk];
+    let p = put_role(&mut s, T0 + S, p).unwrap();
+    assert_eq!(p.only, vec![desk]);
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.host_remove("desk", &Actor::human(), "人")).unwrap();
+    let before = s.read(|r| r.profiles()).unwrap().into_iter().find(|x| x.id == p.id).unwrap();
+    assert_eq!(before.only, vec![desk], "移除机器不动角色的选择");
+    let mut edit = before.clone();
+    edit.note = "改一下说明".into();
+    let e = put_role(&mut s, T0 + 3 * S, edit).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains("选的机器都已经移除了"), "{}", e.message);
+    let after = s.read(|r| r.profiles()).unwrap().into_iter().find(|x| x.id == p.id).unwrap();
+    assert_eq!(after.only, before.only);
+    assert_eq!(after.note, before.note, "保存被拒时别的字段也不变");
+    // 明确选「所有机器」可以保存
+    let mut all = before;
+    all.only.clear();
+    assert!(put_role(&mut s, T0 + 4 * S, all).unwrap().only.is_empty());
 }
 
 /// 会话中途角色不再在这台机器上跑：board next 不再把排着的卡交给它，卡片释放给别的机器
@@ -4840,6 +4893,18 @@ fn check_finds_the_host_by_token() {
     assert_eq!(check_gen(&mut s, T0 + S, None, "claude", Some(9)).unwrap().name, "claude/claude");
 }
 
+/// 两台机器共用一个令牌、名字靠前的离线：按令牌找到名字靠后的在线那台
+#[test]
+fn check_finds_the_online_host_when_a_shared_token_host_is_offline() {
+    let mut s = store();
+    beat(&mut s, T0, &report("a", "i1", vec![])).unwrap();
+    beat(&mut s, T0, &report("b", "i2", vec![])).unwrap();
+    let later = T0 + hosts::HOST_GAP_MS + S;
+    beat(&mut s, later, &report("b", "i2", vec![])).unwrap();
+    assert_eq!(check_gen(&mut s, later, None, "claude", Some(1)).unwrap().name, "b/opus-5.5");
+    assert_eq!(s.read(|r| r.my_host(Some(1), later)).unwrap().unwrap().name, "b");
+}
+
 /// 带了名字（--as）的 check 不受影响：照写的名字 check，被占用时 NAME_TAKEN，不加序号
 #[test]
 fn check_with_an_explicit_name_is_unchanged() {
@@ -6530,11 +6595,6 @@ fn dispatch_by_profile_carries_model_effort_and_provider() {
     let d = begin(&mut s, T0 + S, d.id).unwrap();
     assert_eq!(d.name.as_deref(), Some("mbp/model-a-high"));
     assert_eq!((d.model.as_deref(), d.effort.as_deref()), (Some("model-a"), Some("high")));
-    // 只在别的机器上跑的角色：这台拒绝
-    let mut other = role("别处", "claude", "", "", "");
-    other.only = vec![999];
-    let other = put_role(&mut s, T0, other).unwrap();
-    assert!(other.only.is_empty(), "不存在的机器不留");
     let c2 = new_card(&mut s, T0, "B");
     let e = s
         .write(T0, Origin::ui(None), |w| {
