@@ -592,7 +592,7 @@ mod tests {
     fn host_workspace_with_windows_paths_roundtrip() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("config.toml");
-        let ws = r"C:\Users\buglan\repo";
+        let ws = r"C:\Users\me\repo";
         update_at(&f, false, |c| c.set_host(Some("win"), Some(ws)).map(|_| ((), true))).unwrap();
         let text = read(&f);
         assert!(Config::load_from(&f).is_ok(), "写出的配置必须是合法 TOML：{text}");
@@ -617,7 +617,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("config.toml");
         let value = r#"echo agent \; exec sleep 300
-"C:\Users\buglan\""#;
+"C:\Users\me\""#;
         update_at(&f, false, |c| {
             c.set("cmdline", value);
             Ok(((), true))

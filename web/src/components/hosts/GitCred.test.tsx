@@ -30,7 +30,7 @@ describe('Git 凭据卡片', () => {
       vi.fn(async () =>
         new Response(
           JSON.stringify({
-            cred: { host: 'github.com', username: 'BUGLAN', tail: 'DnaP', commitName: 'BUGLAN', commitEmail: '1831353087@qq.com' },
+            cred: { host: 'github.com', username: 'BUGLAN', tail: 'DnaP', commitName: 'BUGLAN', commitEmail: 'me@example.com' },
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         ),

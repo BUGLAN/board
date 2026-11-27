@@ -756,7 +756,7 @@ mod tests {
         }
         std::fs::write(host_dir.join(RECORD), serde_json::to_string(&Record { host: "github.com".into(), repos: vec![shown(&gh)], ..Default::default() }).unwrap()).unwrap();
 
-        let c = ident("github.com", "tok/en", "BUGLAN", "1831353087@qq.com");
+        let c = ident("github.com", "tok/en", "BUGLAN", "me@example.com");
         let out = sync_at(true, Some(&c), &repos, &host_dir, &cfg);
         assert_eq!(out.sync.state, "synced", "{:?}", out.sync.why);
         assert_eq!(out.sync.detail.host, "github.com");
@@ -764,7 +764,7 @@ mod tests {
         assert_eq!(out.sync.count, 1);
         assert_eq!(cfg_values(&cfg, k), vec![String::new(), mine.to_string(), helper(&host_dir.join(FILE))]);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
-        assert_eq!(cfg_values(&cfg, "user.email"), vec!["1831353087@qq.com"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["me@example.com"]);
         assert!(local_values(&gh, k).is_empty(), "旧版按仓库配的已经去掉");
         assert!(local_values(&ssh, k).is_empty() && local_values(&lab, k).is_empty());
         let text = std::fs::read_to_string(host_dir.join(FILE)).unwrap();
@@ -854,11 +854,11 @@ mod tests {
         let host_dir = t.path().join("host");
         std::fs::create_dir_all(&host_dir).unwrap();
         let cfg = host_dir.join("gitconfig");
-        let c = ident("github.com", "tok", "BUGLAN", "1831353087@qq.com");
+        let c = ident("github.com", "tok", "BUGLAN", "me@example.com");
 
         sync_at(true, Some(&c), &[], &host_dir, &cfg);
         assert_eq!(cfg_values(&cfg, "user.name"), vec!["BUGLAN"]);
-        assert_eq!(cfg_values(&cfg, "user.email"), vec!["1831353087@qq.com"]);
+        assert_eq!(cfg_values(&cfg, "user.email"), vec!["me@example.com"]);
         sync_at(false, Some(&c), &[], &host_dir, &cfg);
         assert!(cfg_values(&cfg, "user.name").is_empty() && cfg_values(&cfg, "user.email").is_empty(), "原来没有就清掉");
 
@@ -877,7 +877,7 @@ mod tests {
         std::fs::create_dir_all(&host_dir).unwrap();
         let cfg = host_dir.join("gitconfig");
         let k = "credential.https://github.com.helper";
-        let c = ident("github.com", "tok", "BUGLAN", "1831353087@qq.com");
+        let c = ident("github.com", "tok", "BUGLAN", "me@example.com");
         sync_at(true, Some(&c), &[], &host_dir, &cfg);
 
         cfg_git(&cfg, &["--unset-all", k]);

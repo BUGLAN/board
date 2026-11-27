@@ -5892,14 +5892,14 @@ fn git_credential_commit_identity_is_paired_masked_and_versioned() {
     let one = crate::gitcred::GitCred { commit_name: "BUGLAN".into(), ..git_cred("github.com", Some("ghp_abcd1234")) };
     assert!(s.write(T0, Origin::ui(None), |w| w.git_cred_put(one, "buglan", "")).unwrap_err().message.contains("一起填"));
 
-    let both = crate::gitcred::GitCred { commit_name: " BUGLAN ".into(), commit_email: " 1831353087@qq.com ".into(), ..git_cred("github.com", Some("ghp_abcd1234")) };
+    let both = crate::gitcred::GitCred { commit_name: " BUGLAN ".into(), commit_email: " me@example.com ".into(), ..git_cred("github.com", Some("ghp_abcd1234")) };
     let bad = crate::gitcred::GitCred { commit_name: "BUGLAN".into(), commit_email: "not-an-email".into(), ..both.clone() };
     assert!(s.write(T0, Origin::ui(None), |w| w.git_cred_put(bad, "buglan", "")).unwrap_err().message.contains("邮箱地址"));
     let out = s.write(T0, Origin::ui(None), |w| w.git_cred_put(both.clone(), "buglan", "")).unwrap();
-    assert_eq!((out.commit_name.as_str(), out.commit_email.as_str(), out.token.as_deref(), out.tail.as_deref()), ("BUGLAN", "1831353087@qq.com", None, Some("1234")));
+    assert_eq!((out.commit_name.as_str(), out.commit_email.as_str(), out.token.as_deref(), out.tail.as_deref()), ("BUGLAN", "me@example.com", None, Some("1234")));
     let full = s.read(|r| r.git_cred()).unwrap().unwrap();
-    assert_eq!((full.commit_name.as_str(), full.commit_email.as_str()), ("BUGLAN", "1831353087@qq.com"));
-    assert!(!full.version.contains("BUGLAN") && !full.version.contains("1831353087"));
+    assert_eq!((full.commit_name.as_str(), full.commit_email.as_str()), ("BUGLAN", "me@example.com"));
+    assert!(!full.version.contains("BUGLAN") && !full.version.contains("me@example.com"));
 
     let same = s.write(T0, Origin::ui(None), |w| w.git_cred_put(crate::gitcred::GitCred { token: None, ..both.clone() }, "buglan", "")).unwrap();
     assert_eq!(same.version, full.version, "留空令牌时提交身份也没变");

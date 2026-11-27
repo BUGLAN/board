@@ -19,7 +19,7 @@ describe('Git 凭据表单', () => {
     expect(gitCredError({ ...ok, token: 'a b' }, true)).toMatch(/空格/);
   });
   it('提交用户名和邮箱必须成对填写，邮箱要有 @', () => {
-    const ok = { host: 'github.com', username: 'buglan', token: 'ghp_x', commitName: 'BUGLAN', commitEmail: '1831353087@qq.com' };
+    const ok = { host: 'github.com', username: 'buglan', token: 'ghp_x', commitName: 'BUGLAN', commitEmail: 'me@example.com' };
     expect(gitCredError(ok, false)).toBeNull();
     expect(gitCredError({ ...ok, commitEmail: '' }, false)).toMatch(/一起填/);
     expect(gitCredError({ ...ok, commitName: ' ' }, false)).toMatch(/一起填/);

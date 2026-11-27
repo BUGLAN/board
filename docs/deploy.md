@@ -387,7 +387,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 ### 一次性配置
 
-服务端不需要 GitHub Actions 的 SSH 密钥、`DEPLOY_HOST` 或 GHCR 凭据。GitHub 仓库只需 Variable `DEPLOY_URL`（桌面端默认服务端地址，例如 `https://board.buglan.com`）。
+服务端不需要 GitHub Actions 的 SSH 密钥、`DEPLOY_HOST` 或 GHCR 凭据。GitHub 仓库只需 Variable `DEPLOY_URL`（桌面端默认服务端地址，例如 `https://board.example.com`）。
 
 服务器目录按「局域网机器直接部署（不用 Docker）」准备：`<服务器目录>` 下放 `.env`、`data`、`bin`、`run-board-server.sh`、`deploy/`，并装好 `com.buglan.board-server` LaunchDaemon。仓库 `deploy/run-board-server.sh` 要复制成服务器目录根部的 `run-board-server.sh`（LaunchDaemon 的入口），`deploy/verify-server.sh` 放到服务器目录的 `deploy/`；前者没有 `.env` 时直接失败，不会退回本机模式。
 
@@ -395,7 +395,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 - 服务状态：`launchctl print system/com.buglan.board-server`
 - 服务日志：`tail -f <服务器目录>/data/board.log`
-- 线上版本：`curl -s https://board.buglan.com/api/health` 的 `version`、`commit`
+- 线上版本：`curl -s https://board.example.com/api/health` 的 `version`、`commit`
 - 当前二进制：`<服务器目录>/bin/board-server`
 
 ### 回滚
