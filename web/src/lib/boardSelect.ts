@@ -14,9 +14,12 @@ import { create } from 'zustand';
 import { justDropped, vetoFor } from './drag';
 import { dispatchRoute } from './hosts';
 import { boardFlow, INBOX, INBOX_NAME } from './schema';
+import { rangeIds, unionIds } from './selection';
 import type { BoardSnapshot, Card, ColumnKey, Dispatch, Status } from './types';
 import { batchCards, batchMovePatch, labelCards, useData, type LabelBatchResult } from '../store/data';
 import { overlayOpen, toast, toastError } from '../store/ui';
+
+export { rangeIds } from './selection';
 
 interface SelState {
   /** 在选择里（从「批量」进来、一张还没选也算） */
@@ -31,27 +34,17 @@ const set = useBoardSel.setState;
 
 export const startSelect = () => set({ on: true });
 export const clearSelect = () => set(s => (s.on || s.ids.length ? { on: false, ids: [], anchor: null } : s));
-export const selectIds = (ids: number[]) => set(s => ({ on: true, ids: union(s.ids, ids) }));
-
-const union = (a: number[], b: number[]) => [...new Set([...a, ...b])];
+export const selectIds = (ids: number[]) => set(s => ({ on: true, ids: unionIds(s.ids, ids) }));
 
 /** 点一张：选上或取消，并记成连选的起点 */
 export function toggleCard(id: number) {
   set(s => ({ on: true, anchor: id, ids: s.ids.includes(id) ? s.ids.filter(x => x !== id) : [...s.ids, id] }));
 }
 
-/** 连选：order 是同一块里看到的顺序；起点不在这一块时返回 null（只切换点的这一张） */
-export function rangeIds(order: number[], anchor: number | null, id: number): number[] | null {
-  const a = anchor == null ? -1 : order.indexOf(anchor);
-  const b = order.indexOf(id);
-  if (a < 0 || b < 0) return null;
-  return order.slice(Math.min(a, b), Math.max(a, b) + 1);
-}
-
 export function selectRange(order: number[], id: number) {
   const r = rangeIds(order, useBoardSel.getState().anchor, id);
   if (!r) return toggleCard(id);
-  set(s => ({ on: true, anchor: id, ids: union(s.ids, r) }));
+  set(s => ({ on: true, anchor: id, ids: unionIds(s.ids, r) }));
 }
 
 /** 块标题勾选框的样子：一张没选 / 选了一部分 / 全选上 */
@@ -63,7 +56,7 @@ export function blockState(ids: number[], picked: number[]): 'none' | 'some' | '
 /** 点块标题的勾选框：全选上时全部取消，否则全部选上 */
 export function toggleBlock(ids: number[]) {
   if (!ids.length) return;
-  set(s => (blockState(ids, s.ids) === 'all' ? { ids: s.ids.filter(id => !ids.includes(id)) } : { on: true, ids: union(s.ids, ids) }));
+  set(s => (blockState(ids, s.ids) === 'all' ? { ids: s.ids.filter(id => !ids.includes(id)) } : { on: true, ids: unionIds(s.ids, ids) }));
 }
 
 /** 批量加 / 去一个标签（白板、「未整理」、「稍后再做」的批量条共用）：一次请求（store/data labelCards）。
@@ -244,11 +237,6 @@ export function installBoardSelect() {
   };
   const onKey = (e: KeyboardEvent) => {
     if (!useBoardSel.getState().on || overlayOpen() || useData.getState().detailId != null) return;
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      clearSelect();
-      return;
-    }
     const card = cardOf(e.target);
     if (card && e.target === card && (e.key === 'Enter' || e.key === ' ') && pick(card, e.shiftKey)) {
       e.preventDefault();

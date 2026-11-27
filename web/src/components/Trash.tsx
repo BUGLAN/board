@@ -4,18 +4,20 @@
    - 每张可以「恢复」或「永久删除」，勾选几条可以一起操作；侧栏的筛选也管这一页
    - 删掉的卡片一直留着，服务端不自动清理：只有人在这里点「永久删除」才真的删掉（附件一起删）
    ========================================================================== */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { statusColor } from '../lib/schema';
+import { snippet } from '../lib/snippet';
 import { timeGroups } from '../lib/split';
 import { purgeCards, restoreMany, restoredToast, trashOf } from '../lib/trash';
 import type { Status, TrashCard } from '../lib/types';
 import { actorName, ago, cx } from '../lib/util';
 import { ActorAvatar, Tip, Title, useNow } from './bits';
 import { useData } from '../store/data';
-import { confirm, overlayOpen, setFilter, useUI } from '../store/ui';
+import { confirm, setFilter, useUI } from '../store/ui';
 import { Check, RowsSkeleton } from './ibRows';
 import { Icon } from './Icon';
+import { BulkBar, useRangeSelect, useSelectKeys } from './Selection';
 
 /** 回收站页：和「稍后再做」同一套样子（default/main#486 复盘）——按删除时间分组（今天、这一周、更早），
     组头能整组勾选；行是「未整理」的行（勾选、编号、谁删的、标题和描述第一行、原来的状态、删除时间），
@@ -30,7 +32,6 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
   const q = filter.trim().toLowerCase();
   const [checked, setChecked] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
-  const lastCheck = useRef<number | null>(null);
 
   // 换白板：勾选清空
   useEffect(() => setChecked([]), [path]);
@@ -41,37 +42,17 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
   const all = useMemo(() => [...(list ?? [])].reverse().filter(t => trashHit(t, q)), [list, q]);
   const groups = useMemo(() => timeGroups(all, t => t.deletedAt, now, '删除'), [all, now]);
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
-
-  const check = (id: number, shift: boolean) => {
-    setChecked(cur => {
-      const on = !cur.includes(id);
-      if (shift && lastCheck.current != null && flat.some(t => t.id === lastCheck.current)) {
-        const a = flat.findIndex(t => t.id === lastCheck.current);
-        const b = flat.findIndex(t => t.id === id);
-        const range = flat.slice(Math.min(a, b), Math.max(a, b) + 1).map(t => t.id);
-        return on ? [...new Set([...cur, ...range])] : cur.filter(c => !range.includes(c));
-      }
-      return on ? [...cur, id] : cur.filter(c => c !== id);
-    });
-    lastCheck.current = id;
-  };
-
-  // esc 取消勾选，⌘A / Ctrl+A 全选（和「未整理」「稍后再做」一样）
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null) return;
-      if (e.key === 'Escape' && checked.length) {
-        e.preventDefault();
-        setChecked([]);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && flat.length) {
-        e.preventDefault();
-        setChecked(flat.map(t => t.id));
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => document.removeEventListener('keydown', key);
-  }, [flat, checked.length]);
+  const flatIds = useMemo(() => flat.map(t => t.id), [flat]);
+  const check = useRangeSelect(flatIds, setChecked, { resetKey: path });
+  useSelectKeys({
+    ids: flatIds,
+    onSelectAll: setChecked,
+    onEscape: () => {
+      if (!checked.length) return false;
+      setChecked([]);
+      return true;
+    },
+  });
 
   const drop = (targets: number[]) => setChecked(cur => cur.filter(id => !targets.includes(id)));
 
@@ -177,10 +158,10 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
 }
 
 /** 回收站的一行：点一下（或 x）勾选，Shift 连选；「恢复」「永久删除」鼠标移上去才露出来，手机上勾选后用底部的批量条 */
-function TrashRow({
+export function TrashRow({
   t, now, statuses, busy, checked, onCheck, onRestore, onPurge,
 }: { t: TrashCard; now: number; statuses: Status[] | undefined; busy: boolean; checked: boolean; onCheck: (id: number, shift: boolean) => void; onRestore: () => void; onPurge: () => void }) {
-  const desc = firstLine(t.body);
+  const desc = snippet(t.body);
   const inbox = t.column === 'inbox';
   const who = actorName(t.deletedBy);
   return (
@@ -260,14 +241,7 @@ function TrashRow({
 /** 勾选后的批量条（和「未整理」「稍后再做」同一个）：永久删除、恢复 */
 function TrashBulk({ n, busy, onRestore, onPurge, onClear }: { n: number; busy: boolean; onRestore: () => void; onPurge: () => void; onClear: () => void }) {
   return (
-    <div className={cx('ib-bulk', n > 0 && 'on')} role="toolbar" aria-label="批量操作" aria-hidden={!n} inert={!n || undefined}>
-      <span className="ib-bulk-n">
-        <b className="mono" key={n}>
-          {n}
-        </b>
-        张已选
-      </span>
-      <i className="ib-bulk-sep" />
+    <BulkBar open={n > 0} count={n} unit="张" onClear={onClear}>
       <button type="button" className="btn sm ghost ib-del" disabled={busy} onClick={onPurge}>
         <Icon name="trash" />
         <span className="ib-bl">永久删除</span>
@@ -276,12 +250,7 @@ function TrashBulk({ n, busy, onRestore, onPurge, onClear }: { n: number; busy: 
         <Icon name="replay" />
         恢复
       </button>
-      <Tip text="取消选择 · esc">
-        <button type="button" className="icon-btn sm" aria-label="取消选择" data-tip-pos="top" onClick={onClear}>
-          <Icon name="close" />
-        </button>
-      </Tip>
-    </div>
+    </BulkBar>
   );
 }
 
@@ -314,10 +283,3 @@ export function trashHit(t: Pick<TrashCard, 'id' | 'title' | 'body'>, q: string)
 
 const nameOf = (key: string, statuses: Status[] | undefined) => statuses?.find(s => s.key === key)?.name ?? key;
 const colorOf = (key: string, statuses: Status[] | undefined) => statuses?.find(s => s.key === key)?.color ?? 'todo';
-
-/** 描述的第一行文字（跳过小标题、图片） */
-function firstLine(body: string) {
-  const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
-  const text = (l: string) => l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^[-*#>\s]+|\[[ xX]\]\s*/g, '').trim();
-  return lines.filter(l => !/^#{1,6}\s/.test(l)).map(text).find(Boolean) ?? '';
-}

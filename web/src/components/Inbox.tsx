@@ -18,6 +18,7 @@ import { openCard, triage, triageMany, untriage } from '../lib/actions';
 import { bulkLabel } from '../lib/boardSelect';
 import { cardDispatch, hostWords } from '../lib/hosts';
 import { boardFlow, INBOX } from '../lib/schema';
+import { snippet } from '../lib/snippet';
 import { canUndoSplit, kidsOf, hiddenEntries, omittedKids, laterEntries, laterGroups, unitCards, unitRep, unitsOf, type Unit } from '../lib/split';
 import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
@@ -32,6 +33,7 @@ import { Icon } from './Icon';
 import { Skeleton } from './Skeleton';
 import { TrashPage } from './Trash';
 import { Check, RowsSkeleton } from './ibRows';
+import { BulkBar as BulkShell, useRangeSelect, useSelectKeys } from './Selection';
 
 export { Check };
 import { cancel } from './hosts/Dispatch';
@@ -175,13 +177,6 @@ function useInboxCards() {
     return all?.filter(c => (!src || srcKey(c.createdBy) === src) && hit(c)) ?? null;
   }, [all, parents, src, q, labels]);
   return { board, all, list, labels, parents };
-}
-
-/** 描述的第一行文字：跳过 Markdown 小标题（只有小标题时才用它），去掉列表、引用、勾选框的符号，图片和链接只留文字 */
-function snippet(body: string) {
-  const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
-  const text = (l: string) => l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^[-*#>\s]+|\[[ xX]\]\s*/g, '').trim();
-  return lines.filter(l => !/^#{1,6}\s/.test(l)).map(text).find(Boolean) ?? lines.map(text).find(Boolean) ?? '';
 }
 
 /** 「可能是同一件事」：标题里共同出现的词（两个汉字或三个以上字母）至少两个，或者同一个标签再加一个共同的词 */
@@ -412,10 +407,10 @@ export function InboxPage() {
   const now = useNow(60000);
   const home = boardFlow(board).home?.name ?? '待办';
   const wrap = useRef<HTMLDivElement>(null);
-  const lastCheck = useRef<number | null>(null);
   const reverse = useInbox(s => s.reverse);
   const groups = useMemo(() => (list ? groupsOf(unitsOf(list, parents), group, now, labels, reverse) : []), [list, parents, group, now, labels, reverse]);
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
+  const flatIds = useMemo(() => flat.map(c => c.id), [flat]);
   const present = useMemo(() => new Set((all ?? []).map(c => renderKey(c.id))), [all]);
   useRowMotion(wrap, present, path);
   // 「全部标为已读」时记下这一刻：服务端快照回来之前，这之前记下的条目就不再画成新的
@@ -442,35 +437,22 @@ export function InboxPage() {
     if (reveal.pulse) replay(el, 'pulse');
   }, [reveal]);
 
-  const check = (id: number, shift: boolean) => {
-    const cur = useInbox.getState().checked;
-    const on = !cur.includes(id);
-    if (shift && lastCheck.current != null && flat.some(c => c.id === lastCheck.current)) {
-      const a = flat.findIndex(c => c.id === lastCheck.current);
-      const b = flat.findIndex(c => c.id === id);
-      const range = flat.slice(Math.min(a, b), Math.max(a, b) + 1).map(c => c.id);
-      setInbox({ checked: on ? [...new Set([...cur, ...range])] : cur.filter(c => !range.includes(c)) });
-    } else setInbox({ checked: on ? [...cur, id] : cur.filter(c => c !== id) });
-    lastCheck.current = id;
-  };
-
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null || useInbox.getState().merge) return;
+  const check = useRangeSelect(flatIds, update => setInbox({ checked: update(useInbox.getState().checked) }), {
+    canSelect: id => !isDraft(id),
+    resetKey: path,
+  });
+  useSelectKeys({
+    enabled: plain && view === 'list',
+    ids: flatIds.filter(id => !isDraft(id)),
+    onSelectAll: ids => setInbox({ checked: ids }),
+    onEscape: () => {
       const st = useInbox.getState();
-      if (st.view === 'one' || st.page !== 'inbox') return;
-      if (e.key === 'Escape' && (st.checked.length || st.open != null)) {
-        e.preventDefault();
-        setInbox(st.checked.length ? { checked: [] } : { open: null });
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && flat.length) {
-        e.preventDefault();
-        setInbox({ checked: flat.filter(c => !isDraft(c.id)).map(c => c.id) });
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => document.removeEventListener('keydown', key);
-  }, [flat]);
+      if (!st.checked.length && st.open == null) return false;
+      setInbox(st.checked.length ? { checked: [] } : { open: null });
+      return true;
+    },
+    blocked: () => useInbox.getState().merge != null,
+  });
 
   // 回收站的批量条挂到页面根上（和「未整理」的一样贴着视口底部），不跟着列表滚走
   const [pageEl, setPageEl] = useState<HTMLDivElement | null>(null);
@@ -612,7 +594,7 @@ export function InboxPage() {
           )}
         </div>
       </div>
-      {plain && view === 'list' && <BulkBar checked={checked} cards={all ?? []} home={home} />}
+      {plain && view === 'list' && <InboxBulkBar checked={checked} cards={all ?? []} home={home} />}
       {merge && <MergeSheet key={`${merge.ids.join(',')}`} req={merge} />}
     </div>
   );
@@ -1217,7 +1199,7 @@ function OneView({ groups, now, all, home }: { groups: GroupOf[]; now: number; a
 
 /* ------------------------------ 批量 ------------------------------ */
 
-function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; home: string }) {
+function InboxBulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; home: string }) {
   const cur = useCurrent();
   const n = checked.length;
   const bulkLabels = (rect: DOMRect) => {
@@ -1235,14 +1217,7 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
     });
   };
   return (
-    <div className={cx('ib-bulk', n > 0 && 'on')} role="toolbar" aria-label="批量操作" aria-hidden={!n} inert={!n || undefined}>
-      <span className="ib-bulk-n">
-        <b className="mono" key={n}>
-          {n}
-        </b>
-        条已选
-      </span>
-      <i className="ib-bulk-sep" />
+    <BulkShell open={n > 0} count={n} onClear={() => setInbox({ checked: [] })}>
       <Tip text={n < 2 ? '至少勾选两条' : ''}>
         <button type="button" className="btn sm ghost" disabled={n < 2} data-tip-pos="top" onClick={() => openMerge(checked)}>
           <Icon name="merge" />
@@ -1264,12 +1239,7 @@ function BulkBar({ checked, cards, home }: { checked: number[]; cards: Card[]; h
       >
         整理到「{home}」
       </button>
-      <Tip text="取消选择 · esc">
-        <button type="button" className="icon-btn sm" aria-label="取消选择" data-tip-pos="top" onClick={() => setInbox({ checked: [] })}>
-          <Icon name="close" />
-        </button>
-      </Tip>
-    </div>
+    </BulkShell>
   );
 }
 
@@ -1810,56 +1780,38 @@ function TitleTabs({ page, count, laterN, trashN }: { page: Page; count: number 
 
 /** 「稍后再做」页：按收起时间分组（最近收起的在前），行和「未整理」同一个样子；
     左滑放回、点开看详情，可以勾选后批量放回、打标签、删除；侧栏的筛选也管这一页 */
-function LaterPage({ cards, labels, project, path, bulkHost }: { cards: Card[] | null; labels: Label[]; project: string; path: string; bulkHost?: HTMLElement | null }) {
+export function LaterPage({ cards, labels, project, path, bulkHost }: { cards: Card[] | null; labels: Label[]; project: string; path: string; bulkHost?: HTMLElement | null }) {
   const now = useNow(60000);
   const filter = useUI(s => s.filter);
   const q = filter.trim().toLowerCase();
   const [checked, setChecked] = useState<number[]>([]);
-  const lastCheck = useRef<number | null>(null);
   const list = useMemo(() => cards?.filter(c => matches(c, q, labels)) ?? null, [cards, q, labels]);
   const groups = useMemo(() => (list ? laterGroups(list, now) : []), [list, now]);
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
+  const flatIds = useMemo(() => flat.map(c => c.id), [flat]);
   const wrap = useRef<HTMLDivElement>(null);
   const present = useMemo(() => new Set((cards ?? []).map(c => renderKey(c.id))), [cards]);
   const settle = (requested: number[], result: BatchResult) => setChecked(cur => keepBatchSelection(requested, cur, result));
   useRowMotion(wrap, present, path, 'lt');
   // 放回、删掉、别的窗口改了：不在这一页的从勾选里去掉
   useEffect(() => setChecked(cs => (cs.some(id => !cards?.some(c => c.id === id)) ? cs.filter(id => cards?.some(c => c.id === id)) : cs)), [cards]);
-  const check = (id: number, shift: boolean) => {
-    setChecked(cur => {
-      const on = !cur.includes(id);
-      if (shift && lastCheck.current != null && flat.some(c => c.id === lastCheck.current)) {
-        const a = flat.findIndex(c => c.id === lastCheck.current);
-        const b = flat.findIndex(c => c.id === id);
-        const range = flat.slice(Math.min(a, b), Math.max(a, b) + 1).map(c => c.id);
-        return on ? [...new Set([...cur, ...range])] : cur.filter(c => !range.includes(c));
-      }
-      return on ? [...cur, id] : cur.filter(c => c !== id);
-    });
-    lastCheck.current = id;
-  };
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]') || overlayOpen() || useData.getState().detailId != null) return;
-      if (e.key === 'Escape' && checked.length) {
-        e.preventDefault();
-        setChecked([]);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && flat.length) {
-        e.preventDefault();
-        setChecked(flat.map(c => c.id));
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => document.removeEventListener('keydown', key);
-  }, [flat, checked.length]);
+  const check = useRangeSelect(flatIds, setChecked, { canSelect: id => !isDraft(id), resetKey: path });
+  useSelectKeys({
+    ids: flatIds.filter(id => !isDraft(id)),
+    onSelectAll: setChecked,
+    onEscape: () => {
+      if (!checked.length) return false;
+      setChecked([]);
+      return true;
+    },
+  });
 
   if (!cards) return <RowsSkeleton n={3} />;
   return (
     <div ref={wrap}>
       {groups.map(g => {
-        const ids = g.rows.map(c => c.id);
-        const allOn = ids.every(id => checked.includes(id));
+        const ids = g.rows.filter(c => !isDraft(c.id)).map(c => c.id);
+        const allOn = ids.length > 0 && ids.every(id => checked.includes(id));
         const some = !allOn && ids.some(id => checked.includes(id));
         return (
           <section key={g.key} className="ib-grp">
@@ -2071,14 +2023,7 @@ function LaterBulk({
     });
   };
   return (
-    <div className={cx('ib-bulk', n > 0 && 'on')} role="toolbar" aria-label="批量操作" aria-hidden={!n} inert={!n || undefined}>
-      <span className="ib-bulk-n">
-        <b className="mono" key={n}>
-          {n}
-        </b>
-        条已选
-      </span>
-      <i className="ib-bulk-sep" />
+    <BulkShell open={n > 0} count={n} onClear={onClear}>
       <button type="button" className="btn sm ghost" data-label-picker onClick={e => bulkLabels(e.currentTarget.getBoundingClientRect())}>
         <Icon name="tag" />
         <span className="ib-bl">标签</span>
@@ -2097,11 +2042,6 @@ function LaterBulk({
       >
         放回「未整理」
       </button>
-      <Tip text="取消选择 · esc">
-        <button type="button" className="icon-btn sm" aria-label="取消选择" data-tip-pos="top" onClick={onClear}>
-          <Icon name="close" />
-        </button>
-      </Tip>
-    </div>
+    </BulkShell>
   );
 }

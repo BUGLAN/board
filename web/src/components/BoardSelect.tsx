@@ -9,6 +9,7 @@ import { closeCtx, openCtx, openDispatchMany, openPicker, setBoardSheet, toast, 
 import { Tip } from './bits';
 import { cardHit, filterActive } from './Card';
 import { Icon } from './Icon';
+import { BulkBar, useSelectKeys } from './Selection';
 
 /** 看得见的卡片（ids 给了就只在这些里挑）：不在未整理、不是还在新建的、没被筛选挡住 */
 function shownIds(board: BoardSnapshot | null, labels: Label[], filter: string, sel: number[], ids?: number[]) {
@@ -91,6 +92,16 @@ export function BoardBulkBar() {
   // 被别处删掉、移进未整理的卡片不算
   const ids = raw.filter(id => board?.cards[id] && board.cards[id].column !== INBOX);
   const n = ids.length;
+  const visible = shownIds(board, labels, filter, sel);
+  useSelectKeys({
+    enabled: on,
+    ids: visible,
+    onSelectAll: selectIds,
+    onEscape: () => {
+      clearSelect();
+      return true;
+    },
+  });
 
   const pickLabels = (rect: DOMRect) => {
     if (!cur || !n) return;
@@ -116,20 +127,15 @@ export function BoardBulkBar() {
   };
 
   return (
-    <div className={cx('ib-bulk board-bulk', on && 'on')} role="toolbar" aria-label="批量操作" aria-hidden={!on} inert={!on || undefined}>
-      <span className="ib-bulk-n">
-        {n ? (
-          <>
-            <b className="mono" key={n}>
-              {n}
-            </b>
-            张已选
-          </>
-        ) : (
-          <span className="board-bulk-hint">点卡片选择 · Shift 连选</span>
-        )}
-      </span>
-      <i className="ib-bulk-sep" />
+    <BulkBar
+      open={on}
+      count={n}
+      unit="张"
+      hint={<span className="board-bulk-hint">点卡片选择 · Shift 连选</span>}
+      className="board-bulk"
+      onClear={clearSelect}
+      clearLabel="退出选择"
+    >
       <button type="button" className="btn sm ghost" onClick={() => selectIds(shownIds(board, labels, filter, sel))}>
         <Icon name="checkCircle" />
         <span className="ib-bl">{filterActive(filter.trim(), sel) ? '全选筛出的' : '全选'}</span>
@@ -157,12 +163,7 @@ export function BoardBulkBar() {
           <span className="ib-bl">派送</span>
         </button>
       </Tip>
-      <Tip text="退出选择 · esc">
-        <button type="button" className="icon-btn sm" aria-label="退出选择" data-tip-pos="top" onClick={clearSelect}>
-          <Icon name="close" />
-        </button>
-      </Tip>
-    </div>
+    </BulkBar>
   );
 }
 
