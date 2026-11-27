@@ -154,6 +154,16 @@ fn host_registers_with_defaults_and_name_is_exclusive() {
 }
 
 #[test]
+fn host_names_cannot_shadow_fixed_routes() {
+    let mut s = store();
+    for name in ["mine", "pause-all", "stop-all"] {
+        let e = beat(&mut s, T0, &report(name, "i1", vec![])).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage, "{name}");
+        assert!(e.message.contains("保留名"), "{name}: {}", e.message);
+    }
+}
+
+#[test]
 fn host_workspace_is_server_authoritative_and_keep_reported_checks() {
     let mut s = store();
     let w = beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
@@ -363,13 +373,26 @@ fn derive_dir_uses_the_project_dir() {
 /// 项目目录只能是一个合法的目录名
 #[test]
 fn project_dir_must_be_one_directory_name() {
-    for ok in ["", "  ", "board", "my.repo-2", "仓库"] {
+    for ok in ["", "  ", "board", "my.repo-2", "仓库", "console", "aux-1", "com10"] {
         assert!(crate::store::check_project_dir(ok).is_ok(), "{ok}");
     }
     assert_eq!(crate::store::check_project_dir("  board ").unwrap(), "board");
-    for bad in ["a/b", "a\\b", ".", "..", "C:", "C:\\repo", "~repo", "a|b", "a?b", "a*", "a<b", "a\"b", "repo.", "a\u{1}b", &"x".repeat(65)] {
+    for bad in [
+        "a/b", "a\\b", ".", "..", "C:", "C:\\repo", "~repo", "a|b", "a?b", "a*", "a<b", "a\"b", "repo.", "a\u{1}b",
+        "con", "AUX", "nul.txt", "aux.tar.gz", "com1", "lpt9", &"x".repeat(65),
+    ] {
         let e = crate::store::check_project_dir(bad).unwrap_err();
         assert_eq!(e.code, ErrorCode::Usage, "{bad}");
+    }
+}
+
+#[test]
+fn project_keys_cannot_be_windows_device_names() {
+    for bad in ["con", "aux", "nul", "prn", "com1", "lpt9"] {
+        assert!(!crate::store::valid_key(bad), "{bad}");
+    }
+    for ok in ["console", "aux-1", "com0", "com10", "lpt0", "lpt10"] {
+        assert!(crate::store::valid_key(ok), "{ok}");
     }
 }
 

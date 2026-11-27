@@ -643,6 +643,23 @@ fn server_side_token_command_works() {
 }
 
 #[test]
+fn server_side_token_command_rejects_reserved_machine_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("board.db");
+    for name in ["mine", "pause-all", "stop-all"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_board-server"))
+            .args(["token", "new", "测试", "--machine", name, "--db"])
+            .arg(&db)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{name}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("保留名"), "{name}: {err}");
+    }
+    assert!(auth::list_tokens(board_core::Store::open(&db).unwrap().conn()).unwrap().is_empty());
+}
+
+#[test]
 fn local_mode_needs_no_login_but_only_local_hosts() {
     let s = local_mode();
     let r = send("GET", &format!("{}/api/workspace", s.url), &[], None);

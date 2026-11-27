@@ -88,6 +88,24 @@ fn fetch_models_uses_stored_key_when_editing() {
     assert_eq!(r.body["models"], json!(["m-chat", "m-reasoner"]), "{}", r.text);
 }
 
+#[test]
+fn provider_cannot_be_named_models() {
+    let s = Server::start(Auth::Local);
+    let r = send(
+        "POST",
+        &format!("{}/api/providers", s.url),
+        &[UI],
+        Some(json!({
+            "name": "models",
+            "endpoints": [{ "interface": "openai-chat", "url": "https://api.example.com/v1" }],
+            "apiKey": "sk-test",
+            "models": ["m"]
+        })),
+    );
+    assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
+    assert!(r.body["error"]["message"].as_str().unwrap().contains("保留名"), "{}", r.text);
+}
+
 /// board host 用自己的令牌取供应商原文：`GET /api/hosts/{名字}/providers` 要放行给 agent 令牌，
 /// 别的令牌拿不到；`GET /api/providers` 的列表（API key 打码）访问令牌能读（PRD §10.16「共用配置」）
 #[test]

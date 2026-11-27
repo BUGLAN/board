@@ -186,7 +186,11 @@ fn tail(v: &str) -> String {
 
 /// 名称：字母、数字、`_`、`-`，以字母或数字开头，最长 64 个字符（和 MCP 服务器一样；`@` 开头留给「本机自己管」）
 pub fn check_name(name: &str) -> Result<()> {
-    crate::mcp::check_name(name).map_err(|_| BoardError::usage(format!("供应商名称「{name}」不对：只能用字母、数字、_、-，以字母或数字开头，最长 64 个字符")))
+    crate::mcp::check_name(name).map_err(|_| BoardError::usage(format!("供应商名称「{name}」不对：只能用字母、数字、_、-，以字母或数字开头，最长 64 个字符")))?;
+    if name == "models" {
+        return Err(BoardError::usage("供应商名称「models」是保留名（「获取模型」接口在用），换一个"));
+    }
+    Ok(())
 }
 
 impl Provider {
@@ -411,6 +415,18 @@ mod tests {
         assert!(put(&mut s, Provider { models: vec![], ..provider("x") }).unwrap_err().message.contains("模型"));
         assert!(put(&mut s, Provider { endpoints: vec![], ..provider("x") }).unwrap_err().message.contains("接口"));
         assert!(put(&mut s, Provider { endpoints: vec![ProviderEndpoint { interface: "anthropic".into(), url: "ftp://x".into() }], ..provider("x") }).unwrap_err().message.contains("http"));
+    }
+
+    #[test]
+    fn provider_name_cannot_shadow_the_models_route() {
+        let e = check_name("models").unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert!(e.message.contains("保留名"), "{}", e.message);
+
+        let mut s = Store::open_in_memory().unwrap();
+        let e = s.write(1000, Origin::ui(None), |w| w.provider_put(provider("models"), "", "")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert!(e.message.contains("保留名"), "{}", e.message);
     }
 
     #[test]

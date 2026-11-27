@@ -237,13 +237,24 @@ pub fn when_words(ms: i64, now: i64) -> String {
     }
 }
 
-/// 标识：小写字母、数字和 `-`，以字母或数字开头，最长 32 个字符
+/// Windows 保留设备名：不区分大小写，带扩展名也算（`aux.txt` 等同于 `aux`）
+fn is_windows_device_name(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or_default().to_ascii_lowercase();
+    matches!(base.as_str(), "con" | "prn" | "aux" | "nul")
+        || ["com", "lpt"].iter().any(|prefix| {
+            base.strip_prefix(prefix)
+                .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n.as_bytes()[0] != b'0')
+        })
+}
+
+/// 标识：小写字母、数字和 `-`，以字母或数字开头，最长 32 个字符，不能是 Windows 保留设备名
 pub fn valid_key(key: &str) -> bool {
     let b = key.as_bytes();
     !b.is_empty()
         && b.len() <= 32
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+        && !is_windows_device_name(key)
 }
 
 /// 白板路径：`<项目>/<白板>`，两段都是标识（[`valid_key`]）
@@ -1471,7 +1482,7 @@ impl<'a> W<'a> {
         let name = Self::need_name(name, "项目")?;
         let key = key.trim();
         if !valid_key(key) {
-            return Err(BoardError::usage("项目标识只能用小写字母、数字和 -，以字母或数字开头，最长 32 个字符"));
+            return Err(BoardError::usage("项目标识只能用小写字母、数字和 -，以字母或数字开头，最长 32 个字符，不能是 Windows 保留设备名"));
         }
         let taken: Option<String> =
             self.tx.query_row("SELECT key FROM projects WHERE key = ?1", [key], |r| r.get(0)).optional()?;
@@ -1554,7 +1565,7 @@ impl<'a> W<'a> {
         let name = Self::need_name(name, "白板")?;
         let key = key.trim();
         if !valid_key(key) {
-            return Err(BoardError::usage("白板标识只能用小写字母、数字和 -，以字母或数字开头，最长 32 个字符"));
+            return Err(BoardError::usage("白板标识只能用小写字母、数字和 -，以字母或数字开头，最长 32 个字符，不能是 Windows 保留设备名"));
         }
         let taken: Option<i64> = self
             .tx
@@ -1880,7 +1891,8 @@ pub struct ProjectPatch<'a> {
 pub const PROJECT_DIR_MAX: usize = 64;
 
 /// 项目目录（#488）：去掉首尾空白；空的表示用项目标识。只能是一个目录名——不能有 `/`、`\`，不能是 `.`、`..`，
-/// 不能带盘符（`C:`）或以 `~` 开头，不能有 Windows 不允许的字符和控制字符，不能以空格或 `.` 结尾
+/// 不能带盘符（`C:`）或以 `~` 开头，不能有 Windows 不允许的字符和控制字符，不能以空格或 `.` 结尾，
+/// 不能是 Windows 保留设备名（不区分大小写，`nul.txt` 也算）
 pub fn check_project_dir(dir: &str) -> Result<String> {
     let d = dir.trim();
     if d.is_empty() {
@@ -1907,6 +1919,9 @@ pub fn check_project_dir(dir: &str) -> Result<String> {
     }
     if d.ends_with('.') {
         return bad("不能以 . 结尾（Windows 上用不了）");
+    }
+    if is_windows_device_name(d) {
+        return bad("是 Windows 保留设备名（不区分大小写，带扩展名也不行）");
     }
     Ok(d.to_string())
 }

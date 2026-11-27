@@ -27,7 +27,7 @@ fn project_dir_is_validated_and_unique() {
     assert_eq!(r.status, 200, "{}", r.text);
     assert_eq!(project(&s, "default")["dir"], "board");
     // 不是一个目录名：USAGE，写明原因，不改
-    for bad in ["../x", "a/b", "C:\\repo", "~", ".."] {
+    for bad in ["../x", "a/b", "C:\\repo", "~", "..", "con", "AUX", "nul.txt"] {
         let r = patch(&s, "default", bad);
         assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{bad}: {}", r.text);
         assert!(r.body["error"]["message"].as_str().unwrap().contains("项目目录"), "{}", r.text);
@@ -48,8 +48,16 @@ fn project_dir_is_validated_and_unique() {
     assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{}", r.text);
     let r = new("board", None);
     assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "项目标识和别的项目填的目录重名：{}", r.text);
+    for bad in ["con", "AUX", "nul.txt"] {
+        let r = new(bad, None);
+        assert_eq!((r.status, r.code().as_str()), (400, "USAGE"), "{bad}: {}", r.text);
+        assert!(r.body["error"]["message"].as_str().unwrap().contains("保留设备名"), "{}", r.text);
+    }
     let r = send("GET", &format!("{}/api/workspace", s.url), &[], None);
-    assert!(!r.body["projects"].as_array().unwrap().iter().any(|p| p["key"] == "api" || p["key"] == "board"), "没建成的项目不留下");
+    assert!(
+        !r.body["projects"].as_array().unwrap().iter().any(|p| p["key"] == "api" || p["key"] == "board" || p["key"] == "con" || p["key"] == "AUX" || p["key"] == "nul.txt"),
+        "没建成的项目不留下"
+    );
     // 清空：回到项目标识
     let r = patch(&s, "default", "");
     assert_eq!(r.status, 200, "{}", r.text);

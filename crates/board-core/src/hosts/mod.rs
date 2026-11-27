@@ -393,6 +393,9 @@ pub(crate) const DUE_COUNT: &str = "(SELECT COUNT(*) FROM hosts WHERE off_at IS 
 
 /// 机器名：小写字母、数字、`.`、`-`，以字母或数字开头，最长 24 个字符
 pub fn check_host_name(name: &str) -> std::result::Result<(), String> {
+    if matches!(name, "mine" | "pause-all" | "stop-all") {
+        return Err(format!("机器名「{name}」是保留名（接口路径在用），换一个"));
+    }
     let ok = !name.is_empty()
         && name.len() <= HOST_NAME_MAX
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
