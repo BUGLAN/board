@@ -457,10 +457,14 @@ fn mine_and_beating(st: &State, me: Option<Proc>) -> bool {
     same && st.heartbeat().is_some_and(|h| Procs::new().is_some_and(|mut ps| ps.alive(h)))
 }
 
-/// 配置里的机器名和记下的不一样了：按新名字重新 check 一次，记下新的名字（失败时照旧用原来的）
+/// 配置里的机器名和记下的不一样了：后台心跳已经停了才按新名字重新 check 一次（失败时照旧用原来的）。
+/// 心跳还在跑时继续用旧名字；这时换名会删掉旧记录，让心跳退出、持有的卡片被释放（default/main#690）
 fn refreshed(st: State) -> Option<String> {
     let host = crate::config::host_name();
     if st.host == host {
+        return Some(st.name);
+    }
+    if mine_and_beating(&st, agent_process()) {
         return Some(st.name);
     }
     let id = st.agent_id.clone()?;

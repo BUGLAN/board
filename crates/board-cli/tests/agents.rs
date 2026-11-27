@@ -4,8 +4,39 @@
 mod common;
 
 use common::{board, start, Run, Server};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
 
 const ME: &str = "test/alpha";
+
+fn fake_agent() -> Child {
+    let mut cmd = if cfg!(windows) {
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "120", "127.0.0.1"]);
+        cmd
+    } else {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("120");
+        cmd
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+}
+
+fn alive(pid: u32) -> bool {
+    let mut sys = System::new().unwrap();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing());
+    sys.process(pid).is_some_and(|p| !matches!(p.status(), ProcessStatus::Zombie | ProcessStatus::Dead))
+}
+
+fn wait_until(what: &str, limit: Duration, mut f: impl FnMut() -> bool) {
+    let begun = Instant::now();
+    while !f() {
+        assert!(begun.elapsed() < limit, "{what}：{limit:?} 内没有发生");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 #[test]
 fn check_name_format_and_strict_mode() {
@@ -165,4 +196,71 @@ fn check_agent_requires_agent_or_name() {
     assert!(r.json()["error"]["message"].as_str().unwrap().contains("--agent"), "{}", r.out);
     let r = board(&s.home, &s.env(), &["check", "--agent", "Claude Code", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"));
+}
+
+/// 会话进行中改了机器名：旧名字的后台心跳还在跑时不换名，评论、持有都不受影响；
+/// 心跳退出后下一条命令才换成新名字（default/main#690）
+#[test]
+fn renaming_the_host_keeps_a_live_session_on_its_old_name() {
+    let s = start();
+    let token = register_win(&s);
+    s.run("test/maker", &["new", "一"]);
+
+    let mut agent = fake_agent();
+    let tmp = tempfile::tempdir().unwrap();
+    let tmpdir = tmp.path().to_string_lossy().to_string();
+    let mut env = vec![
+        ("BOARD_URL", s.url.clone()),
+        ("BOARD_TOKEN", token),
+        ("BOARD", "default".into()),
+        ("BOARD_HOST_NAME", "win".into()),
+        ("BOARD_HEARTBEAT_PID", agent.id().to_string()),
+        ("BOARD_HEARTBEAT_INTERVAL", "0.5".into()),
+        ("TMPDIR", tmpdir.clone()),
+        ("TMP", tmpdir.clone()),
+        ("TEMP", tmpdir),
+    ];
+    let r = board(&s.home, &env, &["start", "1", "--agent", "claude", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["session"]["name"], "win/opus-5.5");
+    let state = |name: &str| tmp.path().join("board-heartbeat").join(format!("{}.json", name.replace('/', "_")));
+    let heartbeat = |name: &str| -> (u32, serde_json::Value) {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(state(name)).unwrap()).unwrap();
+        let pid = v["heartbeat"].as_str().and_then(|h| h.split(':').next()).and_then(|p| p.parse().ok()).unwrap();
+        (pid, v)
+    };
+    let (loop_pid, _) = heartbeat("win/opus-5.5");
+    assert!(alive(loop_pid));
+
+    let now = board_core::now_ms();
+    let mut store = board_core::Store::open(&s.db).unwrap();
+    store.write(now, board_core::Origin::cli(), |w| w.host_rename("win", "mbp")).unwrap();
+    env.retain(|(k, _)| *k != "BOARD_HOST_NAME");
+    env.push(("BOARD_HOST_NAME", "mbp".into()));
+
+    let r = board(&s.home, &env, &["comment", "1", "心跳还在", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let activity = r.json()["activity"].clone();
+    let last = activity.as_array().unwrap().iter().rev().find(|v| v["type"] == "comment").unwrap();
+    assert_eq!(last["actor"], "win/opus-5.5", "{last}");
+    assert!(alive(loop_pid), "评论后旧名字的心跳进程还在");
+    assert!(state("win/opus-5.5").exists());
+    assert!(!state("mbp/opus-5.5").exists());
+    let card = board(&s.home, &env, &["show", "1", "--json"]).json();
+    assert_eq!(card["holder"], "win/opus-5.5");
+
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+    wait_until("心跳进程退出", Duration::from_secs(10), || {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(state("win/opus-5.5")).unwrap()).unwrap();
+        v["heartbeat"].is_null()
+    });
+
+    let r = board(&s.home, &env, &["comment", "1", "心跳停了", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let activity = r.json()["activity"].clone();
+    let last = activity.as_array().unwrap().iter().rev().find(|v| v["type"] == "comment").unwrap();
+    assert_eq!(last["actor"], "mbp/opus-5.5", "{last}");
+    assert!(state("mbp/opus-5.5").exists());
+    assert!(!state("win/opus-5.5").exists());
 }
