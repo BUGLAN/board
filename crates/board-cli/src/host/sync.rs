@@ -8,7 +8,6 @@ pub(super) struct SyncAgent {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) env: Env,
-    pub(super) prog: Option<String>,
     pub(super) skill_dir: Option<String>,
 }
 
@@ -52,12 +51,15 @@ pub(super) struct SyncOut {
     pub(super) local: Vec<board_core::skills::LocalSkill>,
     pub(super) targets: Vec<skills::Target>,
     pub(super) now: BTreeMap<String, (String, String)>,
+    /// 这次取到的供应商 key、MCP 密钥和 Git 令牌（只留在内存里，上传日志前脱敏）
+    pub(super) secrets: Vec<String>,
 }
 
 /// 同步配置（在后台线程里）：skills（选了「不改」时只装 board-skills）、MCP（选了「不改」时不碰）、
 /// 每个内置 agent 的模型（不改 / 指定），最后读回每个 agent 配置文件里现在的模型和强度
 pub(super) fn run_sync(job: SyncJob) -> SyncOut {
     let mut changes = vec![];
+    let mut secrets = vec![];
     // skills
     let list: Vec<(String, Env, String)> = job.agents.iter().filter_map(|a| a.skill_dir.clone().map(|d| (a.id.clone(), a.env.clone(), d))).collect();
     let (targets, bad) = skills::host_targets(list, &job.lib);
@@ -85,6 +87,7 @@ pub(super) fn run_sync(job: SyncJob) -> SyncOut {
         match lib {
             Err(why) => McpSync { state: "failed".into(), why: Some(why), ..Default::default() },
             Ok(lib) => {
+                secrets.extend(mcpsync::secret_values(&lib));
                 let mut targets = vec![];
                 let mut unsupported = vec![];
                 let mut bad = vec![];
@@ -94,7 +97,7 @@ pub(super) fn run_sync(job: SyncJob) -> SyncOut {
                         continue;
                     }
                     match mcpsync::file_of(&a.id, &a.env) {
-                        Some((file, shown)) => targets.push(mcpsync::Target { agent: a.id.clone(), env: a.env.clone(), prog: a.prog.clone(), file, shown }),
+                        Some((file, shown)) => targets.push(mcpsync::Target { agent: a.id.clone(), file, shown }),
                         None => bad.push(format!("{}：取不到{}里的配置文件位置", a.name, a.env.name)),
                     }
                 }
@@ -140,6 +143,9 @@ pub(super) fn run_sync(job: SyncJob) -> SyncOut {
             match cred {
                 Err(why) => board_core::GitSync { state: "failed".into(), why: Some(why), ..Default::default() },
                 Ok(c) => {
+                    if let Some(token) = c.as_ref().and_then(|c| c.token.as_deref()).filter(|t| !t.trim().is_empty()) {
+                        secrets.push(token.to_string());
+                    }
                     let out = gitsync::sync(job.git_on, c.as_ref(), &job.repos, &job.host_dir);
                     changes.extend(out.changes);
                     out.sync
@@ -147,7 +153,9 @@ pub(super) fn run_sync(job: SyncJob) -> SyncOut {
             }
         }
     };
-    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, skills, mcp, git }, changes, local, targets, now }
+    secrets.sort();
+    secrets.dedup();
+    SyncOut { result: SyncResult { id: job.id, key: job.key, at: 0, skills, mcp, git }, changes, local, targets, now, secrets }
 }
 
 impl Host<'_> {
@@ -177,6 +185,7 @@ impl Host<'_> {
                     self.local_skills = out.local;
                     self.skill_targets = out.targets;
                     self.agent_now = out.now;
+                    self.remember_secrets(out.secrets);
                     // 装上、换掉了 skill：重新看一遍各 agent 看不看得到 board-skills
                     if !out.changes.is_empty() && self.recheck_skills() {
                         changed = true;
@@ -214,12 +223,10 @@ impl Host<'_> {
             let Some(u) = used.iter().find(|a| a.id == spec.id && a.found) else { continue };
             let env_id = u.env.clone().or_else(|| spec.default_check().map(|c| c.env.clone())).unwrap_or_else(|| "direct".into());
             let Some(env) = self.envs.iter().find(|e| e.id == env_id) else { continue };
-            let prog = spec.checks.iter().find(|c| c.env == env_id).and_then(|c| c.prog.clone());
             agents.push(SyncAgent {
                 id: spec.id.clone(),
                 name: spec.name.clone(),
                 env: env.clone(),
-                prog,
                 skill_dir: spec.skills.first().cloned(),
             });
         }

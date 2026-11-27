@@ -235,6 +235,29 @@ read l; exit 0
     assert!(String::from_utf8_lossy(&o.stderr).contains("启动"), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
+#[test]
+fn provider_file_is_deleted_even_when_the_agent_cannot_start() {
+    let d = tempfile::tempdir().unwrap();
+    let prompt = write(d.path(), "p.txt", "x");
+    let provider = write(d.path(), "provider.json", r#"{"apiType":"anthropic","headers":{"Authorization":"Bearer sk-secret"}}"#);
+    let cwd = d.path().display().to_string();
+    let o = Command::new(env!("CARGO_BIN_EXE_board"))
+        .args(["acp", "--env", "direct", "--cwd", &cwd, "--prompt-file", &prompt, "--provider-file", &provider, "--", "/board-test-no-such-acp-agent"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!Path::new(&provider).exists(), "agent 起不来也要先删掉含 key 的文件");
+
+    let state = write(d.path(), "chat.state", "");
+    let provider = write(d.path(), "chat-provider.json", r#"{"apiType":"anthropic"}"#);
+    let o = Command::new(env!("CARGO_BIN_EXE_board"))
+        .args(["acp", "--env", "direct", "--cwd", &cwd, "--chat", &state, "--provider-file", &provider, "--", "/board-test-no-such-acp-agent"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!Path::new(&provider).exists(), "对话起不来也要先删掉含 key 的文件");
+}
+
 /// 对话：同一个 ACP 会话里连发两轮，状态文件的 busy / seq / stop 跟着每一轮变化；`session/new` 只开一次
 #[test]
 fn chat_reuses_one_session_for_two_rounds() {

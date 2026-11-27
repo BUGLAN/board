@@ -57,7 +57,7 @@ board host 用 ACP（Agent Client Protocol）驱动所有 agent；当时为什�
 
    所有 agent 都是同一种格式（上报 `fmt: "acp"`）：输入 / 输出 tokens 是 prompt 回应里带的（agent 给了才有），费用是最后一次 `usage_update` 里的累计值。
 
-   上传前脱敏（`crates/board-cli/src/redact.rs`）：agent 执行 `env`、打印配置文件、报错时带出请求头，令牌和其他密钥不能跟着上传到服务端（任何登录的人都能看到界面上的输出，异常退出时评论里还带最后几个事件和最后 20 行）。`board host` 在向服务端发原始输出、事件，写异常退出评论之前，把这些换成 `<已隐藏>`：当前令牌的原文、这次派发注入的 `BOARD_TOKEN`、`BOARD_HOST_TOKEN`，以及常见格式的密钥（`sk-…`、`ghp_…`、`github_pat_…`、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----` 块、`Authorization: Bearer …` 的凭据）。本机的日志文件保留原文。普通的十六进制提交号不会被误伤。
+   上传前脱敏（`crates/board-cli/src/redact.rs`）：agent 执行 `env`、打印配置文件、报错时带出请求头，令牌和其他密钥不能跟着上传到服务端（任何登录的人都能看到界面上的输出，异常退出时评论里还带最后几个事件和最后 20 行）。`board host` 在向服务端发原始输出、事件，写异常退出评论之前，把这些换成 `<已隐藏>`：当前令牌的原文、这次派发注入的 `BOARD_TOKEN`、`BOARD_HOST_TOKEN`，这次从服务端取到的供应商 key、MCP 密钥值和 Git 令牌，以及常见格式的密钥（`sk-…`、`ghp_…`、`gho_/ghs_/ghu_/ghr_…`、`github_pat_…`、`glpat-…`、`bd_` 加 48 位十六进制、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----` 块、`Authorization: Bearer …` 的凭据、URL 里的 `user:password@`）。本机的日志文件保留原文。普通的十六进制提交号不会被误伤。
 
    本机日志文件只有自己能读（0600）；单个日志超过 50 MB 时只留开头 1 MB 和最后 10 MB，中间写一行省略说明；结束超过 30 天的在 `board host` 启动时、之后每天删一次，天数用 `~/.board/config.toml` 的 `[host] log_days` 改。
 4. 名字的心跳由 `board host` 发。`board-skills` 看到 `BOARD_HOST` 且卡片已由 `BOARD_AS` 持有，就不再 check、不再领取、不管心跳，只干活、提交推送、交审或交给人。手动启动的会话不用自己拼名字：`board check --agent <标识>` 由 Board 按这台机器的设置生成同样的名字（§3.2）。
@@ -102,13 +102,13 @@ curl -fsSL <服务端>/install.sh | sh -s -- --token <令牌> --name <机器名>
 
 | agent | 写到哪里 | 怎么写 |
 |---|---|---|
-| Claude Code | `~/.claude.json` 顶层 `mcpServers`（user scope） | 在它的启动环境里执行 `claude mcp add-json --scope user <名称> '<JSON>'`，改之前先 `claude mcp remove --scope user <名称>` |
+| Claude Code | `~/.claude.json` 顶层 `mcpServers`（user scope） | 直接改文件：读完、改 `mcpServers.<名称>`、写临时文件再换上；保留原文件权限（没有原文件时 0600），写完重读确认，被 Claude Code 同时改写时重试一次 |
 | Codex | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `[mcp_servers.<名称>]` | 直接改文件：`command`、`args`、`env`，或 `url`、`http_headers` |
 | dsh | — | 不支持，界面上写「不支持」 |
 
 - 机器详情「设置 → skills 和 MCP」里 MCP 选了「用服务器的」才写（新机器默认「不改」：Board 不碰它的 MCP 配置，之前加的也不删）。
 - 加过哪些记在 `~/.board/host/mcp-sync.json`。agent 里已经有同名、不是同步加的：原来的值存进 `~/.board/host/mcp-backup.json`，换成共用配置里的，之后归 Board 管；在共用配置里删掉的，同步加的那条也删掉，自己加的不动。
-- 值可以标成密钥（token、API key）：只存在服务端，界面上只显示末尾 4 位，只发给 board host；会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件仍然只该自己能读。
+- 值可以标成密钥（token、API key）：只存在服务端，界面上只显示末尾 4 位，只发给 board host；会以原文写进 agent 自己的配置文件（agent 要用），所以这些文件和 `mcp-backup.json` 仍然只该自己能读（0600）。
   - 原文只发给**这台机器用的那个令牌**：`GET /api/hosts/{名字}/mcp` 比对机器最后一次上报时带的令牌 ID，只在这台机器在线、名字对得上、令牌是它上报用的那个时返回原文；别的令牌（包括界面上新建的、别的机器用的）、登录的界面、离线的机器都拿到 `NOT_LOGGED_IN`；打码的 `GET /api/mcp` 只在界面上用。所以能拿到的范围是「一台在线机器自己的令牌」，不是「任意 agent 令牌」。
 - 装了桌面端的电脑可以「从本机导入」：把这台电脑上已经配好的服务器勾选后加进共用配置，名字像密钥的值自动标成密钥。
 
@@ -125,7 +125,7 @@ board host 每次派发按角色给**这一个 agent 进程**带上供应商、�
 | dsh | 这次派发的 `--patch` 后面接上 `llm-pi-ai` 里一条 `board-role` 路由和 `acp` 用的提供方、模型、强度；key 放在这个进程的环境变量 `BOARD_ROLE_API_KEY` 里 | 写在补丁里；没有供应商时用会话配置项 `reasoning_effort` 切强度 |
 | 配置文件里新加的 agent | 不能换供应商：角色只能选「本机配置」 | 会话配置项 |
 
-- `providers/set` 的参数（含 key）写进 `~/.board/host/run/<派发 ID>.provider.json`（只有自己能读），交给 `board acp --provider-file`，读完就删；派发日志里这一帧的请求头写成 `***`。换供应商失败（例如网关列不出模型）时不开会话，按异常退出记下原因。
+- `providers/set` 的参数（含 key）写进 `~/.board/host/run/<派发 ID>.provider.json`（只有自己能读），交给 `board acp --provider-file`，`board acp` 第一步读完就删；派发启动失败时 board host 也会兜底删掉 provider 文件和这次的 dsh 补丁，派发日志里这一帧的请求头写成 `***`。换供应商失败（例如网关列不出模型）时不开会话，按异常退出记下原因。
 - 本机配置、官方订阅的角色不换供应商，只切模型、强度；没填模型时不切，用 agent 自己的默认。
 
 **身份和官方订阅**（#667）：本机配置不保证走订阅——机器上有别的凭据时会悄悄盖过订阅（Claude Code 的[凭据优先级](https://code.claude.com/docs/en/authentication)里 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_API_KEY`、`apiKeyHelper` 都排在 `/login` 的订阅前面，`~/.claude/settings.json` 的 `env` 里的也算；Codex 的 `config.toml` 里 `model_provider` 指向中转、`auth.json` 里是 API key 时不走 ChatGPT 订阅）。所以要确认走订阅的用「官方订阅」：

@@ -4,8 +4,10 @@
 //!
 //! - 当前令牌的原文（board host 自己用的这个）；
 //! - 这次派发注入的密钥值（`BOARD_TOKEN`、`BOARD_HOST_TOKEN` 等环境变量的值，调用方一并传进来）；
-//! - 常见格式的密钥：`sk-…`、`ghp_…`、`github_pat_…`、`xox…-…`、`AKIA…`、整段 `-----BEGIN … PRIVATE KEY-----`
-//!   块（到对应的 `-----END … PRIVATE KEY-----` 为止），以及 `Authorization: Bearer …` 的凭据部分。
+//! - 常见格式的密钥：`sk-…`、`ghp_…`、`gho_…`、`ghs_…`、`ghu_…`、`ghr_…`、`github_pat_…`、
+//!   `glpat-…`、Board 令牌 `bd_` 加 48 位十六进制、`xox…-…`、`AKIA…`、整段
+//!   `-----BEGIN … PRIVATE KEY-----` 块（到对应的 `-----END … PRIVATE KEY-----` 为止）、
+//!   `Authorization: Bearer …` 的凭据部分，以及 URL 里的 `user:password@`。
 //!
 //! 本机的日志文件保留原文：脱敏只在上传（和写进卡片评论的那份摘要）之前做。
 //!
@@ -29,6 +31,15 @@ const RULES: &[Rule] = &[
     // GitHub：旧版个人令牌 ghp_、新版细粒度令牌 github_pat_
     Rule { prefix: "ghp_", min_rest: 16 },
     Rule { prefix: "github_pat_", min_rest: 16 },
+    // GitHub CLI / Actions / 其他 GitHub 令牌
+    Rule { prefix: "gho_", min_rest: 16 },
+    Rule { prefix: "ghs_", min_rest: 16 },
+    Rule { prefix: "ghu_", min_rest: 16 },
+    Rule { prefix: "ghr_", min_rest: 16 },
+    // GitLab personal access token
+    Rule { prefix: "glpat-", min_rest: 16 },
+    // Board 的访问令牌：bd_ 加 48 位十六进制
+    Rule { prefix: "bd_", min_rest: 48 },
     // Slack：xoxb-、xoxp-、xoxa-、xoxr-、xoxs-
     Rule { prefix: "xoxb-", min_rest: 10 },
     Rule { prefix: "xoxp-", min_rest: 10 },
@@ -70,6 +81,30 @@ fn bearer_rest(s: &str, from: usize) -> Option<usize> {
         return None;
     }
     Some(from + s[from..].len() - cred.len())
+}
+
+/// `scheme://user:password@host` 里的 userinfo 范围（不含 `://`、含到 `@` 之前）。
+/// 只认 authority 里带冒号的 userinfo：`https://host/path@x`、`ssh://git@host` 不动
+fn url_userinfo(s: &str, from: usize) -> Option<(usize, usize)> {
+    if !s[from..].starts_with("://") {
+        return None;
+    }
+    let start = from + 3;
+    let mut at = None;
+    for (i, c) in s[start..].char_indices() {
+        match c {
+            '@' => {
+                at = Some(start + i);
+                break;
+            }
+            '/' | '?' | '#' | '\\' | '"' | '\'' | '<' | '>' => return None,
+            c if c.is_whitespace() => return None,
+            _ => {}
+        }
+    }
+    let at = at?;
+    let userinfo = &s[start..at];
+    (!userinfo.is_empty() && userinfo.contains(':')).then_some((start, at))
 }
 
 /// 从 `from` 开始的一个 `-----BEGIN … PRIVATE KEY-----` 块的结尾（含 `-----END …-----` 那一行）。
@@ -122,6 +157,12 @@ pub fn redact(s: &str, secrets: &[&str]) -> String {
                 continue;
             }
         }
+        // URL 里的 user:password@host
+        if let Some((start, end)) = url_userinfo(&out, i) {
+            found.push((start, end));
+            i = end;
+            continue;
+        }
         // PRIVATE KEY 块
         if let Some(end) = private_key_end(&out, i) {
             found.push((i, end));
@@ -133,8 +174,12 @@ pub fn redact(s: &str, secrets: &[&str]) -> String {
             if !out[i..].starts_with(rule.prefix) {
                 continue;
             }
-            // AKIA 后面只认大写字母和数字（AWS 的格式）；其他认一般的 token 字符
-            let ok = |c: char| if rule.prefix == "AKIA" { c.is_ascii_uppercase() || c.is_ascii_digit() } else { token_char(c) };
+            // AKIA 后面只认大写字母和数字（AWS），bd_ 后面只认十六进制；其他认一般的 token 字符
+            let ok = |c: char| match rule.prefix {
+                "AKIA" => c.is_ascii_uppercase() || c.is_ascii_digit(),
+                "bd_" => c.is_ascii_hexdigit(),
+                _ => token_char(c),
+            };
             let mut end = i + rule.prefix.len();
             for (k, c) in out[end..].char_indices() {
                 if !ok(c) {
@@ -198,6 +243,42 @@ mod tests {
         assert_eq!(got.matches(HIDDEN).count(), 5, "{got}");
         assert!(got.starts_with(&format!("A {HIDDEN}\nB {HIDDEN}")), "{got}");
         assert!(got.contains(&format!("\nE {HIDDEN}\n")), "AKIA 后面的 16 位一起隐藏：{got}");
+    }
+
+    #[test]
+    fn hides_board_github_and_gitlab_tokens() {
+        let board = format!("bd_{}", "a1B2".repeat(12));
+        let tokens = [
+            board.clone(),
+            format!("gho_{}", "a1".repeat(18)),
+            format!("ghs_{}", "b2".repeat(18)),
+            format!("ghu_{}", "c3".repeat(18)),
+            format!("ghr_{}", "d4".repeat(18)),
+            format!("glpat-{}", "e5".repeat(10)),
+        ];
+        let s = tokens.join("\n");
+        let got = redact(&s, &[]);
+        for token in &tokens {
+            assert!(!got.contains(token.as_str()), "要隐藏 {token}：{got}");
+        }
+        assert_eq!(got.matches(HIDDEN).count(), tokens.len(), "{got}");
+        // 长度不够、不是十六进制的不动
+        for line in [&format!("bd_{}", "a".repeat(47)), "bd_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+            assert_eq!(redact(line, &[]), line, "不能误伤：{line}");
+        }
+    }
+
+    #[test]
+    fn hides_url_userinfo_credentials() {
+        let s = "fatal: https://x-access-token:ghs_1234567890abcdefghijklmnopqrstuvwxyz@github.com/o/r.git\n\
+                 https://user:pass@example.com/path?q=1\n\
+                 ssh://git@github.com/o/r.git https://example.com/a@b";
+        let got = redact(s, &[]);
+        assert!(!got.contains("ghs_123") && !got.contains("user:pass"), "{got}");
+        assert_eq!(got.matches(HIDDEN).count(), 2, "{got}");
+        assert!(got.contains("https://<已隐藏>@github.com/o/r.git"), "{got}");
+        assert!(got.contains("https://<已隐藏>@example.com/path?q=1"), "{got}");
+        assert!(got.contains("ssh://git@github.com") && got.contains("https://example.com/a@b"), "{got}");
     }
 
     #[test]

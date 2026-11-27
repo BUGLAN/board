@@ -92,9 +92,12 @@ impl ChatRun {
         }
     }
 
-    fn cleanup(&self) {
+    pub(super) fn cleanup(&self) {
         let _ = std::fs::remove_file(&self.procfile);
         let _ = std::fs::remove_file(&self.state);
+        if let Some(dir) = self.state.parent() {
+            remove_secret_files(dir, -self.id);
+        }
         if let Some(p) = &self.pidfile {
             let _ = std::fs::remove_file(p);
         }
@@ -319,6 +322,7 @@ impl Host<'_> {
         let home = chat_dir(t, &env)?;
         // 按角色带上模型、强度、供应商：和派发同一套（role_run 只看这几项和 id，id 用负数，文件名不和派发撞）
         let role = self.role_run(&chat_dispatch(t))?;
+        let secret_files = SecretFiles::for_role(&self.run, -t.id, role.as_ref());
         let _ = std::fs::create_dir_all(&self.run);
         let state = self.run.join(format!("chat-{}.state", t.id));
         let _ = std::fs::remove_file(&state);
@@ -362,7 +366,7 @@ impl Host<'_> {
         let pstart = Procs::new().and_then(|mut ps| ps.get(child.id())).map(|x| x.start).unwrap_or(0);
         let _ = std::fs::write(&procfile, format!("{} {pstart} {} 对话#{}\n", child.id(), env.id, t.id));
         let now = Instant::now();
-        Ok(ChatRun {
+        let chat = ChatRun {
             id: t.id,
             child,
             job: Some(job),
@@ -386,7 +390,9 @@ impl Host<'_> {
             output_at: now,
             seen_len: start_len,
             limited: None,
-        })
+        };
+        secret_files.keep();
+        Ok(chat)
     }
 }
 

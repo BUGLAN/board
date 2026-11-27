@@ -1,7 +1,7 @@
 //! MCP 服务器共用配置在本机这一侧（PRD §10.16「共用配置」）：board host 把服务端的 MCP 服务器写进本机 agent 的用户级配置。
 //!
-//! - Claude Code：`claude mcp add-json --scope user <名称> <JSON>`、`claude mcp remove --scope user <名称>`（在它的启动环境里执行；
-//!   `~/.claude.json` 它自己经常改写，只读它判断已有哪些）
+//! - Claude Code：直接改 `~/.claude.json` 的 `mcpServers.<名称>`（它自己经常改写：读完、改完、写完后再重读确认，
+//!   被它同时改写时重试一次；密钥不经过命令行，`ps` 里看不到）
 //! - Codex：改 `$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `[mcp_servers.<名称>]`，保留别的配置和注释
 //! - dsh 和配置文件里的 agent：不支持，状态写「不支持」
 //!
@@ -9,14 +9,14 @@
 //! 同步加过哪些记在 `~/.board/host/mcp-sync.json`（agent → 名称 → 版本）。配置里已有同名、不是同步加的：
 //! 原来的值存进 `~/.board/host/mcp-backup.json`（agent → 名称 → 原来的条目），换成库里的，之后归 Board 管；
 //! 共用配置里删掉的（或不再同步给这个 agent 的），同步加的那条删掉。
-//! WSL 里的 agent：文件经 `\\wsl.localhost\…` 改，Claude Code 的命令在 WSL 里执行。
+//! WSL 里的 agent：文件经 `\\wsl.localhost\…` 改。
 //! 密钥只写进 agent 自己的配置，不打印、不写日志（输出里只有名称）。
 
 use crate::envs::{self, Env};
 use board_core::mcp::{files, McpServer, McpState};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 同步加过的条目：agent → 名称 → 版本
 type Owned = BTreeMap<String, BTreeMap<String, String>>;
@@ -24,9 +24,6 @@ type Owned = BTreeMap<String, BTreeMap<String, String>>;
 /// 一个要写 MCP 的 agent
 pub struct Target {
     pub agent: String,
-    pub env: Env,
-    /// Claude Code 的命令（在这个启动环境里找到的）
-    pub prog: Option<String>,
     /// 它的 MCP 配置文件（本机能读写的路径）和显示用的写法（见 [`file_of`]）
     pub file: PathBuf,
     pub shown: String,
@@ -47,6 +44,17 @@ type Backup = BTreeMap<String, BTreeMap<String, McpServer>>;
 /// 下面按 agent 写配置文件的实现（[`put`]、[`remove`]）认得的 agent：`agentdef.rs` 里标了支持 MCP 的都要在这里
 pub fn implemented(agent: &str) -> bool {
     matches!(agent, "claude" | "codex")
+}
+
+/// 这次从服务端取到的 MCP 密钥原文（标了「密钥」的环境变量和请求头）：日志上传前要按原文脱敏
+pub fn secret_values(lib: &[McpServer]) -> Vec<String> {
+    lib.iter()
+        .flat_map(|s| s.env.iter().chain(&s.headers))
+        .filter(|v| v.secret)
+        .filter_map(|v| v.value.as_ref())
+        .filter(|v| !v.trim().is_empty())
+        .cloned()
+        .collect()
 }
 
 /// 一个 agent 的 MCP 配置文件（`agentdef.rs` 里标的）：支持的 agent 才有；WSL 里的换成 Windows 上能访问的路径（取不到时 None）
@@ -75,50 +83,133 @@ fn existing(t: &Target, path: &Path) -> Vec<McpServer> {
     }
 }
 
-/// 改一个文件：读出来、改、先写临时文件再换上
-fn rewrite(path: &Path, f: impl FnOnce(&str) -> board_core::Result<String>) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let out = f(&text).map_err(|e| e.message)?;
+fn contents(path: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("读不了 {}：{e}", path.display())),
+    }
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "board".into());
+    path.with_file_name(format!(".{name}.board-sync-{}-{seq}.tmp", std::process::id()))
+}
+
+/// 写临时文件；Unix 上从创建那一刻就是 `mode`（不会先按 umask 露出 0644）
+fn write_temp(path: &Path, text: &str, mode: u32) -> Result<PathBuf, String> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("建不了 {}：{e}", d.display()))?;
     }
-    let tmp = path.with_extension(format!("board-sync-{}", std::process::id()));
-    std::fs::write(&tmp, out).map_err(|e| format!("写不了 {}：{e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+    use std::io::Write;
+    for _ in 0..8 {
+        let tmp = temp_path(path);
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(mode);
+        }
+        let mut f = match o.open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("写不了 {}：{e}", tmp.display())),
+        };
+        let res = f.write_all(text.as_bytes()).and_then(|_| f.sync_all());
+        drop(f);
+        if let Err(e) = res {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("写不了 {}：{e}", tmp.display()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("设不了 {} 的权限：{e}", tmp.display()));
+            }
+        }
+        return Ok(tmp);
+    }
+    Err(format!("建不了 {} 的临时文件", path.display()))
+}
+
+fn install(temp: &Path, path: &Path) -> Result<(), String> {
+    std::fs::rename(temp, path).map_err(|e| {
+        let _ = std::fs::remove_file(temp);
         format!("换不上 {}：{e}", path.display())
     })
 }
 
-/// 在 agent 的启动环境里执行 `claude mcp …`
-fn claude(t: &Target, args: &[String]) -> Result<(), String> {
-    let prog = t.prog.as_deref().ok_or("在它的启动环境里没找到 claude 命令")?;
-    let mut c = t.env.command(prog, args, None, false);
-    c.env_remove("CLAUDECODE");
-    match envs::run_out(c, Duration::from_secs(60)) {
-        Some(o) if o.ok => Ok(()),
-        Some(o) => {
-            let msg = [o.stderr.trim(), o.stdout.trim()].into_iter().find(|s| !s.is_empty()).unwrap_or("没有输出").lines().last().unwrap_or_default().to_string();
-            Err(format!("claude mcp {} 失败：{msg}", args.get(1).map(String::as_str).unwrap_or("")))
-        }
-        None => Err("claude mcp 超过 60 秒没做完（或启动不了）".into()),
+fn mode_of(path: &Path) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).map(|m| m.permissions().mode() & 0o7777).unwrap_or(0o600)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        0o600
     }
 }
 
-fn s(v: &str) -> String {
-    v.to_string()
+/// 原子地换掉一个文件，保留原文件的权限；没有原文件时新建的权限是 0600
+fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let tmp = write_temp(path, text, mode_of(path))?;
+    install(&tmp, path)
 }
 
-fn put(t: &Target, path: &Path, srv: &McpServer, replace: bool) -> Result<(), String> {
+/// 原子地写一个只有自己能读的文件（备份也要 0600，不能按 umask 变成 0644）
+fn write_private(path: &Path, text: &str) -> Result<(), String> {
+    let tmp = write_temp(path, text, 0o600)?;
+    install(&tmp, path)
+}
+
+/// 改一个文件：读出来、改、先写临时文件再换上
+fn rewrite(path: &Path, f: impl FnOnce(&str) -> board_core::Result<String>) -> Result<(), String> {
+    let text = contents(path)?;
+    let out = f(&text).map_err(|e| e.message)?;
+    write_atomic(path, &out)
+}
+
+/// Claude Code 会同时改 `~/.claude.json`：写完重读确认，不对就拿最新的再改一次
+fn rewrite_verified(
+    path: &Path,
+    f: impl Fn(&str) -> board_core::Result<String>,
+    okay: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    let mut text = contents(path)?;
+    for attempt in 0..2 {
+        let out = f(&text).map_err(|e| e.message)?;
+        write_atomic(path, &out)?;
+        let after = contents(path)?;
+        if okay(&after) {
+            return Ok(());
+        }
+        if attempt == 0 {
+            text = after;
+        }
+    }
+    Err(format!("写完后重读 {} 还是不对（可能被 Claude Code 同时改写了）", path.display()))
+}
+
+fn put(t: &Target, path: &Path, srv: &McpServer) -> Result<(), String> {
     match t.agent.as_str() {
         "codex" => rewrite(path, |x| files::codex_upsert(x, srv)),
-        "claude" => {
-            if replace {
-                let _ = claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), srv.name.clone()]);
-            }
-            let json = files::json_entry(srv).to_string();
-            claude(t, &[s("mcp"), s("add-json"), s("--scope"), s("user"), srv.name.clone(), json])
-        }
+        "claude" => rewrite_verified(
+            path,
+            |x| files::json_upsert(x, srv),
+            |x| {
+                serde_json::from_str::<serde_json::Value>(x)
+                    .ok()
+                    .and_then(|v| v.get("mcpServers").and_then(|s| s.get(&srv.name)).cloned())
+                    .is_some_and(|got| got == files::json_entry(srv))
+            },
+        ),
         other => Err(format!("{other} 还没有写 MCP 配置的实现")),
     }
 }
@@ -126,7 +217,11 @@ fn put(t: &Target, path: &Path, srv: &McpServer, replace: bool) -> Result<(), St
 fn remove(t: &Target, path: &Path, name: &str) -> Result<(), String> {
     match t.agent.as_str() {
         "codex" => rewrite(path, |x| files::codex_remove(x, name)),
-        "claude" => claude(t, &[s("mcp"), s("remove"), s("--scope"), s("user"), s(name)]),
+        "claude" => rewrite_verified(
+            path,
+            |x| files::json_remove(x, name),
+            |x| serde_json::from_str::<serde_json::Value>(x).ok().is_some_and(|v| v.get("mcpServers").and_then(|s| s.get(name)).is_none()),
+        ),
         other => Err(format!("{other} 还没有写 MCP 配置的实现")),
     }
 }
@@ -162,7 +257,7 @@ pub fn sync(lib: &[McpServer], targets: &[Target], unsupported: &[String], owned
                     backed = true;
                 }
             }
-            match put(t, path, srv, has) {
+            match put(t, path, srv) {
                 Ok(()) => {
                     if theirs {
                         changes.push(format!("{shown} 里已有同名的 {}（不是同步加的）：原来的存进了备份，换成共用配置里的", srv.name));
@@ -201,12 +296,9 @@ pub fn sync(lib: &[McpServer], targets: &[Target], unsupported: &[String], owned
     if let Some(d) = owned_path.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let _ = std::fs::write(owned_path, serde_json::to_string_pretty(&owned).unwrap_or_default());
+    let _ = write_private(owned_path, &serde_json::to_string_pretty(&owned).unwrap_or_default());
     if backed {
-        if let Some(d) = backup_path.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        let _ = std::fs::write(backup_path, serde_json::to_string_pretty(&backup).unwrap_or_default());
+        let _ = write_private(backup_path, &serde_json::to_string_pretty(&backup).unwrap_or_default());
     }
     Synced { states, changes, replaced }
 }
@@ -257,7 +349,12 @@ mod tests {
         let codex_home = d.path().join("codex");
         std::fs::create_dir_all(&codex_home).unwrap();
         std::fs::write(codex_home.join("config.toml"), "model = \"m\"\n[mcp_servers.mine]\ncommand = \"mine\"\n[mcp_servers.taken]\ncommand = \"user\"\n").unwrap();
-        let t = vec![Target { agent: "codex".into(), env: Env::direct(), prog: None, file: codex_home.join("config.toml"), shown: "$CODEX_HOME/config.toml".into() }];
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(codex_home.join("config.toml"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let t = vec![Target { agent: "codex".into(), file: codex_home.join("config.toml"), shown: "$CODEX_HOME/config.toml".into() }];
         let owned = d.path().join("owned.json");
         let bk = d.path().join("mcp-backup.json");
         let out = sync(&[srv("db", "npx", "sk-1"), srv("taken", "x", "s")], &t, &["dsh".into()], &owned, &bk);
@@ -267,6 +364,12 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&bk).unwrap()).unwrap();
         assert_eq!(saved["codex"]["taken"]["command"], "user", "原来的值存进了备份");
         assert_eq!(out.replaced, vec!["taken".to_string()]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(codex_home.join("config.toml")).unwrap().permissions().mode() & 0o777, 0o600, "写配置不放大权限");
+            assert_eq!(std::fs::metadata(&bk).unwrap().permissions().mode() & 0o777, 0o600, "备份只有自己能读");
+        }
         let st = |out: &Synced, s: &str, a: &str| out.states.iter().find(|x| x.server == s && x.agent == a).map(|x| x.state.clone()).unwrap();
         assert_eq!((st(&out, "db", "codex"), st(&out, "taken", "codex")), ("synced".into(), "synced".into()));
         assert_eq!(st(&out, "db", "dsh"), "unsupported");
@@ -282,5 +385,37 @@ mod tests {
         let text = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
         assert!(!text.contains("[mcp_servers.db]") && text.contains("[mcp_servers.mine]") && !text.contains("[mcp_servers.taken]"), "{text}");
         assert_eq!(out.changes.len(), 2);
+    }
+
+    #[test]
+    fn claude_is_written_directly_with_the_original_mode() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join(".claude.json");
+        let t = vec![Target { agent: "claude".into(), file: file.clone(), shown: "~/.claude.json".into() }];
+        let owned = d.path().join("owned.json");
+        let bk = d.path().join("mcp-backup.json");
+        let out = sync(&[srv("db", "npx", "sk-1")], &t, &[], &owned, &bk);
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["db"], files::json_entry(&srv("db", "npx", "sk-1")));
+        assert_eq!(out.states[0].state, "synced");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "新文件只有自己能读");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+            sync(&[srv("db", "npx", "sk-2")], &t, &[], &owned, &bk);
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640, "保留原来的权限");
+        }
+        sync(&[], &t, &[], &owned, &bk);
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(v["mcpServers"].get("db").is_none());
+    }
+
+    #[test]
+    fn secret_values_are_the_marked_mcp_values() {
+        let mut s = srv("db", "npx", "top-secret");
+        s.env.push(McpVar { key: "PUBLIC".into(), value: Some("not-secret".into()), secret: false, tail: None });
+        s.headers.push(McpVar { key: "Authorization".into(), value: Some("Bearer header-secret".into()), secret: true, tail: None });
+        assert_eq!(secret_values(&[s]), ["top-secret", "Bearer header-secret"]);
     }
 }

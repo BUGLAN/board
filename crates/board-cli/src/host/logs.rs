@@ -230,8 +230,13 @@ impl Host<'_> {
         }
     }
 
-    /// 这次派发注入给 agent 的密钥值（当前令牌、`BOARD_TOKEN` 这类环境变量）：上传日志、写异常退出评论之前
-    /// 换成 `<已隐藏>`，本机日志保留原文
+    /// 记下这次从服务端取到的供应商 key、MCP 密钥值和 Git 令牌：上传日志、写异常退出评论之前也要脱敏
+    pub(super) fn remember_secrets(&self, values: impl IntoIterator<Item = String>) {
+        add_secrets(&mut self.extra_secrets.borrow_mut(), values);
+    }
+
+    /// 这次派发注入给 agent 的密钥值（当前令牌、`BOARD_TOKEN` 这类环境变量）和从服务端取到的密钥：
+    /// 上传日志、写异常退出评论之前换成 `<已隐藏>`，本机日志保留原文
     pub(super) fn secrets(&self) -> Vec<String> {
         let mut out = vec![self.rm().token().to_string()];
         for k in ["BOARD_TOKEN", "BOARD_HOST_TOKEN"] {
@@ -239,6 +244,7 @@ impl Host<'_> {
                 out.push(v);
             }
         }
+        add_secrets(&mut out, self.extra_secrets.borrow().iter().cloned());
         out.sort();
         out.dedup();
         out
@@ -311,6 +317,15 @@ impl Host<'_> {
             Ok(_) => r.fmt_due = false,
             Err(e) if matches!(e.code, ErrorCode::Unreachable | ErrorCode::Internal) => r.ev_queue = events,
             Err(_) => r.fmt_due = false,
+        }
+    }
+}
+
+/// 加进脱敏列表：空的不算，已经在里面的不重复
+pub(super) fn add_secrets(out: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
+    for value in values {
+        if !value.trim().is_empty() && !out.contains(&value) {
+            out.push(value);
         }
     }
 }

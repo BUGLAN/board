@@ -225,6 +225,49 @@ fn uploads_are_redacted_but_the_local_file_keeps_the_token() {
     assert!(local.contains(token), "本机日志保留原文：{local}");
 }
 
+/// 从服务端取到的供应商 key、MCP 密钥、Git 令牌也进脱敏列表；空的、重复的不重复加
+#[test]
+fn fetched_secrets_are_added_to_the_redaction_list() {
+    let mut secrets = vec!["board-token".to_string()];
+    add_secrets(&mut secrets, ["provider-key", "", "mcp-secret", "git-token", "provider-key"].map(str::to_string));
+    assert_eq!(secrets, ["board-token", "provider-key", "mcp-secret", "git-token"]);
+}
+
+/// 派发和对话的临时文件里，供应商文件、dsh 补丁都有 key：无论正常结束还是启动失败都要删掉
+#[test]
+fn secret_files_are_removed_on_cleanup_and_start_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("9.log");
+    let run = test_run(&log, None);
+    let provider = dir.path().join("9.provider.json");
+    let patch = dir.path().join("9.dsh-patch.yml");
+    let prompt = dir.path().join("9.prompt");
+    for path in [&provider, &patch, &prompt] {
+        std::fs::write(path, "secret").unwrap();
+    }
+    run.cleanup();
+    assert!(!provider.exists() && !patch.exists() && !prompt.exists(), "派发收尾要删密钥文件");
+
+    let chat = test_chat_run(&dir.path().join("7.log"));
+    let provider = dir.path().join("-7.provider.json");
+    let patch = dir.path().join("-7.dsh-patch.yml");
+    for path in [&provider, &patch] {
+        std::fs::write(path, "secret").unwrap();
+    }
+    chat.cleanup();
+    assert!(!provider.exists() && !patch.exists(), "对话收尾要删密钥文件");
+
+    let provider = dir.path().join("9.provider.json");
+    let patch = dir.path().join("9.dsh-patch.yml");
+    let role = RoleRun { model: String::new(), effort: String::new(), provider_file: Some(provider.clone()), dsh_patch: Some((patch.clone(), String::new())), dsh_key: None, subscription: false };
+    {
+        let _cleanup = SecretFiles::for_role(dir.path(), 9, Some(&role));
+        std::fs::write(&provider, "secret").unwrap();
+        std::fs::write(&patch, "secret").unwrap();
+    }
+    assert!(!provider.exists() && !patch.exists(), "启动中途失败也要删密钥文件");
+}
+
 /// 日志文件只有自己能读（0600）
 #[cfg(unix)]
 #[test]

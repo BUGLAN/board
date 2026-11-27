@@ -149,8 +149,58 @@ impl Run {
         let _ = std::fs::remove_file(self.conf.with_extension("prompt"));
         let _ = std::fs::remove_file(&self.procfile);
         let _ = std::fs::remove_file(self.quota_file());
+        if let Some(dir) = self.conf.parent() {
+            remove_secret_files(dir, self.d.id);
+        }
         if let Some(p) = &self.pidfile {
             let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+fn provider_file(run: &Path, id: i64) -> PathBuf {
+    run.join(format!("{id}.provider.json"))
+}
+
+fn dsh_patch_file(run: &Path, id: i64) -> PathBuf {
+    run.join(format!("{id}.dsh-patch.yml"))
+}
+
+/// 删掉一次派发/对话的供应商和 dsh 补丁文件（里面有 key）
+pub(super) fn remove_secret_files(run: &Path, id: i64) {
+    let _ = std::fs::remove_file(provider_file(run, id));
+    let _ = std::fs::remove_file(dsh_patch_file(run, id));
+}
+
+/// 启动过程中兜底删密钥文件：成功建出 Run / ChatRun 后由它自己的 cleanup 接着管
+pub(super) struct SecretFiles {
+    paths: Vec<PathBuf>,
+    keep: bool,
+}
+
+impl SecretFiles {
+    pub(super) fn for_role(run: &Path, id: i64, role: Option<&RoleRun>) -> SecretFiles {
+        let mut paths = vec![];
+        if role.and_then(|r| r.provider_file.as_ref()).is_some() {
+            paths.push(provider_file(run, id));
+        }
+        if role.and_then(|r| r.dsh_patch.as_ref()).is_some() {
+            paths.push(dsh_patch_file(run, id));
+        }
+        SecretFiles { paths, keep: false }
+    }
+
+    pub(super) fn keep(mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for SecretFiles {
+    fn drop(&mut self) {
+        if !self.keep {
+            for path in &self.paths {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 }
@@ -293,7 +343,13 @@ fn write_secret(path: &Path, text: &str) -> std::io::Result<()> {
         o.mode(0o600);
     }
     use std::io::Write as _;
-    o.open(path)?.write_all(text.as_bytes())
+    let mut f = o.open(path)?;
+    if let Err(e) = f.write_all(text.as_bytes()) {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub(super) fn dispatch_prompt(d: &Dispatch, project: &str, board: &str, name: &str, host: &str, ready: Option<&str>) -> String {
@@ -473,16 +529,17 @@ impl Host<'_> {
             .rm()
             .get(&format!("/api/hosts/{}/providers", self.name), &[])
             .map_err(|e| format!("取不到角色「{}」用的供应商「{}」：{}", d.profile_name, d.provider, e.message))?;
+        self.remember_secrets(lib.providers.iter().filter_map(|p| p.api_key.clone()));
         let p = lib.providers.iter().find(|p| p.name == d.provider).ok_or_else(|| format!("共用配置里已经没有供应商「{}」了：改一下角色「{}」", d.provider, d.profile_name))?;
         match crate::providersync::route_for(&d.agent, p, &model, &effort)? {
             crate::providersync::Route::Acp(v) => {
-                let f = self.run.join(format!("{}.provider.json", d.id));
+                let f = provider_file(&self.run, d.id);
                 let _ = std::fs::create_dir_all(&self.run);
                 write_secret(&f, &v.to_string()).map_err(|e| format!("无法写 {}：{e}", f.display()))?;
                 out.provider_file = Some(f);
             }
             crate::providersync::Route::Dsh { patch, key } => {
-                out.dsh_patch = Some((self.run.join(format!("{}.dsh-patch.yml", d.id)), patch));
+                out.dsh_patch = Some((dsh_patch_file(&self.run, d.id), patch));
                 out.dsh_key = Some(key);
             }
         }
@@ -937,6 +994,7 @@ impl Host<'_> {
             prompt += &format!("\n\n角色「{}」的附加说明：{}", d.profile_name, d.note.trim());
         }
         let role = self.role_run(d)?;
+        let secret_files = SecretFiles::for_role(&self.run, d.id, role.as_ref());
         // 提示词放进文件交给 board acp（作为 session/prompt 发出去），不放进命令行
         let prompt_file = self.run.join(format!("{}.prompt", d.id));
         let _ = std::fs::create_dir_all(&self.run);
@@ -1002,7 +1060,7 @@ impl Host<'_> {
         let _ = std::fs::write(&procfile, format!("{} {start} {} {}#{}\n", child.id(), env.id, d.board, d.card));
         let fmt = Some(Stream::Acp);
         let now = Instant::now();
-        Ok(Run {
+        let run = Run {
             d: d.clone(),
             child,
             _stdin: stdin,
@@ -1028,7 +1086,9 @@ impl Host<'_> {
             timeout: None,
             output_at: now,
             seen_len: 0,
-        })
+        };
+        secret_files.keep();
+        Ok(run)
     }
 
     /// 服务端上在线的名字：判断别的会话留下的 worktree 是不是空闲用。查不到时为空（锁着的一律当成有人在用）

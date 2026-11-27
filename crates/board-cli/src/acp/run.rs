@@ -157,7 +157,9 @@ fn parse_frame(line: &str) -> Option<Value> {
 fn read_provider(o: &Opts) -> Result<Option<Value>, String> {
     let Some(f) = &o.provider_file else { return Ok(None) };
     let got = std::fs::read_to_string(f).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
-    let _ = std::fs::remove_file(f);
+    if let Err(e) = std::fs::remove_file(f).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
+        return Err(format!("{} 删不掉：{e}", f.display()));
+    }
     got.map(Some).map_err(|e| format!("{}：{e}", f.display()))
 }
 
@@ -348,6 +350,14 @@ fn run_auth(o: &Opts) -> i32 {
 
 
 fn run(o: &Opts) -> i32 {
+    // 角色的供应商：里面有 key，第一步就读完删掉；后面无论提示词、agent 启动还是握手失败都不留文件
+    let provider = match read_provider(o) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ board acp：读不了供应商设置 {e}");
+            return EXIT_PROTOCOL;
+        }
+    };
     watch_parent();
     let prompt = match std::fs::read_to_string(&o.prompt_file) {
         Ok(p) => p,
@@ -359,15 +369,6 @@ fn run(o: &Opts) -> i32 {
     let (mut child, job, mut stdin, rx) = match spawn_agent(o) {
         Ok(x) => x,
         Err(code) => return code,
-    };
-    // 角色的供应商：读完就删（里面有 key），读不了、格式不对就不往下走
-    let provider = match read_provider(o) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("✗ board acp：读不了供应商设置 {e}");
-            let _ = child.kill();
-            return EXIT_PROTOCOL;
-        }
     };
     let cwd = o.cwd.display().to_string();
     let mut client = Client::new(&cwd, &prompt, o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider).with_auth(o.auth);
@@ -550,6 +551,14 @@ pub(crate) fn chat_cmd(line: &str) -> Option<ChatCmd> {
 /// 没有新消息超过 `--idle-exit` 秒、board host 关掉了标准输入、收到 SIGTERM 时收尾退出。
 /// 状态（会话标识、这一轮在不在跑、结束原因）写进状态文件给 board host 看
 fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
+    // 角色的供应商：里面有 key，第一步就读完删掉
+    let provider = match read_provider(o) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ board acp：读不了供应商设置 {e}");
+            return EXIT_PROTOCOL;
+        }
+    };
     let (mut child, job, mut stdin, rx) = match spawn_agent(o) {
         Ok(x) => x,
         Err(code) => return code,
@@ -568,14 +577,6 @@ fn run_chat(o: &Opts, state_file: &std::path::Path) -> i32 {
         }
         let _ = ctx.send(None);
     });
-    let provider = match read_provider(o) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("✗ board acp：读不了供应商设置 {e}");
-            let _ = child.kill();
-            return EXIT_PROTOCOL;
-        }
-    };
     let cwd = o.cwd.display().to_string();
     let mut client = Client::new(&cwd, "", o.mode.as_deref()).with_sets(o.sets.clone()).with_provider(provider).with_auth(o.auth).for_chat(o.resume.clone());
     let mut merger = Merger::default();

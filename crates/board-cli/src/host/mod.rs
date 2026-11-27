@@ -75,6 +75,7 @@ use crate::output::{Output, Paint};
 use board_core::hosts::{check_agent_id, check_host_name, host_name_from, result_words, HostAsk, LOG_KEEP};
 use board_core::*;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -311,6 +312,8 @@ struct Host<'a> {
     chats: Vec<ChatRun>,
     ended: Vec<Ended>,
     work: Option<HostWork>,
+    /// 这次从服务端取到的供应商 key、MCP 密钥和 Git 令牌：本机日志保留原文，上传前按这些原文脱敏
+    extra_secrets: RefCell<Vec<String>>,
     /// 最近一次取到任务的时间
     work_at: Instant,
     /// 开始派发、要下一张失败（或这一轮已经领完）之后，等重新取到任务再试
@@ -482,6 +485,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         chats: vec![],
         ended: vec![],
         work: None,
+        extra_secrets: RefCell::new(vec![]),
         work_at: Instant::now(),
         hold: false,
         last_err: String::new(),

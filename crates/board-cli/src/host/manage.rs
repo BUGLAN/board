@@ -268,11 +268,13 @@ impl Host<'_> {
             return vec![];
         }
         match self.rm().get::<crate::providersync::Lib>(&format!("/api/hosts/{}/providers", self.name), &[]) {
-            Ok(lib) => lib
-                .providers
-                .into_iter()
-                .map(|p| selftest::ProviderJob { name: p.name, endpoints: p.endpoints, key: p.api_key.unwrap_or_default() })
-                .collect(),
+            Ok(lib) => {
+                self.remember_secrets(lib.providers.iter().filter_map(|p| p.api_key.clone()));
+                lib.providers
+                    .into_iter()
+                    .map(|p| selftest::ProviderJob { name: p.name, endpoints: p.endpoints, key: p.api_key.unwrap_or_default() })
+                    .collect()
+            }
             Err(e) => {
                 self.say(format!("{} 自检取不到模型供应商配置：{}", self.p.yellow("!"), e.message));
                 vec![]

@@ -352,8 +352,8 @@ mod tests {
     }
 }
 
-/// 各 agent 的 MCP 配置文件（PRD §10.16「共用配置」）：读出已有的条目（判断同名、桌面端「从本机导入」），改写 Codex 的文件。
-/// Claude Code 的 `~/.claude.json` 它自己经常改写，只读不写：写用 `claude mcp add-json / remove --scope user`（board-cli）。
+/// 各 agent 的 MCP 配置文件（PRD §10.16「共用配置」）：读出已有的条目（判断同名、桌面端「从本机导入」），改写 Claude Code、Codex 的文件。
+/// Claude Code 的 `~/.claude.json` 它自己经常改写：board-cli 直接改文件，写完重读确认，被同时改写时重试一次。
 /// - Claude Code：`~/.claude.json` 顶层 `mcpServers`：`{command, args, env}` 或 `{type: "http", url, headers}`
 /// - Codex：`$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `[mcp_servers.<名称>]`：`command`、`args`、`env` 或 `url`、`http_headers`
 #[cfg(feature = "config")]
@@ -476,6 +476,41 @@ pub mod files {
         }
     }
 
+    fn json_root(text: &str) -> Result<Value> {
+        if text.trim().is_empty() {
+            return Ok(json!({}));
+        }
+        let root: Value = serde_json::from_str(text).map_err(|e| BoardError::usage(format!("Claude Code 的配置解析不了：{e}")))?;
+        if !root.is_object() {
+            return Err(BoardError::usage("Claude Code 的配置不是 JSON 对象"));
+        }
+        Ok(root)
+    }
+
+    fn json_out(root: Value) -> Result<String> {
+        Ok(serde_json::to_string_pretty(&root).map_err(|e| BoardError::usage(format!("Claude Code 的配置写不出来：{e}")))? + "\n")
+    }
+
+    /// Claude Code 的 `~/.claude.json`：加上或换掉顶层 `mcpServers.<名称>`，别的配置原样保留
+    pub fn json_upsert(text: &str, s: &McpServer) -> Result<String> {
+        let mut root = json_root(text)?;
+        let obj = root.as_object_mut().expect("上面看过");
+        let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
+        let servers = servers.as_object_mut().ok_or_else(|| BoardError::usage("Claude Code 的配置里 mcpServers 不是对象"))?;
+        servers.insert(s.name.clone(), json_entry(s));
+        json_out(root)
+    }
+
+    /// Claude Code 的 `~/.claude.json`：删掉顶层 `mcpServers.<名称>`
+    pub fn json_remove(text: &str, name: &str) -> Result<String> {
+        let mut root = json_root(text)?;
+        if let Some(servers) = root.get_mut("mcpServers") {
+            let servers = servers.as_object_mut().ok_or_else(|| BoardError::usage("Claude Code 的配置里 mcpServers 不是对象"))?;
+            servers.remove(name);
+        }
+        json_out(root)
+    }
+
     /// Codex 的 `config.toml`：加上或换掉 `[mcp_servers.<名称>]`，保留文件里的其他配置和注释
     pub fn codex_upsert(text: &str, s: &McpServer) -> Result<String> {
         let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| BoardError::usage(format!("config.toml 解析不了：{e}")))?;
@@ -568,6 +603,18 @@ pub mod files {
             // Claude Code 的 add-json 带 type
             assert_eq!(json_entry(&server("http")), json!({ "type": "http", "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer t0k3n" } }));
             assert_eq!(json_entry(&server("stdio")), json!({ "type": "stdio", "command": "npx", "args": ["-y", "db-mcp"], "env": { "DB_TOKEN": "sk-1" } }));
+            // 直接改文件：别的配置和已有的服务器原样留着，写出来的条目和 add-json 的一样
+            let out = json_upsert(text, &server("stdio")).unwrap();
+            let v: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v["theme"], "dark");
+            assert_eq!(v["mcpServers"]["mine"], json!({ "command": "x" }));
+            assert_eq!(v["mcpServers"]["db"], json_entry(&server("stdio")));
+            let out = json_remove(&out, "db").unwrap();
+            let v: Value = serde_json::from_str(&out).unwrap();
+            assert!(v["mcpServers"].get("db").is_none() && v["mcpServers"].get("mine").is_some());
+            // 空文件也能写；坏文件不覆盖
+            assert!(json_upsert("", &server("stdio")).unwrap().contains("\"db\""));
+            assert!(json_upsert("{bad", &server("stdio")).is_err());
         }
     }
 }
