@@ -1732,22 +1732,27 @@ impl<'a> W<'a> {
         self.resolve(path)
     }
 
-    /// 画布上拖动节点：只保存位置
+    /// 画布上拖动节点：只保存位置。拖回原位（取整后和库里的相同）不算变化，不涨 rev
     pub fn set_pos(&mut self, kind: &str, id: &str, pos: Pos) -> Result<()> {
         let (x, y) = (pos.x.round(), pos.y.round());
-        let n = match kind {
-            "project" => self.tx.execute("UPDATE projects SET pos_x = ?1, pos_y = ?2 WHERE key = ?3", params![x, y, id])?,
-            "board" => {
-                let b = self.resolve_exact(id)?;
-                self.tx.execute("UPDATE boards SET pos_x = ?1, pos_y = ?2 WHERE id = ?3", params![x, y, b.id])?
-            }
+        let (table, col, key): (&str, &str, rusqlite::types::Value) = match kind {
+            "project" => ("projects", "key", id.to_string().into()),
+            "board" => ("boards", "id", self.resolve_exact(id)?.id.into()),
             _ => return Err(BoardError::usage(format!("未知的节点类型「{kind}」"))),
         };
-        if n == 0 {
-            return Err(BoardError::new(ErrorCode::BoardNotFound, format!("「{id}」不存在")));
+        let old: Option<(f64, f64)> = self
+            .tx
+            .query_row(&format!("SELECT pos_x, pos_y FROM {table} WHERE {col} = ?1"), [&key], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        match old {
+            None => Err(BoardError::new(ErrorCode::BoardNotFound, format!("「{id}」不存在"))),
+            Some(old) if old == (x, y) => Ok(()),
+            Some(_) => {
+                self.tx.execute(&format!("UPDATE {table} SET pos_x = ?1, pos_y = ?2 WHERE {col} = ?3"), params![x, y, key])?;
+                self.changed = true;
+                Ok(())
+            }
         }
-        self.changed = true;
-        Ok(())
     }
 
     /* ---------------- 标签（属于项目，项目下所有白板共用） ---------------- */

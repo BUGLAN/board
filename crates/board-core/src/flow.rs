@@ -268,23 +268,29 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 保存状态块布局。空表示复原为默认布局（白板设置里已保存的布局不受影响）
+    /// 保存状态块布局。空表示复原为默认布局（白板设置里已保存的布局不受影响）。
+    /// 每块都和库里的相同（复原时本来就是默认布局）不算变化，不涨 rev
     pub fn set_flow_layout(&mut self, path: &str, tiles: &BTreeMap<String, Tile>) -> Result<()> {
         let b = self.resolve_exact(path)?;
         let flow = flow_of(self.tx, b.id)?;
         if tiles.is_empty() {
-            self.tx.execute("UPDATE statuses SET lx = NULL, lw = NULL, ly = NULL WHERE board = ?1", [b.id])?;
-            self.changed = true;
+            let n = self.tx.execute(
+                "UPDATE statuses SET lx = NULL, lw = NULL, ly = NULL
+                 WHERE board = ?1 AND (lx IS NOT NULL OR lw IS NOT NULL OR ly IS NOT NULL)",
+                [b.id],
+            )?;
+            self.changed |= n > 0;
             return Ok(());
         }
         Self::check_tiles(&flow, tiles)?;
         for (k, t) in tiles {
-            self.tx.execute(
-                "UPDATE statuses SET lx = ?1, lw = ?2, ly = ?3 WHERE board = ?4 AND key = ?5",
+            let n = self.tx.execute(
+                "UPDATE statuses SET lx = ?1, lw = ?2, ly = ?3
+                 WHERE board = ?4 AND key = ?5 AND (lx IS NOT ?1 OR lw IS NOT ?2 OR ly IS NOT ?3)",
                 params![t.x, t.w, t.y, b.id, k],
             )?;
+            self.changed |= n > 0;
         }
-        self.changed = true;
         Ok(())
     }
 

@@ -77,6 +77,42 @@ fn sync_creates_label_and_tags_cards() {
     assert_eq!(m.versions[0].commits.iter().map(|c| c.h.as_str()).collect::<Vec<_>>(), vec!["ddd", "aaa"]);
 }
 
+/// 重复同步同一个版本不涨 rev（default/main#741）：标签已有、卡片都已打上、记录也没变时只更新 synced_at
+#[test]
+fn sync_bumps_rev_only_when_changed() {
+    let mut s = store();
+    let a = new_card(&mut s, T0, "做完的需求");
+    let b = new_card(&mut s, T0, "另一张");
+    let commits = || vec![commit("bbb", T0 + 1, &[]), commit("aaa", T0, &[&format!("main#{a}")])];
+    let r0 = s.rev().unwrap();
+    sync(&mut s, T0 + H, "v0.1.0", commits()).unwrap();
+    let r1 = s.rev().unwrap();
+    assert!(r1 > r0, "第一次同步建了标签、打了标签");
+
+    // 同一个版本再同步一次：返回结果照旧，rev 不变（提交顺序不同也一样，存的是排好序的）
+    let r = sync(&mut s, T0 + H, "v0.1.0", commits().into_iter().rev().collect()).unwrap();
+    assert!(!r.created);
+    assert!(r.added.is_empty());
+    assert_eq!((r.already, r.label.uses), (1, 1));
+    assert_eq!(s.rev().unwrap(), r1, "什么都没变，不涨");
+
+    // 只有提交列表变了：涨
+    let mut more = commits();
+    more.push(commit("ccc", T0 + 2, &[]));
+    sync(&mut s, T0 + H, "v0.1.0", more.clone()).unwrap();
+    let r2 = s.rev().unwrap();
+    assert_eq!(r2, r1 + 1, "提交列表变了要涨");
+    // 只有 tag 时间变了：涨
+    sync(&mut s, T0 + 2 * H, "v0.1.0", more.clone()).unwrap();
+    assert_eq!(s.rev().unwrap(), r2 + 1, "tag 时间变了要涨");
+    let r3 = s.rev().unwrap();
+    // 给新的卡片打标签：涨
+    more.push(commit("ddd", T0 + 3, &[&format!("main#{b}")]));
+    let r = sync(&mut s, T0 + 2 * H, "v0.1.0", more).unwrap();
+    assert_eq!(r.added, vec![format!("main#{b}")]);
+    assert!(s.rev().unwrap() > r3, "打了标签要涨");
+}
+
 #[test]
 fn sync_rejects_bad_names_and_projects() {
     let mut s = store();

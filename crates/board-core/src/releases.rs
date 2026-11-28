@@ -265,12 +265,20 @@ impl W<'_> {
 
         let mut commits = req.commits;
         commits.sort_by(|a, b| b.at.cmp(&a.at));
+        let old: Option<(i64, String)> = self
+            .tx
+            .query_row("SELECT released_at, commits FROM releases WHERE project = ?1 AND name = ?2", params![project, label.name], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        // 这一版的记录和库里的相同（只更新 synced_at）、也没有新建标签、给卡片打标签：不算变化，不涨 rev
+        let same = old.is_some_and(|(at, json)| at == req.released_at && serde_json::from_str::<Vec<ReleaseCommit>>(&json).is_ok_and(|c| c == commits));
         self.tx.execute(
             "INSERT INTO releases (project, name, released_at, commits, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (project, name) DO UPDATE SET released_at = excluded.released_at, commits = excluded.commits, synced_at = excluded.synced_at",
             params![project, label.name, req.released_at, serde_json::to_string(&commits).unwrap_or_else(|_| "[]".into()), self.now],
         )?;
-        self.changed = true;
+        self.changed |= created || !added.is_empty() || !same;
         let uses: i64 = self.tx.query_row(
             "SELECT COUNT(*) FROM card_labels cl JOIN cards c ON c.board = cl.board AND c.id = cl.card WHERE cl.label = ?1 AND c.deleted_at IS NULL",
             [label.id],

@@ -1384,6 +1384,58 @@ fn final_status_is_human_only_and_layout_saved() {
     assert_eq!(second.0.len(), 6);
 }
 
+/// 状态块布局、画布节点位置没变化时不涨 rev（default/main#741）：每涨一次，打开的界面都要重取工作区和白板快照
+#[test]
+fn layout_and_pos_bump_rev_only_when_changed() {
+    let mut s = store();
+    // 本来就是默认布局：复原不算变化
+    let r0 = s.rev().unwrap();
+    ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
+    assert_eq!(s.rev().unwrap(), r0, "本来就是默认布局，复原不涨");
+    let mut tiles = std::collections::BTreeMap::new();
+    tiles.insert("todo".to_string(), Tile { x: 0, w: 6, y: 0.0 });
+    tiles.insert("doing".to_string(), Tile { x: 6, w: 6, y: 0.5 });
+    ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap();
+    let r1 = s.rev().unwrap();
+    assert_eq!(r1, r0 + 1, "第一次保存布局要涨");
+    ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap();
+    assert_eq!(s.rev().unwrap(), r1, "和当前布局完全相同不涨");
+    // 只改一块的一个字段：涨
+    tiles.insert("doing".to_string(), Tile { x: 6, w: 6, y: 0.75 });
+    ui(&mut s, |w| w.set_flow_layout(B, &tiles)).unwrap();
+    assert_eq!(s.rev().unwrap(), r1 + 1);
+    assert_eq!(flow(&s).get("doing").unwrap().layout, Some(Tile { x: 6, w: 6, y: 0.75 }));
+    // 只传没变的一块：不涨，别的块也不动
+    let mut one = std::collections::BTreeMap::new();
+    one.insert("todo".to_string(), Tile { x: 0, w: 6, y: 0.0 });
+    ui(&mut s, |w| w.set_flow_layout(B, &one)).unwrap();
+    assert_eq!(s.rev().unwrap(), r1 + 1);
+    assert_eq!(flow(&s).get("doing").unwrap().layout, Some(Tile { x: 6, w: 6, y: 0.75 }));
+    // 原来有自定义布局：复原涨一次，再复原不涨
+    ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
+    assert_eq!(s.rev().unwrap(), r1 + 2);
+    assert!(flow(&s).0.iter().all(|x| x.layout.is_none()));
+    ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
+    assert_eq!(s.rev().unwrap(), r1 + 2);
+
+    // 画布节点：移到新位置涨，拖回同一位置（取整后相同）不涨
+    for (kind, id) in [("project", "default"), ("board", B)] {
+        let r = s.rev().unwrap();
+        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 120.0, y: 40.0 })).unwrap();
+        assert_eq!(s.rev().unwrap(), r + 1, "{kind}：移到新位置要涨");
+        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 120.0, y: 40.0 })).unwrap();
+        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 120.4, y: 39.6 })).unwrap();
+        assert_eq!(s.rev().unwrap(), r + 1, "{kind}：取整后和库里相同不涨");
+        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 121.0, y: 40.0 })).unwrap();
+        assert_eq!(s.rev().unwrap(), r + 2, "{kind}：真的挪了要涨");
+    }
+    let r2 = s.rev().unwrap();
+    assert_eq!(ui(&mut s, |w| w.set_pos("project", "nope", Pos { x: 0.0, y: 0.0 })).unwrap_err().code, ErrorCode::BoardNotFound);
+    assert_eq!(ui(&mut s, |w| w.set_pos("board", "default/nope", Pos { x: 0.0, y: 0.0 })).unwrap_err().code, ErrorCode::BoardNotFound);
+    assert_eq!(ui(&mut s, |w| w.set_pos("card", "1", Pos { x: 0.0, y: 0.0 })).unwrap_err().code, ErrorCode::Usage);
+    assert_eq!(s.rev().unwrap(), r2);
+}
+
 /* ---------------- 附件（PRD §5） ---------------- */
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
