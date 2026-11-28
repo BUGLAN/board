@@ -1,6 +1,6 @@
 //! 照另一台机器配（default/main#398）：把来源机器的设置一次复制到这台机器上，之后两台各改各的，不保持同步。
 //!
-//! - 复制：每个 agent 的模型（不改 / 指定的供应商、模型、强度、接口）和启动环境、默认 agent、skills / MCP / Git 凭据的
+//! - 复制：每个 agent 的启动环境、默认 agent、skills / MCP / Git 凭据的
 //!   同步开关、自动更新 agent、最多几个会话、一个会话几张、接单时段
 //! - 不复制：工作空间、机器名、接单三态（自动领 / 只做派给它的 / 暂停：新机器保持「只做派给它的」，人看过再打开）
 //! - 启动环境只在两台是同一种系统、这台机器上这个 agent 支持并找得到那个环境时复制，否则保持原来的并写明
@@ -26,7 +26,7 @@ pub struct HostCopy {
     pub to: String,
     /// 要变的项，按界面上的顺序；没有变化的不列。空 = 已经一样
     pub changes: Vec<CopyChange>,
-    /// 没照着改、要说一声的：系统不同启动环境没复制、这台机器上还没找到的 agent、供应商已经不在了
+    /// 没照着改、要说一声的：系统不同启动环境没复制、这台机器上还没找到的 agent
     pub notes: Vec<String>,
     /// 写进去了
     pub done: bool,
@@ -35,7 +35,7 @@ pub struct HostCopy {
 /// 一项变化：从什么变成什么（都是给人看的话）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopyChange {
-    /// 标识：`model:<agent>`、`env:<agent>`、`agent`、`sync:<种类>`、`agentAuto`、`max`、`perSession`、`windows`
+    /// 标识：`env:<agent>`、`agent`、`sync:<种类>`、`agentAuto`、`max`、`perSession`、`windows`
     pub key: String,
     pub label: String,
     pub from: String,
@@ -252,7 +252,7 @@ impl W<'_> {
         for (col, on) in &p.sync {
             self.tx.execute(&format!("UPDATE hosts SET {col} = ?2 WHERE id = ?1"), params![t.id, *on as i64])?;
         }
-        // 模型、启动环境、同步开关会写进 agent 配置：要写成的样子变了就下发同步请求
+        // 启动环境、同步开关会写进 agent 配置：要写成的样子变了就下发同步请求
         self.config_by = by.to_string();
         self.config_changed = true;
         let labels: Vec<&str> = p.out.changes.iter().map(|c| c.label.as_str()).collect();

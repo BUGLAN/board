@@ -333,7 +333,7 @@ function CopyFrom({ h }: { h: HostInfo }) {
       <Icon name="copy" />
       <div>
         <b>照另一台机器配</b>
-        <span>一次复制模型、同步开关、会话数、接单时段；之后两台各改各的</span>
+        <span>一次复制启动环境、同步开关、会话数、接单时段；之后两台各改各的</span>
       </div>
       <span className="hd-copy-ctl">
         <Select value={src} options={others.map(x => ({ value: x.name, label: x.name }))} onChange={setFrom} disabled={busy} aria-label="照哪台机器配" />

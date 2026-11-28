@@ -5,7 +5,7 @@
 //! - `GET /api/hosts/{名字}/work`：只取任务（收到实时推送里 `hosts` 变化时）
 //! - `POST /api/hosts/{名字}/begin {instance, id}`：开始一次排队中的派发（领取卡片）
 //! - `POST /api/hosts/{名字}/pull {instance}`：自动领取的下一张；现在没有可领的、或机器不在自动接单时返回 null
-//! - `POST /api/hosts/{名字}/round`：开始一轮领取（定时到点；界面上的「现在领一轮」也是它）
+//! - `POST /api/hosts/{名字}/round`：旧版 board host 的「开始一轮领取」兼容接口，现在什么也不做
 //! - `POST /api/hosts/{名字}/rename {name}`：机器改名（桌面端「设置 → 本机」保存机器名时调用）
 //! - `POST /api/hosts/{名字}/synced {instance, result}`：同步配置做完（启动时写的一次、收到请求写的一次），回报结果
 //! - `POST /api/hosts/{名字}/ls/{ID} {path, chain, entries, error?}`：列目录的结果

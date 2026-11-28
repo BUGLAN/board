@@ -75,8 +75,8 @@ impl Args {
 /* ------------------------------ 从文件读多行文字 ------------------------------ */
 
 /// `--body` / `--comment` 的值：直接写的，或者 `--body-file` / `--comment-file` 从文件读的（两个只能给一个）。
-/// Windows 上 skill 的入口 board.cmd 要经过 cmd.exe，参数里的换行会把整条命令截断在第一行（批处理里补不回来），
-/// 多行内容只能这样传
+/// Windows 上 skill 的入口 board.cmd 要经过 cmd.exe，参数里的换行会把整条命令截断在第一行（批处理里补不回来）；
+/// 单行里同时有双引号和 cmd 的语法字符时，PowerShell 的转义也可能在 cmd 里留下没配对的引号。多行或这类文字只能这样传
 pub(crate) fn text_arg(a: &Args, flag: &str, file_flag: &str) -> Result<Option<String>> {
     match (a.value(flag), file_arg(a, file_flag)?) {
         (Some(_), Some(_)) => Err(BoardError::usage(format!("{flag} 和 {file_flag} 只能给一个"))),

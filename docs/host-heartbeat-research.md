@@ -1,5 +1,7 @@
 # board host 心跳与实时推送调研
 
+> 这是 11-16 的调研，代码位置以当时为准；当时拆开的文件只写现在的 `host/`、`hosts/` 目录，不标行号。
+
 2026-11-16 调研。范围是 `board host` 的在线判定和任务下发链路；结论只讨论传输机制，不改协议代码。
 
 ## 结论
@@ -13,12 +15,12 @@
 
 ## 现状链路
 
-1. `board host` 每 10 秒 `POST /api/hosts/{名字}/beat`，请求里带实例标识、系统、版本、本机 agent、启动环境、工作空间、目录、正在跑的派发和资源采样（`crates/board-cli/src/host.rs:2073`、`crates/board-core/src/hosts.rs:3326`）。
-2. 服务端在同一个写事务里更新机器、资源、在线时间，给正在跑的派发名字发 agent 心跳，并更新卡片心跳；返回这台机器的完整任务（`crates/board-core/src/hosts.rs:3326`、`crates/board-cli/src/host.rs:2534`）。
-3. 同一时间，`board host` 用访问令牌订阅 `GET /api/stream`。服务端每次有机器或派发变化就广播；host 收到后立即 `GET /api/hosts/{名字}/work`，所以正常路径不是等 10 秒（`crates/board-cli/src/host.rs:3228`、`3293`、`crates/board-server/src/lib.rs:1257`）。
-4. SSE 服务端每 15 秒发 keep-alive，客户端单次读超时 45 秒；连接断开后 0.5 秒起指数退避，最长 10 秒重连（`crates/board-server/src/lib.rs:1302`、`crates/board-cli/src/backend.rs:296`、`crates/board-cli/src/host.rs:3235`）。
-5. 服务端每秒扫描一次。机器超过 50 秒没有 beat 就算离线；机器上的在跑派发结束为「机器掉线」，卡片按同样 50 秒规则释放（`crates/board-core/src/hosts.rs:379`、`5667`）。
-6. 机器恢复后，如果卡片还没被别人领走，`dispatch_revive` 会接回原来的派发；被别人领走时不再接回（`crates/board-core/src/hosts.rs:5009`）。
+1. `board host` 每 10 秒 `POST /api/hosts/{名字}/beat`，请求里带实例标识、系统、版本、本机 agent、启动环境、工作空间、目录、正在跑的派发和资源采样（`crates/board-cli/src/host/`、`crates/board-core/src/hosts/`）。
+2. 服务端在同一个写事务里更新机器、资源、在线时间，给正在跑的派发名字发 agent 心跳，并更新卡片心跳；返回这台机器的完整任务（`crates/board-core/src/hosts/`、`crates/board-cli/src/host/`）。
+3. 同一时间，`board host` 用访问令牌订阅 `GET /api/stream`。服务端每次有机器或派发变化就广播；host 收到后立即 `GET /api/hosts/{名字}/work`，所以正常路径不是等 10 秒（`crates/board-cli/src/host/`、`crates/board-server/src/lib.rs`）。
+4. SSE 服务端每 15 秒发 keep-alive，客户端单次读超时 45 秒；连接断开后 0.5 秒起指数退避，最长 10 秒重连（`crates/board-server/src/lib.rs`、`crates/board-cli/src/backend.rs`、`crates/board-cli/src/host/`）。
+5. 服务端每秒扫描一次。机器超过 50 秒没有 beat 就算离线；机器上的在跑派发结束为「机器掉线」，卡片按同样 50 秒规则释放（`crates/board-core/src/hosts/`）。
+6. 机器恢复后，如果卡片还没被别人领走，`dispatch_revive` 会接回原来的派发；被别人领走时不再接回（`crates/board-core/src/hosts/`）。
 
 任务下发实际有两条路：
 
@@ -40,7 +42,7 @@ SSE 断了 / 漏了一条
 下面是可以直接从代码路径算出的量，不是生产监控数据：
 
 - 每台机器固定每分钟 6 次 beat，即每天 8,640 次 HTTP 请求。100 台机器约 10 次/秒，1,000 台约 100 次/秒。
-- 没有在跑的派发时，每次 beat 至少两次 `UPDATE hosts`（机器行和资源行），即每台每天 17,280 次写入；有 1 张卡在跑时，再加 1 次 agent、1 次卡片、1 次 `card_runs`，约每台每天 43,200 次写入（`crates/board-core/src/hosts.rs:3326`、`crates/board-core/src/engine.rs:1177`）。
+- 没有在跑的派发时，每次 beat 至少两次 `UPDATE hosts`（机器行和资源行），即每台每天 17,280 次写入；有 1 张卡在跑时，再加 1 次 agent、1 次卡片、1 次 `card_runs`，约每台每天 43,200 次写入（`crates/board-core/src/hosts/`、`crates/board-core/src/engine.rs`）。
 - 每次 beat 都重新读取并序列化本机 agent、启动环境、目录、本机 skill；响应还包含运行/排队派发、skills、MCP、供应商和配置哈希。报文大小随机器配置线性增长，不随任务数量保持常数。
 - SQLite 使用 WAL、`busy_timeout`，但同一进程仍然只有一个写事务入口（`crates/board-core/src/store.rs:284`、`542`）。把每次 beat 放在一个写事务里，意味着机器数增长时，心跳、卡片、评论和派发结束会竞争同一个写者。
 

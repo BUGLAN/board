@@ -972,7 +972,7 @@ impl<'a> W<'a> {
         self.cancel_session_rest(d.session, &why)
     }
 
-    /// 拆解结束（PRD §9.1）：卡片在任何情况下都不动。退出码 0 时按这次派发期间建了几张「拆自」是这条的卡记「已拆解」或「没拆出卡」；
+    /// 拆解结束（PRD §9.1）：卡片在任何情况下都不动。退出码 0 时按这次派发期间建了几张「拆自」是这条的卡记「已拆解」或「不用拆」；
     /// 退出码非 0（或 board host 上没有进程）记「异常退出」，人停止、board host 退出、超时记「已停止」，都在这一条上评论原因
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_split(&mut self, d: &DRow, actor: &Actor, exit_code: Option<i64>, tail: &Tail, how: Finish, because: Option<String>, stop_by: Option<String>, quota: Option<i64>) -> Result<()> {

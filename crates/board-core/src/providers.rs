@@ -1,4 +1,4 @@
-//! 模型供应商共用配置（PRD §10.16「共用配置」）：服务端存供应商的地址、API key、模型，各台机器的 board host 按设置改写本机 agent 的配置文件。
+//! 模型供应商共用配置（PRD §10.16「共用配置」）：服务端存供应商的地址、API key、模型。
 //!
 //! 和 MCP 共用配置（[`crate::mcp`]）是同一套做法：
 //! - 每个供应商：名称、接口（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三种里它提供的，每种一个地址）、
@@ -8,9 +8,10 @@
 //!   `/v1/messages`）。按角色派发和「获取模型」（[`models_url`]）都按规范化后的地址。
 //! - 每个模型可以标支持哪几档思考强度（`efforts`）；没标的模型在角色里不能选强度（[`writable_efforts`]）。
 //! - 版本号是全部内容（含密钥）的哈希前 12 位：密钥改了也会重新同步，哈希不泄露原文。
-//! - 每个内置 agent（claude、codex、dsh）用哪个供应商、哪个模型、什么强度、哪种接口：在每台机器上选「不改 / 指定」
-//!   （机器设置的 `run`，见 hosts/model.rs 的 [`crate::hosts::AgentRun`]）；服务器上不再存一份给所有机器跟的。
-//! - 改了算配置有变化：服务端给受影响的机器下发「同步配置」请求（hosts/sync.rs 的 `request_config_sync`）。
+//! - 每个内置 agent（claude、codex、dsh）用哪个供应商、哪个模型、什么强度、哪种接口，由这次派发用的角色决定
+//!   （PRD §9.1「分工」）：board host 只给这一个 agent 进程换上，不再按机器设置改写 agent 自己的配置文件（#576）。
+//! - 改了算机器任务有变化：服务端把新的供应商清单随 `host_work` 发给机器（`hosts_changed`），不再下发
+//!   「同步配置」请求：`config_key` 里没有供应商。
 
 use crate::store::{R, W};
 use crate::{BoardError, ErrorCode, Result};
@@ -351,8 +352,6 @@ impl W<'_> {
             params![p.name, serde_json::to_string(&p).unwrap_or_default(), p.version, p.updated_at, p.by, p.source],
         )?;
         self.hosts_changed = true;
-        self.config_changed = true;
-        self.config_by = p.by.clone();
         self.changed = true;
         Ok(p.masked())
     }
@@ -368,7 +367,6 @@ impl W<'_> {
             return Err(BoardError::new(ErrorCode::NotFound, format!("没有模型供应商「{name}」")));
         }
         self.hosts_changed = true;
-        self.config_changed = true;
         self.changed = true;
         Ok(())
     }

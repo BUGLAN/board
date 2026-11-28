@@ -1,5 +1,6 @@
 //! 多行文字一字不丢（卡片 default/main#147）：Windows 上 skill 的入口 board.cmd 要经过 cmd.exe，
-//! 参数里的换行会把命令截断在第一行，所以多行内容用 --body-file / --comment-file 从文件传。
+//! 参数里的换行会把命令截断在第一行；带双引号的单行还可能被 PowerShell 的转义弄坏。多行或这类文字用
+//! --body-file / --comment-file 从文件传。
 //! 这里核对：文件（含 BOM、UTF-16、CRLF）和标准输入传进去的内容与原文逐字一致；skill 的入口脚本把参数原样交给 board。
 //! Windows 上 CI 也跑这个文件（.github/workflows/deploy.yml 的 heartbeat-windows），连同 board.cmd。
 

@@ -56,7 +56,7 @@ pub(super) struct SyncOut {
 }
 
 /// 同步配置（在后台线程里）：skills（选了「不改」时只装 board-skills）、MCP（选了「不改」时不碰）、
-/// 每个内置 agent 的模型（不改 / 指定），最后读回每个 agent 配置文件里现在的模型和强度
+/// Git 凭据（选了「不改」时去掉之前写进去的），最后读回每个内置 agent 配置文件里现在的模型和强度（不写模型，#576）
 pub(super) fn run_sync(job: SyncJob) -> SyncOut {
     let mut changes = vec![];
     let mut secrets = vec![];

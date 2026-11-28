@@ -1,6 +1,6 @@
 [package]
 name = "board-server"
-description = "Board 网页端服务：HTTP API + 实时推送（SSE），并托管界面。桌面端内嵌同一个服务"
+description = "Board 网页端服务：HTTP API + 实时推送（SSE），并托管界面"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

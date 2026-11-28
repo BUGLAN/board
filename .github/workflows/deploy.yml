@@ -103,7 +103,7 @@ jobs:
       - name: Windows 安装脚本替换失败回滚测试
         run: cargo test --locked -p board-server install::tests::install_ps1_rolls_back_failed_binary_replacement
 
-      # 桌面端的测试（src-tauri/src 下的 33 个用例：ACL、路径校验、更新、登录等）。不需要先编安装包自带的 board：
+      # 桌面端的测试（ACL、路径校验、更新、登录等）。不需要先编安装包自带的 board：
       # src-tauri/build.rs 在 src-tauri/binaries 里没有 sidecar 时按不带 sidecar 构建
       - name: 桌面端单元测试
         run: cargo test --locked -p board-desktop
@@ -257,7 +257,7 @@ jobs:
         env:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
 
-      # 桌面端的单元测试（src-tauri/src 下的 33 个用例）：macOS、Windows 各跑一次，和安装包同一个缓存、编过的依赖不用再编
+      # 桌面端的单元测试：macOS、Windows 各跑一次，和安装包同一个缓存、编过的依赖不用再编
       - name: 桌面端单元测试
         run: cargo test --locked -p board-desktop
 
