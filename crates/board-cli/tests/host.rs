@@ -330,7 +330,6 @@ impl Rig {
         let mut c = Command::new(env!("CARGO_BIN_EXE_board"));
         // board host 起的 agent 也在这个环境里跑 board：check、心跳的状态不能落到开发者机器的临时目录里
         isolate(&mut c, &self.s.home);
-        c.envs(extra.iter().copied());
         c.args(args)
             .env("BOARD_URL", &self.s.url)
             .env("BOARD_TOKEN", &self.s.token)
@@ -346,6 +345,8 @@ impl Rig {
         if desktop {
             c.env("BOARD_HOST_STDIN", "1");
         }
+        // 放在最后：可以覆盖上面的默认值（例如上报间隔）
+        c.envs(extra.iter().copied());
         HostChild { child: c.spawn().unwrap() }
     }
 
@@ -2685,4 +2686,89 @@ fn host_keeps_reporting_while_push_and_fetch_hang() {
     let (code, out) = stop(host);
     assert_eq!(code, 0);
     assert!(out.contains("又能拉到最新代码了") && out.contains("已经保存到分支 wip/main/1"), "{out}");
+}
+
+/// 打开 mbp 的自动接单（默认全天），领取规则：带 `label` 的卡交给 claude
+fn auto_claim(rig: &Rig, label: &str) {
+    let rule = board_core::ClaimRule { op: "in".into(), labels: vec![label.into()], agent: "claude".into(), ..Default::default() };
+    let patch = board_core::HostPatch { rules: Some(vec![rule]), auto: Some(true), ..Default::default() };
+    let mut store = board_core::Store::open(&rig.s.db).unwrap();
+    store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", label, None, false)).unwrap();
+    store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &patch)).unwrap();
+}
+
+/// 卡片 #679：开着自动接单、在接单时段里、但没有命中规则的卡（空闲时的常态）：board host 只在每次上报后要一次卡，
+/// 不再每 200 毫秒空转一次 pull 加一次取任务；待办里出现命中规则的卡，下一次上报之后就领走
+#[test]
+fn idle_auto_claim_pulls_once_per_report() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "不命中"]).code, 0);
+    rig.mode("review");
+    rig.ws_ready();
+    let ws = format!("--workspace={}", rig.ws().display());
+    // 上报间隔 2 秒：主循环一轮 200 毫秒，空转的话 2 秒里要 10 次
+    let host = rig.spawn_host_env(&["host", "--name", "mbp", &ws], false, &[("BOARD_HOST_INTERVAL", "2")]);
+    rig.online("mbp");
+    auto_claim(&rig, "自动");
+    // 等它开始要卡（打开自动接单后的第一次上报），再数 8 秒
+    wait_until("开始要卡", Duration::from_secs(20), || rig.s.state.pulls() > 0);
+    let before = rig.s.state.pulls();
+    std::thread::sleep(Duration::from_secs(8));
+    let n = rig.s.state.pulls() - before;
+    // 8 秒里上报 4 次；推送触发的取任务也可能要一次，最多翻倍
+    assert!(n <= 8, "空闲时 8 秒里要了 {n} 次卡");
+    // 出现一张命中规则的卡：下一次上报（2 秒）之后就领走
+    assert_eq!(rig.board(&["new", "命中", "--label", "自动"]).code, 0);
+    let t = Instant::now();
+    wait_until("#2 被领走、交审", Duration::from_secs(15), || rig.show(2)["column"] == "review");
+    assert!(t.elapsed() < Duration::from_secs(10), "用了 {:?}", t.elapsed());
+    assert_eq!(rig.show(1)["column"], "todo", "不命中规则的不领");
+    let (code, _) = stop(host);
+    assert_eq!(code, 0);
+}
+
+/// 卡片 #679：自动接单领到的卡起不来（拉不到最新代码）时，这一轮不再接着领：只有一张卡记为异常退出，拉取失败马上报给服务端，
+/// 之后不再把这个项目的卡派给这台机器；agent 不会因为连续异常退出被熔断
+#[test]
+fn a_failed_start_stops_the_round_and_reports_first() {
+    let rig = Rig::new();
+    let mut store = board_core::Store::open(&rig.s.db).unwrap();
+    store.write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_label("default", "自动", None, false)).unwrap();
+    drop(store);
+    for t in ["一", "二", "三"] {
+        assert_eq!(rig.board(&["new", t, "--label", "自动"]).code, 0);
+    }
+    let origin = bare_origin(&rig, "origin");
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), rig.repo.to_str().unwrap()]);
+    let url = origin.to_str().unwrap().to_string();
+    board_core::Store::open(&rig.s.db).unwrap().write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.set_repo_branch("default", Some(&url), None)).unwrap();
+    rig.mode("review");
+    let host = rig.host("mbp");
+    rig.online("mbp");
+    wait_until("服务端看到目录正常", Duration::from_secs(20), || host_dir_of(&rig, "default/main")["status"] == "ok");
+    // 远端挪走了：地址没变（目录检查照样对得上），拉取失败
+    std::fs::rename(&origin, root.join("origin.git.gone")).unwrap();
+    let rule = board_core::ClaimRule { op: "in".into(), labels: vec!["自动".into()], agent: "claude".into(), ..Default::default() };
+    let patch = board_core::HostPatch { rules: Some(vec![rule]), auto: Some(true), ..Default::default() };
+    board_core::Store::open(&rig.s.db).unwrap().write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_update("mbp", &patch)).unwrap();
+    let blocked = |rig: &Rig| {
+        rig.workspace()["blocks"].as_array().is_some_and(|b| b.iter().any(|x| x["host"] == "mbp" && x["why"].as_str().is_some_and(|w| w.contains("拉不到最新代码"))))
+    };
+    wait_until("机器报上来拉取失败", Duration::from_secs(20), || blocked(&rig));
+    // 再等几次上报：不再领这个项目的卡
+    std::thread::sleep(Duration::from_secs(3));
+    let store = board_core::Store::open(&rig.s.db).unwrap();
+    let all = store.read(|r| r.host_recent(1, 50)).unwrap();
+    // 会话开始时服务端把三张一次排好；第一张起不来，排在后面的两张跟着取消（没跑 agent），不算异常退出
+    let crashed = all.iter().filter(|d| d.result.as_deref() == Some("crashed")).count();
+    assert_eq!(crashed, 1, "只有一张异常退出：{all:?}");
+    assert!(all.iter().all(|d| matches!(d.result.as_deref(), Some("crashed") | Some("canceled"))), "{all:?}");
+    let todo = (1..=3).filter(|i| rig.show(*i)["column"] == "todo").count();
+    assert_eq!(todo, 2, "另外两张还在待办");
+    let h = rig.workspace()["hosts"][0].clone();
+    let claude = h["agents"].as_array().unwrap().iter().find(|a| a["id"] == "claude").cloned().unwrap();
+    assert_ne!(claude["tripped"], true, "没有被熔断：{claude}");
+    let (code, _) = stop(host);
+    assert_eq!(code, 0);
 }

@@ -278,6 +278,8 @@ pub(crate) async fn pull(
     Path(name): Path<String>,
     Json(v): Json<Value>,
 ) -> ApiResult<Option<Dispatch>> {
+    #[cfg(feature = "test-hooks")]
+    s.count_pull();
     let b: PullBody = parse(v)?;
     let token = token_of(&caller);
     let out = s

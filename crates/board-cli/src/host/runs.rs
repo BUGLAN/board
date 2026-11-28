@@ -916,12 +916,15 @@ impl Host<'_> {
             match self.rm().post::<Dispatch>(&format!("/api/hosts/{}/begin", self.name), body) {
                 Ok(d) => {
                     changed = true;
-                    self.started(d);
+                    if !self.started(d) {
+                        return Ok(self.start_failed());
+                    }
                 }
                 Err(e) if matches!(e.code, ErrorCode::HostNameTaken | ErrorCode::InvalidToken) => return Err(e),
+                // 开始不了（连不上、服务端拒绝）：等下一次取到任务再试（hold，见下面）
                 Err(_) => {
                     self.hold = true;
-                    return Ok(true);
+                    return Ok(changed);
                 }
             }
         }
@@ -931,16 +934,21 @@ impl Host<'_> {
                 match self.rm().post::<Option<Dispatch>>(&format!("/api/hosts/{}/pull", self.name), body) {
                     Ok(Some(d)) => {
                         changed = true;
-                        self.started(d);
+                        if !self.started(d) {
+                            return Ok(self.start_failed());
+                        }
                     }
+                    // 领不到（接单时段里没有命中规则的卡，这是空闲时的常态）、领的时候出错：先不再要，等下一次取到任务
+                    // （每次上报、推送里机器和派发变了）解除 hold 再要。不返回 true 让主循环马上重取任务：那样空闲时
+                    // 每 200 毫秒就要一次（#679），一直占着服务端的写锁、笔记本一直联网
                     Ok(None) => {
                         self.hold = true;
-                        return Ok(true);
+                        return Ok(changed);
                     }
                     Err(e) if matches!(e.code, ErrorCode::HostNameTaken | ErrorCode::InvalidToken) => return Err(e),
                     Err(_) => {
                         self.hold = true;
-                        return Ok(true);
+                        return Ok(changed);
                     }
                 }
             }
@@ -948,13 +956,23 @@ impl Host<'_> {
         Ok(changed)
     }
 
+    /// 领到了、agent 没起来（拉不到代码、角色的供应商取不到……）：这一轮不再开始别的，马上上报，原因（拉取失败）先报给服务端，
+    /// 服务端据此先不把这个项目的卡派给这台机器。不停的话同一次 fill 里接着领、接着失败，几张卡都进错误节点，
+    /// 连续异常退出把这个 agent 熔断（#679）。返回 true：有变化
+    pub(super) fn start_failed(&mut self) -> bool {
+        self.hold = true;
+        self.beat_soon = true;
+        true
+    }
+
     /// 还没在停的 agent 个数（占着会话位：一个会话 = 一个 agent 进程）
     pub(super) fn live(&self) -> usize {
         self.runs.len()
     }
 
-    /// 服务端开始了一次派发（已领取）：在本机启动 agent；没领到时只打印
-    pub(super) fn started(&mut self, d: Dispatch) {
+    /// 服务端开始了一次派发（已领取）：在本机启动 agent；没领到时只打印。返回 false：领到了、但 agent 没起来
+    /// （派发记为结束，原因写进日志、上报）
+    pub(super) fn started(&mut self, d: Dispatch) -> bool {
         if d.state != "running" {
             self.say(format!(
                 "{} {}  {}",
@@ -962,7 +980,7 @@ impl Host<'_> {
                 self.p.cyan(&format!("{}#{}", d.board, d.card)),
                 self.p.dim(&format!("没领到（{}）", d.result.as_deref().map(result_words).unwrap_or("已结束")))
             ));
-            return;
+            return true;
         }
         // 先记进任务里：重新取到任务之前不会被当成「服务端已经结束」
         if let Some(w) = self.work.as_mut() {
@@ -987,6 +1005,7 @@ impl Host<'_> {
                     self.p.dim(&env),
                     what
                 ));
+                true
             }
             Err(msg) => {
                 self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
@@ -994,6 +1013,7 @@ impl Host<'_> {
                 let _ = std::fs::write(&log, format!("{msg}\n"));
                 self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None, quota: None });
                 self.report_ended();
+                false
             }
         }
     }

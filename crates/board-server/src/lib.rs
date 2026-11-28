@@ -103,6 +103,9 @@ struct Inner {
     /// 测试用：下一次 `/api/dispatches/{id}/end` 返回 502（Cargo feature `test-hooks`）
     #[cfg(feature = "test-hooks")]
     fail_end: std::sync::atomic::AtomicBool,
+    /// 测试用：收到过几次 `/api/hosts/{name}/pull`（数 board host 空闲时多久要一次卡，#679）
+    #[cfg(feature = "test-hooks")]
+    pulls: std::sync::atomic::AtomicU64,
 }
 
 /// 等 board host 回传的「列目录」请求
@@ -149,6 +152,8 @@ impl AppState {
             ls: std::sync::Mutex::new(LsState::default()),
             #[cfg(feature = "test-hooks")]
             fail_end: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "test-hooks")]
+            pulls: std::sync::atomic::AtomicU64::new(0),
         })))
     }
 
@@ -231,6 +236,18 @@ impl AppState {
     #[cfg(feature = "test-hooks")]
     pub fn fail_next_end(&self) {
         self.0.fail_end.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 测试用：到现在为止收到过几次 `/api/hosts/{name}/pull`
+    #[cfg(feature = "test-hooks")]
+    pub fn pulls(&self) -> u64 {
+        self.0.pulls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 测试用：记一次 pull
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn count_pull(&self) {
+        self.0.pulls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// 测试用：取走一次 502 标记
