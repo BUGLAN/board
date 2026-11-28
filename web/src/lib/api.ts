@@ -106,6 +106,14 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
+/** `/api/card`、`/api/cmd` 还会带回一份命令行用的白板简报（含每次都变的 now），界面不读，去掉再进 store */
+function withoutBoard<T extends object>(r: T & { board?: unknown }): T {
+  if (!('board' in r)) return r;
+  const out = { ...r };
+  delete out.board;
+  return out;
+}
+
 /** 上传附件：请求体就是文件内容。card 为 null：新建弹窗里先上传，新建卡片时按描述里的引用归到卡片 */
 async function upload(board: string, card: number | null, file: File): Promise<Attachment> {
   const qs = `board=${encodeURIComponent(board)}&name=${encodeURIComponent(file.name)}${card ? `&card=${card}` : ''}`;
@@ -143,13 +151,13 @@ export const api = {
   workspace: () => req<Workspace>('GET', '/api/workspace').then(normWorkspace),
   /** full：终点状态也带全部卡片（默认只带最近的几张，见 BoardSnapshot.omitted） */
   board: (path: string, full = false) => req<BoardSnapshot>('GET', `/api/board?path=${q(path)}${full ? '&full=1' : ''}`),
-  card: (path: string, id: number) => req<CardDetail>('GET', `/api/card?path=${q(path)}&id=${id}`),
+  card: (path: string, id: number) => req<CardDetail & { board?: unknown }>('GET', `/api/card?path=${q(path)}&id=${id}`).then(withoutBoard),
   /** 这块白板回收站里的卡片（按删除时间，最近删的在最后） */
   trash: (path: string) => req<TrashCard[]>('GET', `/api/trash?path=${q(path)}`),
   /** 一块白板的动态：按 id 倒序分页（新的在前）。before 是上一页最后一条的 id，不传从最新一条开始；返回空数组 = 没有更早的了 */
   events: (path: string, before?: number | null, limit = 20) =>
     req<BoardEvent[]>('GET', `/api/events?path=${q(path)}&limit=${limit}${before != null ? `&before=${before}` : ''}`),
-  cmd: (board: string, cmd: Cmd) => req<CardDetail>('POST', '/api/cmd', { board, ...cmd }),
+  cmd: (board: string, cmd: Cmd) => req<CardDetail & { board?: unknown }>('POST', '/api/cmd', { board, ...cmd }).then(withoutBoard),
   /** 人批量执行同一种卡片命令：一个请求、一个写事务。返回成功、失败的 ID 和写完后的 rev */
   cardBatch: (board: string, ids: number[], op: CardBatchOp) =>
     req<{ ok: number[]; failed: { id: number; code: ErrorCode; message: string }[]; rev: number }>('POST', '/api/cards/batch', { board, ids, ...op }),

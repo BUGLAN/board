@@ -26,7 +26,7 @@ const kb = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.ceil(
 export function SharedConfig({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const { list: lib, err, refresh: load } = useRemoteList(() => api.skills(), ws?.hosts);
+  const { list: lib, err, refresh: load } = useRemoteList(() => api.skills(), ws);
   const [busy, setBusy] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const remove = async (s: SkillInfo) => {

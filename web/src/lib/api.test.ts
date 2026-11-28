@@ -27,6 +27,19 @@ describe('请求', () => {
     await expect(api.card('p/a', 1)).rejects.toMatchObject({ code: 'NOT_FOUND', message: '卡片不存在' });
   });
 
+  it('卡片详情去掉命令行用的 board 简报，store 只比较详情本身', async () => {
+    const card = { id: 1, title: 'A', activity: [], board: { now: 1, cards: [] } };
+    const fetch = vi.fn(async (_path: string) => new Response(JSON.stringify(card), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+    const got = await api.card('p/a', 1);
+    expect(got).toEqual({ id: 1, title: 'A', activity: [] });
+    expect('board' in got).toBe(false);
+    const cmd = await api.cmd('p/a', { op: 'edit', id: 1, title: 'A' });
+    expect(cmd).toEqual({ id: 1, title: 'A', activity: [] });
+    expect('board' in cmd).toBe(false);
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual(['/api/card?path=p%2Fa&id=1', '/api/cmd']);
+  });
+
   it('批量卡片命令发到 /api/cards/batch', async () => {
     const fetch = vi.fn(async (path: string, init: RequestInit) => {
       expect(path).toBe('/api/cards/batch');

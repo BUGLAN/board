@@ -57,7 +57,7 @@ interface SP {
   metric: Metric;
   set: (p: Partial<SP>) => void;
 }
-const useSP = create<SP>(set => ({
+export const useSP = create<SP>(set => ({
   scope: 'board',
   kind: '7d',
   cFrom: ymd(Date.now() - 6 * DAY),
@@ -108,7 +108,7 @@ interface SD {
   loading: boolean;
   error: string | null;
 }
-const useSD = create<SD>(() => ({ data: null, key: null, loading: false, error: null }));
+export const useSD = create<SD>(() => ({ data: null, key: null, loading: false, error: null }));
 let seq = 0;
 async function load(q: NonNullable<ReturnType<typeof useQuery>>) {
   const my = ++seq;
@@ -1140,6 +1140,15 @@ export function StatsPage() {
 
 /* ------------------------------ 侧栏：范围导航 ------------------------------ */
 
+function Nums({ b }: { b: StatsBrief | undefined }) {
+  return b ? (
+    <span className="sp-nav-n">
+      {b.review > 0 && <em title="现在待复盘">{b.review}</em>}
+      <b title="这段时间完成">{b.done}</b>
+    </span>
+  ) : null;
+}
+
 export function StatsSide() {
   const ws = useData(st => st.ws);
   const cur = useCurrent();
@@ -1148,13 +1157,6 @@ export function StatsSide() {
   const projects = ws?.projects ?? [];
   const range = KINDS.find(k => k.key === kind)?.label ?? '';
   const briefOf = (list: StatsBrief[] | undefined, key: string) => list?.find(x => x.key === key);
-  const Nums = ({ b }: { b: StatsBrief | undefined }) =>
-    b ? (
-      <span className="sp-nav-n">
-        {b.review > 0 && <em title="现在待复盘">{b.review}</em>}
-        <b title="这段时间完成">{b.done}</b>
-      </span>
-    ) : null;
   const pickProject = (p: ProjectInfo) => {
     if (cur?.project.key !== p.key && p.boards[0]) openBoard(p.boards[0].path, { stay: true });
     set({ scope: 'project' });

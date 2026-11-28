@@ -30,31 +30,41 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
   const { list, error, reload } = useTrash(path);
   const filter = useUI(s => s.filter);
   const q = filter.trim().toLowerCase();
-  const [checked, setChecked] = useState<number[]>([]);
+  const [checked, setChecked] = useState<Set<number>>(() => new Set());
   const [busy, setBusy] = useState(false);
 
   // 换白板：勾选清空
-  useEffect(() => setChecked([]), [path]);
+  useEffect(() => setChecked(new Set()), [path]);
   // 恢复、永久删除了，或者别的窗口动了：不在回收站里的从勾选里去掉
-  useEffect(() => setChecked(cs => (list && cs.some(id => !list.some(t => t.id === id)) ? cs.filter(id => list.some(t => t.id === id)) : cs)), [list]);
+  useEffect(() => {
+    if (!list) return;
+    const ids = new Set(list.map(t => t.id));
+    setChecked(cs => {
+      if ([...cs].every(id => ids.has(id))) return cs;
+      return new Set([...cs].filter(id => ids.has(id)));
+    });
+  }, [list]);
 
   // 最近删的在前（服务端按删除时间给，最近删的在最后）
   const all = useMemo(() => [...(list ?? [])].reverse().filter(t => trashHit(t, q)), [list, q]);
   const groups = useMemo(() => timeGroups(all, t => t.deletedAt, now, '删除'), [all, now]);
   const flat = useMemo(() => groups.flatMap(g => g.rows), [groups]);
   const flatIds = useMemo(() => flat.map(t => t.id), [flat]);
-  const check = useRangeSelect(flatIds, setChecked, { resetKey: path });
+  const check = useRangeSelect(flatIds, update => setChecked(cur => new Set(update([...cur]))), { resetKey: path });
   useSelectKeys({
     ids: flatIds,
-    onSelectAll: setChecked,
+    onSelectAll: ids => setChecked(new Set(ids)),
     onEscape: () => {
-      if (!checked.length) return false;
-      setChecked([]);
+      if (!checked.size) return false;
+      setChecked(new Set());
       return true;
     },
   });
 
-  const drop = (targets: number[]) => setChecked(cur => cur.filter(id => !targets.includes(id)));
+  const drop = (targets: number[]) => {
+    const gone = new Set(targets);
+    setChecked(cur => new Set([...cur].filter(id => !gone.has(id))));
+  };
 
   const restore = async (targets: number[]) => {
     if (!targets.length || busy) return;
@@ -109,8 +119,8 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
     <div className="trash-page">
       {groups.map(g => {
         const ids = g.rows.map(t => t.id);
-        const allOn = ids.every(id => checked.includes(id));
-        const some = !allOn && ids.some(id => checked.includes(id));
+        const allOn = ids.every(id => checked.has(id));
+        const some = !allOn && ids.some(id => checked.has(id));
         return (
           <section key={g.key} className="ib-grp" data-group={g.key}>
             <div className="ib-gh">
@@ -118,14 +128,20 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
                 on={allOn}
                 some={some}
                 label={allOn ? `取消勾选「${g.label}」` : `勾选「${g.label}」这一组`}
-                onToggle={() => setChecked(cur => (allOn ? cur.filter(c => !ids.includes(c)) : [...new Set([...cur, ...ids])]))}
+                onToggle={() =>
+                  setChecked(cur => {
+                    const next = new Set(cur);
+                    ids.forEach(id => (allOn ? next.delete(id) : next.add(id)));
+                    return next;
+                  })
+                }
               />
               <span>{g.label}</span>
               <span className="ib-gh-n mono">{g.rows.length}</span>
             </div>
             <div className="ib-rows" role="list">
               {g.rows.map(t => (
-                <TrashRow key={t.id} t={t} now={now} statuses={statuses} busy={busy} checked={checked.includes(t.id)} onCheck={check} onRestore={() => void restore([t.id])} onPurge={() => void purge([t.id])} />
+                <TrashRow key={t.id} t={t} now={now} statuses={statuses} busy={busy} checked={checked.has(t.id)} onCheck={check} onRestore={() => void restore([t.id])} onPurge={() => void purge([t.id])} />
               ))}
             </div>
           </section>
@@ -150,7 +166,7 @@ export function TrashPage({ path, bulkHost }: { path: string; bulkHost?: HTMLEle
         </div>
       )}
       {(() => {
-        const bar = <TrashBulk n={checked.length} busy={busy} onRestore={() => void restore(checked)} onPurge={() => void purge(checked)} onClear={() => setChecked([])} />;
+        const bar = <TrashBulk n={checked.size} busy={busy} onRestore={() => void restore([...checked])} onPurge={() => void purge([...checked])} onClear={() => setChecked(new Set())} />;
         return bulkHost ? createPortal(bar, bulkHost) : bar;
       })()}
     </div>
@@ -254,9 +270,9 @@ function TrashBulk({ n, busy, onRestore, onPurge, onClear }: { n: number; busy: 
   );
 }
 
-/** 回收站里的卡片：进这一页时取一次，随 rev（任何写入）重新取；重新取的时候保留上一份，不闪空白 */
+/** 回收站里的卡片：进这一页时取一次，随快照里回收站的张数重新取；重新取的时候保留上一份，不闪空白 */
 function useTrash(path: string) {
-  const rev = useData(s => (s.board?.path === path ? s.board.rev : s.rev));
+  const count = useData(s => (s.board?.path === path ? s.board.trash : null));
   const [list, setList] = useState<TrashCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -270,7 +286,7 @@ function useTrash(path: string) {
     return () => {
       alive = false;
     };
-  }, [path, rev, tick]);
+  }, [path, count, tick]);
   return { list, error, reload: () => setTick(t => t + 1) };
 }
 

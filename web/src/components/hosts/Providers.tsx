@@ -30,7 +30,7 @@ import { useRemoteList } from './useRemoteList';
 export function ProvidersSection() {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const { list: view, err, refresh: load } = useRemoteList(() => api.providers(), ws?.hosts);
+  const { list: view, err, refresh: load } = useRemoteList(() => api.providers(), ws);
   // 正在编辑的：null 没有；editing = false 是新加
   const [edit, setEdit] = useState<{ p: Provider; editing: boolean } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

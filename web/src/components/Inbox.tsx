@@ -150,6 +150,7 @@ function groupsBy(units: Unit[], group: Group, now: number, labels: Label[]): Gr
 const NO_LABELS: Label[] = [];
 
 const NO_PARENTS: Record<number, Card> = {};
+const NO_CARDS: Card[] = [];
 
 /** 当前白板「未整理」里显示的条目（最新的在前；已经拆出卡的原条目不算，见 lib/split）和筛选后的列表；快照还没到时为 null。
     parents：被隐藏的原条目，拆出的卡按它成组；筛选词对上原条目时，整组都留着 */
@@ -626,7 +627,17 @@ function GroupSection({
       <div className="ib-rows">
         {g.units.map(u =>
           u.kind === 'one' ? (
-            <Row key={renderKey(u.card.id)} card={u.card} now={now} labels={labels} all={all} home={home} checked={checked.includes(u.card.id)} open={open === u.card.id} onCheck={onCheck} />
+            <Row
+              key={renderKey(u.card.id)}
+              card={u.card}
+              now={now}
+              labels={labels}
+              all={open === u.card.id ? all : NO_CARDS}
+              home={home}
+              checked={checked.includes(u.card.id)}
+              open={open === u.card.id}
+              onCheck={onCheck}
+            />
           ) : (
             <SplitBundle key={`split-${u.parent.id}`} parent={u.parent} cards={u.cards} checked={checked} open={open} now={now} labels={labels} all={all} home={home} onCheck={onCheck} />
           ),
@@ -810,7 +821,18 @@ function SplitBundle({
       )}
       <div className="ib-brows">
         {cards.map(c => (
-          <Row key={renderKey(c.id)} card={c} now={now} labels={labels} all={all} home={home} checked={checked.includes(c.id)} open={open === c.id} onCheck={onCheck} inBundle />
+          <Row
+            key={renderKey(c.id)}
+            card={c}
+            now={now}
+            labels={labels}
+            all={open === c.id ? all : NO_CARDS}
+            home={home}
+            checked={checked.includes(c.id)}
+            open={open === c.id}
+            onCheck={onCheck}
+            inBundle
+          />
         ))}
       </div>
     </div>

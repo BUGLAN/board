@@ -5,11 +5,12 @@
    - skills 共用库、MCP 服务器、agent 模板三个区块都用它，各自只留上传、删除、编辑这些业务
    ========================================================================== */
 import { useEffect, useState } from 'react';
-import type { HostInfo } from '../../lib/types';
+import type { Workspace } from '../../lib/types';
 
-export function useRemoteList<T>(load: () => Promise<T>, hosts: HostInfo[] | undefined) {
+export function useRemoteList<T>(load: () => Promise<T>, ws: Pick<Workspace, 'rev' | 'hosts'> | null | undefined) {
   const [list, setList] = useState<T | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const hosts = ws?.hosts?.map(h => `${h.id}:${h.online ? 1 : 0}`).join('\n') ?? '';
   const refresh = async () => {
     try {
       setList(await load());
@@ -20,6 +21,6 @@ export function useRemoteList<T>(load: () => Promise<T>, hosts: HostInfo[] | und
   };
   useEffect(() => {
     void refresh();
-  }, [hosts]);
+  }, [ws?.rev, hosts]); // eslint-disable-line react-hooks/exhaustive-deps
   return { list, err, refresh };
 }

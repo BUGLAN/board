@@ -31,7 +31,7 @@ const GIT = syncKind('git');
 export function GitCredSection({ hosts }: { hosts: HostInfo[] }) {
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const { list: view, err, refresh: load } = useRemoteList(() => api.git(), ws?.hosts);
+  const { list: view, err, refresh: load } = useRemoteList(() => api.git(), ws);
   const cred = view?.cred ?? null;
   // 正在编辑的：null 没有
   const [edit, setEdit] = useState<{ d: GitDraft; editing: boolean } | null>(null);

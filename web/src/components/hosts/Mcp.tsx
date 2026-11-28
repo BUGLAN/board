@@ -37,7 +37,7 @@ export function McpSection({ hosts }: { hosts: HostInfo[] }) {
   const { mcp, nameOf } = useMcpAgents();
   const ws = useData(s => s.ws);
   const now = useNow(10000);
-  const { list, err, refresh: load } = useRemoteList(() => api.mcp(), ws?.hosts);
+  const { list, err, refresh: load } = useRemoteList(() => api.mcp(), ws);
   const [open, setOpen] = useState<string | null>(null);
   // 正在编辑的：null 没有；name 为空串是新加
   const [edit, setEdit] = useState<{ s: McpServer; editing: boolean } | null>(null);

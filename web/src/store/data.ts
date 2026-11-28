@@ -16,6 +16,7 @@ import { staleServer } from '../lib/stale';
 import { noticeStale } from '../lib/stale-runner';
 import { visibleInbox } from '../lib/split';
 import { earlierKey } from '../lib/earlier';
+import { Lru } from '../lib/lru';
 import { clearLocalPrompts, localPrompts, type Prompt } from '../lib/prompts';
 import { isNewEntry, type BoardEvent, type BoardInfo, type BoardSnapshot, type Card, type CardDetail, type Cmd, type ProjectInfo, type Workspace } from '../lib/types';
 import { cardKey, editCard, isDraft, joinPatch, labelAddPatch, laterPatch, patchProject, PROMPTS_BUSY, replacePromptsPatch, seenPatch, type Patch } from './patches';
@@ -697,7 +698,8 @@ export async function refreshHosts() {
   const r = await api.hosts();
   // 请求发出后又有写操作：这份可能是写之前的旧数据，用它会把刚保存的修改冲回去（例如「设为默认」又变回原来的）
   if (!base.ws || w !== writes) return;
-  base.ws = { ...base.ws, hosts: r.hosts, dispatches: r.dispatches };
+  // 心跳时间每次都变，但和机器、派发无关的字段沿用原对象：藏着的白板不会因为机器页轮询就重渲染
+  base.ws = share(base.ws, { ...base.ws, hosts: r.hosts, dispatches: r.dispatches });
   render();
 }
 
@@ -873,7 +875,7 @@ export async function reorderLabels(project: string, ids: number[]) {
 }
 
 /** 打开过的白板的最近一份快照：切回来时先显示它，不闪骨架，refresh 拿到新的再替换 */
-const snapshots = new Map<string, BoardSnapshot>();
+const snapshots = new Lru<string, BoardSnapshot>(10);
 
 function switchTo(path: string, opts: { open?: number | null; replace?: boolean } = {}) {
   flip.reset();
@@ -907,7 +909,7 @@ export async function switchToCard(path: string, id: number) {
 /* ------------------------------ 卡片详情 ------------------------------ */
 
 /** 打开过的卡片详情：再次打开先显示它（不闪骨架），取回新的再替换 */
-const details = new Map<string, CardDetail>();
+const details = new Lru<string, CardDetail>(50);
 
 /**
  * 卡片详情的历史记录（PRD §10.8「前进 / 返回」）：这个窗口里按地址打开过的卡片，新的在前。
@@ -1076,11 +1078,11 @@ export function sendComment(id: number, text: string): Promise<void> {
   return queue(async () => {
     try {
       const r = await api.cmd(path, { op: 'comment', id, text });
-      details.set(k, r);
       const mine = [...r.activity].reverse().find(a => a.kind === 'comment' && a.actor.kind === 'human' && a.text.trim() === text.trim());
       if (mine) settled.add(mine.id);
       const s = get();
       if (s.detailId === id && s.path === path) {
+        details.set(k, r);
         base.detail = r;
         render({ sending: drop(s.sending), detailError: null });
       } else set({ sending: drop(s.sending) });
@@ -1102,8 +1104,8 @@ export async function exec(cmd: Cmd, patch?: Patch, settle?: (r: CardDetail) => 
   try {
     const r = await queue(() => api.cmd(path, cmd));
     settle?.(r);
-    details.set(pkey(path, r.id), r);
     if (get().detailId === r.id && get().path === path) {
+      details.set(pkey(path, r.id), r);
       base.detail = r;
       render({ detailError: null });
     }
