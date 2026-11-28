@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS moves (
   FOREIGN KEY (board, card) REFERENCES cards(board, id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS moves_board ON moves (board, at);
+CREATE INDEX IF NOT EXISTS moves_card ON moves (board, card, at);
 CREATE INDEX IF NOT EXISTS activity_at ON activity (board, at);
 CREATE INDEX IF NOT EXISTS card_runs_start ON card_runs (board, started_at);
 "#;

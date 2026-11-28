@@ -2581,15 +2581,25 @@ fn rules_count_unmatched_cards() {
     let lc = label(&mut s, "claude");
     let a = new_card(&mut s, T0, "A");
     new_card(&mut s, T0, "B");
+    let docs = ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| {
+        let b = w.resolve(&docs)?;
+        w.exec(&b, &Actor::human(), Cmd::New { title: "文档卡".into(), body: None, column: None, top: false, labels: vec![], from: None })
+    })
+    .unwrap();
+    s.write(T0, Origin::ui(None), |w| w.set_board_auto(&docs, false)).unwrap();
     assert_eq!(host(&s, T0).unmatched, 0, "没有规则时不显示");
     rules(&mut s, &[("claude", "claude")], None).unwrap();
-    assert_eq!(host(&s, T0).unmatched, 2);
+    assert_eq!(host(&s, T0).unmatched, 2, "关了自动领取的白板不算");
     tag(&mut s, a, lc);
     assert_eq!(host(&s, T0).unmatched, 1);
+    s.write(T0, Origin::ui(None), |w| w.set_board_auto(&docs, true)).unwrap();
+    assert_eq!(host(&s, T0).unmatched, 2, "开了自动领取的白板算回来");
     let ws = s.read(|r| r.hosts(T0)).unwrap();
-    assert_eq!(ws[0].unmatched, 1, "工作区里的机器也带上");
+    assert_eq!(ws[0].unmatched, 2, "工作区里的机器也带上");
+    assert_eq!(beat(&mut s, T0 + S, &report_cd("i1")).unwrap().host.unmatched, 2, "board host 取任务时也带上");
     assert!(rules(&mut s, &[("claude", "claude")], Some("dsh")).is_err(), "兜底设不上了，没命中的照样数");
-    assert_eq!(host(&s, T0).unmatched, 1);
+    assert_eq!(host(&s, T0).unmatched, 2);
 }
 
 #[test]

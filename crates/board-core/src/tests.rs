@@ -2423,6 +2423,35 @@ fn schema_indexes_do_not_use_migrated_columns() {
     assert!(checked > 10, "应该检查到各个 SCHEMA 里的索引（只检查了 {checked} 列）");
 }
 
+#[test]
+fn hot_queries_use_their_indexes() {
+    let s = store();
+    let plan = |sql: &str| -> Vec<String> {
+        let mut st = s.conn().prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        st.query_map([], |r| r.get::<_, String>(3)).unwrap().map(std::result::Result::unwrap).collect()
+    };
+    let has = |sql: &str, index: &str| {
+        let p = plan(sql);
+        assert!(p.iter().any(|line| line.contains(index)), "{index} 没被用上：{p:?}");
+        p
+    };
+    has("SELECT COUNT(*) FROM cards WHERE deleted_at IS NULL AND holder IS NOT NULL AND COALESCE(beat_at, claimed_at, 0) + 50000 <= 100000", "cards_held");
+    has(
+        "SELECT COUNT(*) FROM cards p WHERE p.board = 1 AND p.col = 'inbox' AND p.deleted_at IS NULL
+           AND (p.later_at IS NOT NULL OR EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL))",
+        "cards_split",
+    );
+    has("SELECT id FROM cards WHERE board = 1 AND split_from = 2 AND deleted_at IS NULL", "cards_split");
+    has("SELECT board, card, at, kind FROM moves ORDER BY board, card, at, id", "moves_card");
+    has("SELECT 1 FROM moves WHERE board = 1 AND card = 2", "COVERING INDEX moves_card");
+    let streak = has(
+        "SELECT result FROM dispatches WHERE host_id = 1 AND agent = 'claude' AND state = 'done' AND ended_at > 0
+           AND result NOT IN ('canceled', 'unclaimed', 'stopped', 'lost') ORDER BY ended_at DESC, id DESC LIMIT 4",
+        "dispatches_host_agent_end",
+    );
+    assert!(!streak.iter().any(|line| line.contains("TEMP B-TREE")), "连续异常退出不该再排序：{streak:?}");
+}
+
 /// v0.1.19 及更早的数据库：cards 没有回收站的列，也没有 cards_trash 索引。
 /// 建表语句里的索引不能先于迁移补列执行，否则打开旧库就报 no such column: deleted_at，服务端起不来（v0.1.20 部署失败）
 #[test]
@@ -2455,6 +2484,29 @@ fn old_db_without_trash_columns_opens_and_migrates() {
     exec(&mut s, B, &human(), T0 + MIN, Cmd::Delete { id: 1 }).unwrap();
     let b = s.read(|r| r.resolve(B)).unwrap();
     assert_eq!(s.read(|r| r.trash(&b)).unwrap().len(), 1);
+}
+
+#[test]
+fn old_db_gets_hot_query_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    drop(Store::open(&path).unwrap());
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX cards_held;
+             DROP INDEX cards_split;
+             ALTER TABLE cards DROP COLUMN split_from;",
+        )
+        .unwrap();
+    drop(Store::open(&path).expect("旧库要能打开"));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for name in ["cards_held", "cards_split", "moves_card", "dispatches_host_agent_end"] {
+        let has: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1", [name], |r| r.get(0))
+            .unwrap();
+        assert_eq!(has, 1, "迁移后补上 {name}");
+    }
 }
 
 /// 环境检查删除后，旧库里的那几列还在：服务端照样启动、读工作区，也不会再把它们发出去。

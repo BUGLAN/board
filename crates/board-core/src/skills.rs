@@ -189,37 +189,50 @@ pub fn decode(name: &str, files: &[SkillFile]) -> Result<(Vec<(String, bool, Vec
     Ok((out, v, size))
 }
 
-fn info_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SkillInfo, String)> {
+fn info_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SkillInfo> {
+    Ok(SkillInfo {
+        name: r.get(0)?,
+        version: r.get(1)?,
+        size: r.get(2)?,
+        files: r.get(3)?,
+        updated_at: r.get(4)?,
+        by: r.get(5)?,
+        source: r.get(6)?,
+        builtin: false,
+    })
+}
+
+fn pack_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SkillPack> {
     let files: String = r.get(3)?;
-    let n = serde_json::from_str::<Vec<SkillFile>>(&files).map(|v| v.len()).unwrap_or(0);
-    Ok((
-        SkillInfo {
+    let parsed: Vec<SkillFile> = serde_json::from_str(&files).unwrap_or_default();
+    Ok(SkillPack {
+        info: SkillInfo {
             name: r.get(0)?,
             version: r.get(1)?,
             size: r.get(2)?,
-            files: n as i64,
+            files: parsed.len() as i64,
             updated_at: r.get(4)?,
             by: r.get(5)?,
             source: r.get(6)?,
             builtin: false,
         },
-        files,
-    ))
+        files: parsed,
+    })
 }
 
-const COLS: &str = "name, version, size, files, updated_at, by_name, source";
+const INFO_COLS: &str = "name, version, size, json_array_length(files), updated_at, by_name, source";
+const PACK_COLS: &str = "name, version, size, files, updated_at, by_name, source";
 
 impl R<'_> {
     /// 库里的 skill（不含 board-skills），按名称
     pub fn skills(&self) -> Result<Vec<SkillInfo>> {
-        let mut st = self.conn.prepare(&format!("SELECT {COLS} FROM skills ORDER BY name"))?;
+        let mut st = self.conn.prepare(&format!("SELECT {INFO_COLS} FROM skills ORDER BY name"))?;
         let rows = st.query_map([], info_row)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?.into_iter().map(|(i, _)| i).collect())
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn skill(&self, name: &str) -> Result<Option<SkillPack>> {
-        let row = self.conn.query_row(&format!("SELECT {COLS} FROM skills WHERE name = ?1"), [name], info_row).optional()?;
-        Ok(row.map(|(info, files)| SkillPack { info, files: serde_json::from_str(&files).unwrap_or_default() }))
+        Ok(self.conn.query_row(&format!("SELECT {PACK_COLS} FROM skills WHERE name = ?1"), [name], pack_row).optional()?)
     }
 }
 
@@ -317,5 +330,19 @@ mod tests {
         assert!(s.read(|r| r.skill("notes")).unwrap().is_none());
         assert_eq!(s.write(2000, Origin::cli(), |w| w.skill_rm("notes")).unwrap_err().code, crate::ErrorCode::NotFound);
         assert!(s.write(2000, Origin::cli(), |w| w.skill_rm(BUILTIN)).is_err());
+    }
+
+    #[test]
+    fn list_counts_files_of_a_large_skill() {
+        let mut s = Store::open_in_memory().unwrap();
+        let big = vec![0u8; MAX_BYTES - 16];
+        let put = s.write(1000, Origin::cli(), |w| w.skill_put("big", &[f("SKILL.md", b"a"), f("blob", &big)], "tok", "mbp")).unwrap();
+        assert_eq!(put.files, 2);
+        let list = s.read(|r| r.skills()).unwrap();
+        let info = list.iter().find(|i| i.name == "big").unwrap();
+        assert_eq!((info.files, info.size), (2, put.size));
+        let pack = s.read(|r| r.skill("big")).unwrap().unwrap();
+        assert_eq!(pack.files.len(), 2);
+        assert_eq!(unb64(&pack.files.iter().find(|f| f.path == "blob").unwrap().data).unwrap().len(), big.len());
     }
 }

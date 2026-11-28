@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
 );
 CREATE INDEX IF NOT EXISTS dispatches_card ON dispatches (board, card, state);
 CREATE INDEX IF NOT EXISTS dispatches_host ON dispatches (host_id, state, id);
+CREATE INDEX IF NOT EXISTS dispatches_host_agent_end ON dispatches (host_id, agent, state, ended_at);
 
 -- agent 运行过程的结构化事件（会话「过程」，见 runlog.rs）：按派发存，每个派发最多 2000 条；派发删除时一起删
 CREATE TABLE IF NOT EXISTS dispatch_events (

@@ -534,6 +534,11 @@ impl Store {
         if !has_copy {
             conn.execute_batch("ALTER TABLE cards ADD COLUMN copied_from INTEGER")?;
         }
+        // 高频查询的索引：到期领取、未整理的隐藏计数和「拆自」（放这里是因为旧库的 split_from 刚补上）
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS cards_held ON cards (holder) WHERE holder IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS cards_split ON cards (board, split_from) WHERE split_from IS NOT NULL;",
+        )?;
         // 旧数据库的工作流没有连线：按原来的顺序给相邻状态依次连线（PRD §7）
         let edged: bool = conn.query_row("SELECT COUNT(*) FROM meta WHERE key = 'edges'", [], |r| r.get::<_, i64>(0))? > 0;
         if !edged {
@@ -1055,8 +1060,9 @@ impl<'a> R<'a> {
 
     /// 「拆自」是这张的卡片（不含回收站里的），按编号
     pub(crate) fn split_into(&self, b: i64, id: i64) -> Result<Vec<i64>> {
-        let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND split_from = ?2 AND deleted_at IS NULL ORDER BY id")?;
-        let ids = st.query_map(params![b, id], |r| r.get(0))?.collect::<std::result::Result<Vec<i64>, _>>()?;
+        let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND split_from = ?2 AND deleted_at IS NULL")?;
+        let mut ids = st.query_map(params![b, id], |r| r.get(0))?.collect::<std::result::Result<Vec<i64>, _>>()?;
+        ids.sort_unstable();
         Ok(ids)
     }
 

@@ -483,7 +483,13 @@ impl<'a> R<'a> {
 
     /// 所有机器，按名字排序
     pub fn hosts(&self, now: i64) -> Result<Vec<HostInfo>> {
-        self.host_rows()?.iter().map(|h| self.host_info(h, now)).collect()
+        let rows = self.host_rows()?;
+        // 领取规则是全局的：每张可领取卡片的标签只查一次，统计结果按白板给各台机器汇总
+        let unmatched = match rows.first().and_then(|h| h.claim_rules(now)) {
+            Some(rules) => self.unmatched_by_board(&rules)?,
+            None => BTreeMap::new(),
+        };
+        rows.iter().map(|h| self.host_info_with(h, now, Some(&unmatched))).collect()
     }
 
     pub fn host(&self, name: &str, now: i64) -> Result<HostInfo> {
@@ -607,6 +613,10 @@ impl<'a> R<'a> {
 
     /// 机器信息，加上「有 N 张可领取的卡片没有匹配任何规则」
     pub(super) fn host_info(&self, h: &HostRow, now: i64) -> Result<HostInfo> {
+        self.host_info_with(h, now, None)
+    }
+
+    fn host_info_with(&self, h: &HostRow, now: i64, unmatched: Option<&BTreeMap<i64, i64>>) -> Result<HostInfo> {
         let mut info = h.info(now);
         for a in info.agents.iter_mut() {
             a.tripped = self.agent_tripped(h, &a.id)?;
@@ -641,21 +651,46 @@ impl<'a> R<'a> {
             r.missing = r.labels.iter().filter(|l| !known.contains(&l.to_lowercase())).cloned().collect();
         }
         if let Some(rules) = h.claim_rules(now) {
+            let computed;
+            let counts = match unmatched {
+                Some(counts) => counts,
+                None => {
+                    computed = self.unmatched_by_board(&rules)?;
+                    &computed
+                }
+            };
             for dir in info.dirs.iter() {
                 let Ok(board) = self.resolve(&dir.board) else { continue };
-                let flow = flow_of(self.conn, board.id)?;
-                for s in flow.0.iter().filter(|s| s.claim && flow.claim_target(&s.key).is_some()) {
-                    let mut st = self.conn.prepare("SELECT id FROM cards WHERE board = ?1 AND col = ?2 AND deleted_at IS NULL")?;
-                    let ids = st.query_map(params![board.id, s.key], |r| r.get::<_, i64>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
-                    for id in ids {
-                        if !rules.matches_any(&card_label_names(self.conn, board.id, id)?) {
-                            info.unmatched += 1;
-                        }
-                    }
-                }
+                info.unmatched += counts.get(&board.id).copied().unwrap_or(0);
             }
         }
         Ok(info)
+    }
+
+    /// 自动领取白板上可领取、没有匹配任何规则的卡片数（按白板）。规则是全局的，所有机器共用这一份
+    fn unmatched_by_board(&self, rules: &Rules) -> Result<BTreeMap<i64, i64>> {
+        let mut st = self.conn.prepare(
+            "SELECT c.board, c.id, json_group_array(lower(l.name))
+             FROM cards c
+             JOIN boards b ON b.id = c.board
+             JOIN statuses s ON s.board = c.board AND s.key = c.col AND s.claim = 1
+             LEFT JOIN card_labels cl ON cl.board = c.board AND cl.card = c.id
+             LEFT JOIN labels l ON l.id = cl.label
+             WHERE b.auto = 1 AND c.deleted_at IS NULL
+               AND EXISTS (SELECT 1 FROM transitions t JOIN statuses d ON d.board = t.board AND d.key = t.dst
+                           WHERE t.board = c.board AND t.src = c.col AND d.lock = 1)
+             GROUP BY c.board, c.id",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(2)?)))?;
+        let mut out: BTreeMap<i64, i64> = BTreeMap::new();
+        for row in rows {
+            let (board, raw) = row?;
+            let labels: Vec<String> = serde_json::from_str::<Vec<Option<String>>>(&raw).unwrap_or_default().into_iter().flatten().collect();
+            if !rules.matches_any(&labels) {
+                *out.entry(board).or_default() += 1;
+            }
+        }
+        Ok(out)
     }
 
     /// 机器最近的操作记录（新的在前）
@@ -786,11 +821,15 @@ impl<'a> R<'a> {
     /// 发给一台 board host 的任务。在跑的派发按机器名找（机器被移除、再连上来之后，原来在跑的派发照样收到停止请求）
     pub fn host_work(&self, name: &str, now: i64) -> Result<HostWork> {
         let h = self.host_row(name)?.ok_or_else(|| no_such_host(name))?;
+        let unmatched = match h.claim_rules(now) {
+            Some(rules) => self.unmatched_by_board(&rules)?,
+            None => BTreeMap::new(),
+        };
         Ok(HostWork {
             running: self.dispatches("WHERE d.host = ?1 AND d.state = 'running' ORDER BY d.id", [name])?,
             // 会话里排着的派发只由那个会话的 board next 开始，不给 board host（它按创建先后开始 queued 里的）
             queued: self.dispatches("WHERE d.host_id = ?1 AND d.state = 'queued' AND d.session IS NULL ORDER BY d.id", [h.id])?,
-            host: self.host_info(&h, now)?,
+            host: self.host_info_with(&h, now, Some(&unmatched))?,
             now,
             skills: Some(self.skills()?),
             mcp: Some(self.mcp_index()?),
