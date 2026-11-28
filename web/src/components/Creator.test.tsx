@@ -1,6 +1,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { snapshot, workspace } from '../../test/fixtures';
 import { api } from '../lib/api';
 import type { Prompt } from '../lib/prompts';
 import { exec, useData } from '../store/data';
@@ -39,6 +40,12 @@ beforeEach(() => {
   puts.length = 0;
   // 保存后的刷新轮不连真的服务端
   vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'));
+  const ws = workspace();
+  ws.projects[0].key = 'default';
+  ws.projects[0].name = '默认项目';
+  ws.projects[0].boards = [{ ...ws.projects[0].boards[0], key: 'main', path: 'default/main', name: '主白板' }];
+  vi.spyOn(api, 'workspace').mockResolvedValue(ws);
+  vi.spyOn(api, 'board').mockImplementation(async path => snapshot(path, {}));
   vi.spyOn(api, 'prompts').mockImplementation(async () => server.map(p => ({ ...p })));
   vi.spyOn(api, 'savePrompts').mockImplementation(async list => {
     puts.push(list);

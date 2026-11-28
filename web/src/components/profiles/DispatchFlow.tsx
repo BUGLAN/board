@@ -5,7 +5,7 @@
    点一个角色换，悬停先看它会去哪。多张也只选一个角色，能派的卡都派给它。
    机器栏最上面是「随机」（默认）：在能跑这个角色的机器里挑空位最多的，都满就排队；点一台机器指定它，点「随机」换回去。
    手动派发不看接单时段。复制提示词在卡片上就有，这里不放。弹出框高度不随选择变
-   派发要服务端排进队列才有记录：按钮转圈、禁用直到返回；返回后当即在卡片和机器页上画出这条派发。
+   派发要服务端排进队列才有记录：按钮转圈、禁用直到请求返回、随后的刷新也完成，机器页的旧轮询不会把派发画回去。
    多张时按单卡同一套规则跳过不能派的（lib/boardSelect dispatchPlan），其余逐张派，单张失败不影响后面的
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -16,7 +16,7 @@ import { groupPick, hostsFor, OP_WORDS, pickHost, profilesOf, ruleGroups, short,
 import { serverMinute } from '../../lib/sched';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx } from '../../lib/util';
-import { hold, optimistic, refresh, useData } from '../../store/data';
+import { optimistic, useData } from '../../store/data';
 import { openDispatch, toast, toastError } from '../../store/ui';
 import { useNow } from '../bits';
 import { OsGlyph } from '../hosts/bits';
@@ -204,22 +204,19 @@ export function DispatchFlow({ cards, move, on }: { cards: number[]; move?: numb
         // 多张：按选中的顺序逐张发，都带这个角色；单张失败只记下来，后面的照常发。全部返回后才关对话框
         const { ids, skipped } = plan;
         const result = await optimistic(null, () => runBulkDispatch(ids, id => api.dispatch(path, id, to, undefined, p.id)));
-        if (result.ok.length) {
-          const made = new Set(result.ok.map(d => d.id));
-          void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => !made.has(x.id)), ...result.ok] }) }, refresh());
-        }
         close();
         toast(bulkDispatchToast(result, skipped, where));
         return;
       }
-      const d = move != null ? await api.moveDispatch(move, to, undefined, p.id) : await api.dispatch(path, card, to, undefined, p.id);
+      const d = await optimistic(null, () =>
+        move != null ? api.moveDispatch(move, to, undefined, p.id) : api.dispatch(path, card, to, undefined, p.id),
+      );
       close();
       toast({
         type: 'success',
         title: move != null ? `#${card} 已改派到 ${hostWords(d)} · ${p.name}` : split ? `#${card} 已派给 ${hostWords(d)} · ${p.name} 拆解` : `#${card} 已派发到 ${hostWords(d)} · ${p.name}`,
         text: got ? '机器有空位，马上开始' : '排队：等一台能跑这个角色的机器空出来',
       });
-      void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
     } catch (e) {
       toastError(e);
     } finally {

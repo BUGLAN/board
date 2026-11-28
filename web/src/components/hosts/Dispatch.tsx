@@ -9,7 +9,7 @@ import { bulkDispatchToast, dispatchPlan, runBulkDispatch } from '../../lib/boar
 import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, dispatchRoute, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm } from '../../lib/util';
-import { hold, joinPatch, optimistic, refresh, unqueueCard, useData, type Patch } from '../../store/data';
+import { joinPatch, optimistic, unqueueCard, useData, type Patch } from '../../store/data';
 import { confirm, openDispatch, openHost, openSession, toast, toastError, useUI } from '../../store/ui';
 import { Tip, useNow } from '../bits';
 import { Icon } from '../Icon';
@@ -260,10 +260,12 @@ function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on:
     if (plan && !plan.ids.length) return;
     setSending(true);
     try {
-      // 派发要服务端排进队列才有记录：按钮进行中（转圈、禁用）直到返回；返回后当即在卡片和机器页上画出这条派发，不等刷新
+      // 派发要服务端排进队列才有记录：按钮进行中（转圈、禁用）直到请求返回、随后的刷新也完成，机器页的旧轮询不会把派发画回去
       const to = any ? '' : h!.name;
       if (single != null) {
-        const d = move != null ? await api.moveDispatch(move, to, agent || undefined) : await api.dispatch(path, single, to, agent || undefined);
+        const d = await optimistic(null, () =>
+          move != null ? api.moveDispatch(move, to, agent || undefined) : api.dispatch(path, single, to, agent || undefined),
+        );
         close();
         const got = hosts.find(x => x.name === d.host);
         toast({
@@ -271,17 +273,12 @@ function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on:
           title: move != null ? `#${single} 已改派到 ${hostWords(d)} · ${d.agentLabel}` : split ? `#${single} 已派给 ${hostWords(d)} · ${d.agentLabel} 拆解` : `#${single} 已派发到 ${hostWords(d)} · ${d.agentLabel}`,
           text: !got ? '排队：等一台能接的机器' : busy(got) ? `排队：${queueReason(got)}` : split ? '机器有空位，马上开始；拆出的卡会记到未整理' : '机器有空位，马上开始',
         });
-        void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => x.id !== d.id), d] }) }, refresh());
         return;
       }
 
       // 批量：按选中顺序逐张发；单张失败只记下来，后面的照常发。全部返回后才关对话框
       const ids = plan!.ids;
       const result = await optimistic(null, () => runBulkDispatch(ids, id => api.dispatch(path, id, to, agent || undefined)));
-      if (result.ok.length) {
-        const made = new Set(result.ok.map(d => d.id));
-        void hold({ ws: ws => ({ ...ws, dispatches: [...(ws.dispatches ?? []).filter(x => !made.has(x.id)), ...result.ok] }) }, refresh());
-      }
       close();
       const where = !any && result.ok[0] ? `派给 ${hostWords(result.ok[0])} · ${result.ok[0].agentLabel}` : '';
       toast(bulkDispatchToast(result, skipped, where));

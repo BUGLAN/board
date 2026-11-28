@@ -7,7 +7,7 @@ import { boardFlow, cardTotal, INBOX, KEY_RE, PROJECT_COLORS, slug } from './sch
 import { projectDirError } from './projectDir';
 import type { CardDetail, Pos } from './types';
 import { copyText, isMobile } from './util';
-import { batchCards, batchMovePatch, boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, isDraft, jumpDetail, jumpToCard, openDetail, optimistic, patchProject, projectKey, refresh, setPath, useData, type BatchResult, type Patch } from '../store/data';
+import { batchCards, batchMovePatch, boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, isDraft, jumpDetail, jumpToCard, openDetail, optimistic, patchProject, projectKey, setPath, useData, type BatchResult, type Patch } from '../store/data';
 import {
   closeSwitcher,
   confirm,
@@ -179,19 +179,20 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
     preview: 'project',
     fields,
     onSubmit: async v => {
-      const { key } = await api.createProject({
-        name: v.name, key: v.key, desc: v.desc, color: v.color, pos, dir: v.dir?.trim() || undefined,
-        board: { name: v.boardName, key: v.boardKey || 'main' },
-      });
+      const { key } = await optimistic(null, () =>
+        api.createProject({
+          name: v.name, key: v.key, desc: v.desc, color: v.color, pos, dir: v.dir?.trim() || undefined,
+          board: { name: v.boardName, key: v.boardKey || 'main' },
+        }),
+      );
       const path = `${key}/${v.boardKey || 'main'}`;
       // 仓库地址在项目建好之后存（新建项目的接口不带它）；没存上时项目照样建好，提示里能打开项目设置再填
       const repo = v.repo?.trim();
       if (repo) {
-        await api.updateProject(key, { repo }).catch((e: Error) =>
+        await optimistic(null, () => api.updateProject(key, { repo })).catch((e: Error) =>
           toast({ type: 'error', title: '项目已建好，仓库地址没存上', text: e.message, action: { label: '项目设置', fn: () => openProjectSettings(key) } }),
         );
       }
-      await refresh();
       afterCreate(path);
       toast({ type: 'success', title: `已创建项目「${v.name.trim()}」`, text: `agent 用 BOARD=${path} 接入第一块白板。`, duration: 4200 });
     },
@@ -217,8 +218,9 @@ export function newBoard(pk = data().path.split('/')[0], { pos }: { pos?: Pos } 
       { name: 'desc', label: '描述', hint: '选填', placeholder: '这块白板用来做什么' },
     ],
     onSubmit: async v => {
-      const { path } = await api.createBoard({ project: v.project, name: v.name, key: v.key, desc: v.desc, pos: v.project === pk ? pos : undefined });
-      await refresh();
+      const { path } = await optimistic(null, () =>
+        api.createBoard({ project: v.project, name: v.name, key: v.key, desc: v.desc, pos: v.project === pk ? pos : undefined }),
+      );
       if (useUI.getState().tab === 'projects') {
         toast({ type: 'success', title: `已创建白板「${v.name.trim()}」`, text: `BOARD=${path}`, action: { label: '打开', fn: () => openBoard(path) } });
         window.dispatchEvent(new CustomEvent('board:focus', { detail: path }));

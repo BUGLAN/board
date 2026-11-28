@@ -413,6 +413,11 @@ let wantWs = 0;
 /** 当前白板、工作区分别加载到的 rev（rev 是全局的） */
 let boardRev = 0;
 let wsRev = 0;
+/** 加载失败后的退避重试：要补到的 rev、排着的定时器和当前间隔 */
+let retryBoard = 0;
+let retryWs = 0;
+let retryTimer: number | null = null;
+let retryDelay = 0;
 /** 下一轮是切换白板引起的：推送连着时工作区一直是新的（别的白板的变化由推送 → loadWs 取），只取白板，不再重取工作区（default/main#504）。
     别的原因要的一轮（写操作返回、重连、手动刷新）清掉它，照常一起取 */
 let boardOnly = false;
@@ -491,13 +496,43 @@ function refreshAfter(path: string, r: CardDetail | null): Promise<void> {
   return afterRev(seen.rev);
 }
 
+/** 一轮加载成功后清掉退避状态；下一次失败重新从 2 秒开始 */
+function loadOk() {
+  retryBoard = 0;
+  retryWs = 0;
+  retryDelay = 0;
+  if (retryTimer != null) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+}
+
+/** 加载失败：按 2 秒、4 秒……最多 30 秒退避重试。已经排着时只记下更大的目标，不重复排。
+    等这一轮的写操作留在 roundWaiters 里，补丁不撤：重试成功后拿到包含这次修改的数据再撤，界面不会先跳回旧状态。 */
+function retryLoad(boardTarget: number, wsTarget: number) {
+  retryBoard = Math.max(retryBoard, boardTarget);
+  retryWs = Math.max(retryWs, wsTarget);
+  if (retryTimer != null) return;
+  retryDelay = retryDelay ? Math.min(retryDelay * 2, 30_000) : 2_000;
+  retryTimer = window.setTimeout(() => {
+    retryTimer = null;
+    wantBoard = Math.max(wantBoard, retryBoard);
+    wantWs = Math.max(wantWs, retryWs);
+    retryBoard = 0;
+    retryWs = 0;
+    again = true;
+    boardOnly = false;
+    void pump();
+  }, retryDelay);
+}
+
 /** 按需要一轮接一轮地加载，同时只有一轮在进行 */
 function pump(): Promise<void> {
   if (inflight) return inflight;
   if (!again && boardRev >= wantBoard && wsRev >= wantWs) return Promise.resolve();
   inflight = (async () => {
     while (again || boardRev < wantBoard || wsRev < wantWs) {
-      const full = again || boardRev < wantBoard;
+      const full = again || boardRev < wantBoard || retryTimer != null;
       again = false;
       const round = ++roundsStarted;
       // 这一轮开始前就要的 rev：这一轮读到的白板一定不比它旧（服务端的 rev 是读事务里的全局版本）。
@@ -507,18 +542,23 @@ function pump(): Promise<void> {
         await (full ? load() : loadWs());
         if (full && get().board && boardRev < target) boardRev = target;
         set({ error: null });
+        loadOk();
+        releaseWaiters(round);
       } catch (e) {
         set({ error: (e as Error).message });
-        // 失败了不按 rev 反复重试：等下一次推送、重连或操作
+        // 不原地一轮接一轮地重试；保留这一轮想要的 rev，退避后再取。等这一轮的写操作不在这里放行
+        const targetBoard = wantBoard;
+        const targetWs = wantWs;
         wantBoard = Math.min(wantBoard, boardRev);
         wantWs = Math.min(wantWs, wsRev);
+        retryLoad(targetBoard, targetWs);
       }
-      releaseWaiters(round);
     }
   })().finally(() => {
     inflight = null;
-    // 不会再有下一轮了：还在等的（例如加载到一半换了白板、rev 没追上）都放行，补丁不会一直挂着
-    releaseWaiters(Number.MAX_SAFE_INTEGER);
+    // 不会再有下一轮了：还在等的（例如加载到一半换了白板、rev 没追上）都放行，补丁不会一直挂着。
+    // 排着退避重试时例外：等它拿到写后的数据再撤补丁
+    if (retryTimer == null) releaseWaiters(Number.MAX_SAFE_INTEGER);
   });
   return inflight;
 }
@@ -621,6 +661,7 @@ async function load() {
     render({ detailId });
   }
   const wantFull = fullPaths.has(path) || fullWanted.has(path);
+  const w0 = writes;
   const [wsNow, got, rawDetail] = await Promise.all([
     ws ?? api.workspace(),
     // 并行取时白板可能刚被删掉：先接住错误，看工作区再决定
@@ -665,10 +706,12 @@ async function load() {
     fullWanted.delete(board.path);
     fullPaths.add(board.path);
   }
-  if (detail) details.set(`${path}#${detail.id}`, detail);
   base.ws = share(base.ws, ws);
   base.board = board;
-  if (st.detailId === detailId && detail) base.detail = detail;
+  if (st.detailId === detailId && detail && (writes === w0 || base.detail?.id !== detail.id)) {
+    details.set(`${path}#${detail.id}`, detail);
+    base.detail = detail;
+  }
   if (gone) base.detail = null;
   // 三个并行取时工作区可能比白板新：当前白板按白板自己的 rev 记（落后的那部分等推送再取，不会漏）
   boardRev = known ? board.rev : Math.max(ws.rev, board.rev);

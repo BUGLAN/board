@@ -25,7 +25,7 @@ fn github() -> Server {
     }))
 }
 
-fn new_card(s: &Server, title: &str) {
+fn new_card(s: &Server, title: &str) -> i64 {
     let r = send(
         "POST",
         &format!("{}/api/cmd", s.url),
@@ -33,6 +33,7 @@ fn new_card(s: &Server, title: &str) {
         Some(json!({ "board": "default/main", "op": "new", "title": title })),
     );
     assert_eq!(r.status, 200, "{}", r.text);
+    r.body["id"].as_i64().expect("card.id")
 }
 
 fn page_at(s: &Server, before: Option<i64>, limit: i64) -> Vec<Value> {
@@ -133,4 +134,60 @@ fn events_require_login() {
     assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
     let r = send("GET", &format!("{}/api/events?path=default/main", s.url), &[("authorization", "Bearer bd_nope")], None);
     assert_eq!((r.status, r.code().as_str()), (401, "INVALID_TOKEN"), "{}", r.text);
+}
+
+/// 一个事务产生超过一页（200 条）的动态后不再写入：推送每 250ms 接着取下一批，
+/// 1 秒内按顺序把 450 条都送到订阅方（default/main#696）。
+#[test]
+fn stream_sends_every_event_when_one_write_makes_more_than_a_page() {
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    let s = local();
+    let ids: Vec<i64> = (0..450).map(|i| new_card(&s, &format!("卡{i}"))).collect();
+    // 等后台推送循环把建卡的动态追平，订阅后只观察随后这一个批量事务
+    std::thread::sleep(Duration::from_millis(600));
+
+    let stream_agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_recv_response(Some(Duration::from_secs(5)))
+        .timeout_per_read(Some(Duration::from_secs(2)))
+        .build()
+        .into();
+    let res = stream_agent.get(format!("{}/api/stream", s.url)).call().unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let mut lines = BufReader::new(res.into_body().into_reader());
+    let mut first = String::new();
+    lines.read_line(&mut first).unwrap();
+    assert!(first.starts_with("data:"), "第一帧：{first:?}");
+
+    let latest = page_at(&s, None, 1)[0]["id"].as_i64().expect("event.id");
+    let r = send(
+        "POST",
+        &format!("{}/api/cards/batch", s.url),
+        &[UI],
+        Some(json!({ "board": "default/main", "op": "move", "column": "review", "ids": ids })),
+    );
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["ok"].as_array().expect("ok").len(), 450, "{}", r.text);
+
+    let start = Instant::now();
+    let mut got = Vec::new();
+    let mut line = String::new();
+    while got.len() < 450 {
+        line.clear();
+        let n = lines.read_line(&mut line).expect("读推送失败");
+        assert!(n > 0, "推送提前断开了，收到 {} 条", got.len());
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let msg: Value = serde_json::from_str(data.trim()).expect("推送是 JSON");
+        for e in msg["events"].as_array().into_iter().flatten() {
+            let id = e["id"].as_i64().expect("event.id");
+            if id > latest {
+                got.push(id);
+            }
+        }
+    }
+    assert!(start.elapsed() < Duration::from_secs(1), "450 条动态用了 {:?}", start.elapsed());
+    let want: Vec<i64> = (latest + 1..=latest + 450).collect();
+    assert_eq!(got, want, "按顺序、不重不漏");
 }

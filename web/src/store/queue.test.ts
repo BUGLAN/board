@@ -48,8 +48,16 @@ const server = vi.hoisted(() => ({
   trash: {} as Record<string, unknown[]>,
   /** 设了就让 api.board 等它（让刷新停在半路） */
   gate: null as null | Promise<void>,
+  /** 设了就让 api.card 等它（让加载轮里的详情停在半路） */
+  cardGate: null as null | Promise<void>,
   /** 设了就让 api.workspace 等它 */
   wsGate: null as null | Promise<void>,
+  /** 接下来几次取白板失败（模拟网关 502 / 超时） */
+  boardFail: 0,
+  /** 覆盖 api.card 返回的详情（按「白板路径#卡片」），没设时按白板快照生成 */
+  details: {} as Record<string, CardDetail>,
+  /** 派发请求：单卡和批量都挂起，由用例决定什么时候返回 */
+  dispatches: [] as { ok: (r: unknown) => void; fail: () => void }[],
 }));
 
 vi.mock('../lib/api', async orig => {
@@ -73,10 +81,18 @@ vi.mock('../lib/api', async orig => {
         server.n.board++;
         if (!server.boards[path]) throw new real.ApiError('BOARD_NOT_FOUND' as never, '白板不存在');
         const snap = clone(server.boards[path]);
+        if (server.boardFail > 0) {
+          server.boardFail--;
+          throw new real.ApiError('INTERNAL' as never, '加载失败了');
+        }
         if (server.gate) await server.gate;
         return snap;
       },
-      card: async (path: string, id: number) => detail(clone(server.boards[path].cards[id])),
+      card: async (path: string, id: number) => {
+        const d = clone(server.details[`${path}#${id}`] ?? detail(server.boards[path].cards[id]));
+        if (server.cardGate) await server.cardGate;
+        return d;
+      },
       // 服务端版本（GET /api/info）：版本号空，页面不会被判成旧页面（default/main#368）
       info: async () => ({ name: 'board', version: '', commit: '' }),
       trash: async (path: string) => {
@@ -110,6 +126,7 @@ vi.mock('../lib/api', async orig => {
         new Promise<void>((res, rej) => {
           server.other.push({ name: 'reorderLabels', ok: () => res(), fail: () => rej(new real.ApiError('INTERNAL', '失败了')) });
         }),
+      dispatch: () => new Promise<unknown>((res, rej) => server.dispatches.push({ ok: res, fail: () => rej(new real.ApiError('INTERNAL', '失败了')) })),
     },
   };
 });
@@ -145,10 +162,14 @@ beforeEach(async () => {
   server.cardBatches = [];
   server.hosts = null;
   server.push = null;
+  server.dispatches = [];
   server.n = { workspace: 0, board: 0 };
   server.trash = {};
   server.gate = null;
+  server.cardGate = null;
   server.wsGate = null;
+  server.boardFail = 0;
+  server.details = {};
   D = await import('./data');
   T = await import('../lib/trash');
   await D.refresh();
@@ -289,6 +310,18 @@ describe('写队列', () => {
     await h2;
     expect(D.useData.getState().ws!.hosts).toEqual([{ name: 'mbp' }]);
   });
+
+  it('派发期间发出的 refreshHosts：结果作废，不会把旧的派发列表写回', async () => {
+    const { api } = await import('../lib/api');
+    const h = D.refreshHosts();
+    const p = D.optimistic(null, () => api.dispatch('p/a', 1, 'mbp'));
+    server.hosts!({ hosts: [], dispatches: [{ id: 99, state: 'queued' }] as never });
+    await h;
+    expect(D.useData.getState().ws!.dispatches).toEqual([]);
+    server.dispatches[0].ok({ id: 100 });
+    await p;
+    expect(D.useData.getState().error).toBeNull();
+  });
 });
 
 describe('撤补丁的时机、一轮加载的往返（#174）', () => {
@@ -365,6 +398,36 @@ describe('撤补丁的时机、一轮加载的往返（#174）', () => {
     await D.refresh();
     expect(D.useData.getState().path).toBe('p/b');
     expect(D.useData.getState().board!.path).toBe('p/b');
+  });
+
+  it('写成功后紧接着的一轮加载失败：补丁留着，退避到点自动重取，卡片落到新位置', async () => {
+    vi.useFakeTimers();
+    try {
+      const a = D.exec({ op: 'move', id: 1, column: 'review' }, D.movePatch(1, 'review'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(D.useData.getState().board!.cols.review).toEqual([1]);
+
+      const b = server.boards['p/a'];
+      b.cols.todo = b.cols.todo.filter(id => id !== 1);
+      b.cols.review = [1];
+      serverEdit('p/a', 1, { column: 'review' });
+      server.boardFail = 1;
+      server.calls[0].ok();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(D.useData.getState().board!.cols.review).toEqual([1]);
+      expect(D.useData.getState().saving).toEqual({ 'p/a#1': 1 });
+
+      const n = server.n.board;
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+      await a;
+      expect(server.n.board).toBe(n + 1);
+      expect(D.useData.getState().board!.cols.review).toEqual([1]);
+      expect(D.useData.getState().saving).toEqual({});
+      expect(D.useData.getState().error).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -803,6 +866,90 @@ describe('批量卡片命令', () => {
     expect(server.cardBatches).toEqual([]);
     expect(D.useData.getState().board).toBe(before);
     expect(D.useData.getState().board!.cards[1].title).toBe('B 白板的卡片');
+  });
+});
+
+describe('评论（sendComment）', () => {
+  const said = (id: number, text: string): CardDetail['activity'][number] => ({
+    id,
+    at: 1_000 + id,
+    actor: { kind: 'human', name: '人' },
+    kind: 'comment',
+    action: 'comment',
+    text,
+  });
+  const texts = () => D.useData.getState().detail!.activity.filter(a => a.kind === 'comment').map(a => a.text);
+
+  it('正常发送：当帧出现发送中气泡，确认后换成正式评论', async () => {
+    await D.openDetail(1);
+    const p = D.sendComment(1, '第一条评论');
+    expect(D.useData.getState().sending['p/a#1']?.map(x => x.text)).toEqual(['第一条评论']);
+    await settle();
+
+    const r = { ...detail(card(1)), comments: 1, activity: [said(10, '第一条评论')] };
+    server.details['p/a#1'] = r;
+    server.calls[0].ok(r);
+    await p;
+    await settle();
+    expect(texts()).toEqual(['第一条评论']);
+    expect(D.useData.getState().sending['p/a#1']).toBeUndefined();
+    expect(D.isSettled(10)).toBe(true);
+  });
+
+  it('失败：撤掉发送中气泡并抛出，后面的评论照常发', async () => {
+    await D.openDetail(1);
+    const p = D.sendComment(1, '没发出去');
+    await settle();
+    server.calls[0].fail();
+    await expect(p).rejects.toMatchObject({ code: 'INTERNAL' });
+    expect(D.useData.getState().sending['p/a#1']).toBeUndefined();
+    expect(texts()).toEqual([]);
+
+    const q = D.sendComment(1, '再发一次');
+    await settle();
+    const r = { ...detail(card(1)), comments: 1, activity: [said(11, '再发一次')] };
+    server.details['p/a#1'] = r;
+    server.calls[1].ok(r);
+    await q;
+    expect(texts()).toEqual(['再发一次']);
+  });
+
+  it('发送途中换卡：详情留在新卡片，旧卡片的气泡照样撤掉', async () => {
+    await D.openDetail(1);
+    const p = D.sendComment(1, '发完再切');
+    await D.openDetail(2);
+    await settle();
+
+    const r = { ...detail(card(1)), comments: 1, activity: [said(12, '发完再切')] };
+    server.details['p/a#1'] = r;
+    server.calls[0].ok(r);
+    await p;
+    expect(D.useData.getState().detailId).toBe(2);
+    expect(D.useData.getState().detail!.id).toBe(2);
+    expect(D.useData.getState().sending['p/a#1']).toBeUndefined();
+  });
+
+  it('一轮加载取回的旧详情不会盖掉刚写进去的评论', async () => {
+    await D.openDetail(1);
+    let release!: () => void;
+    server.cardGate = new Promise(r => (release = r));
+    const load = D.refresh();
+    await settle();
+
+    const p = D.sendComment(1, '刚发的评论');
+    await settle();
+    const r = { ...detail(card(1)), comments: 1, activity: [said(13, '刚发的评论')] };
+    server.details['p/a#1'] = r;
+    server.calls[0].ok(r);
+    await p;
+    expect(texts()).toEqual(['刚发的评论']);
+
+    release();
+    server.cardGate = null;
+    await load;
+    await settle();
+    await settle();
+    expect(texts()).toEqual(['刚发的评论']);
   });
 });
 

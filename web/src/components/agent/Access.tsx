@@ -11,7 +11,7 @@ import { cardPrompt, quickPrompts } from '../../lib/prompt';
 import { boardFlow, ERRORS } from '../../lib/schema';
 import type { TokenInfo } from '../../lib/types';
 import { ago, copyText, cx } from '../../lib/util';
-import { useCurrent, useData } from '../../store/data';
+import { optimistic, useCurrent, useData } from '../../store/data';
 import { confirm, toast, toastError } from '../../store/ui';
 import { Select, SetRow as Row } from '../bits';
 import { Icon } from '../Icon';
@@ -213,7 +213,7 @@ function Tokens() {
     if (!n || busy) return;
     setBusy(true);
     try {
-      const r = await api.createToken(n);
+      const r = await optimistic(null, () => api.createToken(n));
       setFresh({ token: r.token, name: r.info.name });
       setName('');
       await load();
@@ -235,7 +235,7 @@ function Tokens() {
     // 当帧从列表里拿掉，被拒绝时重新取列表并提示
     setList(l => l?.filter(x => x.id !== t.id) ?? l);
     try {
-      await api.revokeToken(t.id);
+      await optimistic(null, () => api.revokeToken(t.id));
     } catch (err) {
       toastError(err);
     }

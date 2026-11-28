@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { snapshot, workspace } from '../../../test/fixtures';
 import { api } from '../../lib/api';
 import type { HostAgent, HostInfo, Workspace } from '../../lib/types';
 import { useData } from '../../store/data';
@@ -169,6 +170,15 @@ describe('机位卡片：机器 → 会话 → 会话里的卡', () => {
 });
 
 describe('全部暂停 / 全部停止', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'workspace').mockResolvedValue(workspace());
+    vi.spyOn(api, 'board').mockImplementation(async path => snapshot(path, {}));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('在线机器都暂停时按钮是「全部恢复」，否则是「全部暂停」；离线机器不算', () => {
     act(() => root.render(<FleetActions hosts={[machine([agent('dsh')], { paused: true }), machine([agent('dsh')], { paused: true, name: 'off', online: false })]} />));
     expect(host.textContent).toContain('全部恢复');

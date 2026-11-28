@@ -535,10 +535,11 @@ fn spawn_background(state: AppState) {
                 .db(move |st| {
                     let now = st.rev()?;
                     let now_runs = st.read(|r| r.runs_rev())?;
-                    if now == rev && now_runs == runs {
+                    let latest = st.read(|r| r.last_event_id())?;
+                    if now == rev && now_runs == runs && latest == last {
                         return Ok(None);
                     }
-                    let events = if now == rev { vec![] } else { st.read(|r| r.events_since(last, 200))? };
+                    let events = if latest == last { vec![] } else { st.read(|r| r.events_since(last, 200))? };
                     let ran = if now_runs == runs { vec![] } else { st.read(|r| r.dispatches_with_events_since(runs))? };
                     let chats = if now_runs == runs { vec![] } else { st.read(|r| r.chats_with_events_since(runs))? };
                     Ok(Some((now, st.hosts_rev()?, events, now_runs, ran, chats)))

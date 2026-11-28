@@ -1,6 +1,8 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { snapshot, workspace } from '../../../test/fixtures';
+import { api } from '../../lib/api';
 import type { LocalHost } from '../../lib/platform';
 import type { HostInfo, Workspace } from '../../lib/types';
 import { useData } from '../../store/data';
@@ -51,11 +53,14 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   calls.length = 0;
+  vi.spyOn(api, 'workspace').mockResolvedValue(workspace());
+  vi.spyOn(api, 'board').mockImplementation(async path => snapshot(path, {}));
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   act(() => root.unmount());
   host.remove();
   useUI.setState({ confirm: null });

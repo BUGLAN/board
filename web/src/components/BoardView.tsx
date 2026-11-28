@@ -16,7 +16,7 @@ import { statusRoles } from '../lib/review';
 import { orderDir, orderName, orderOf, orderOption, shownCols } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
 import { cx, isMobile, reduceMotion, replay } from '../lib/util';
-import { colCount, loadFull, omittedIn, refresh, renderKey, serverNow, setEarlier, useCurrent, useData, useEarlier } from '../store/data';
+import { colCount, flowKey, loadFull, omittedIn, optimistic, renderKey, serverNow, setEarlier, useBusy, useCurrent, useData, useEarlier } from '../store/data';
 import { collapseCols, FINAL_RECENT, type Earlier } from '../lib/earlier';
 import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
 import { Tip } from './bits';
@@ -782,6 +782,7 @@ export function Magnet({
   const [drag, setDrag] = useState<{ key: string; left: number; top: number; mode: 'move' | 'size' } | null>(null);
   const els = useRef<Record<string, HTMLElement | null>>({});
   const keys = statuses.map(s => s.key);
+  const layoutBusy = useBusy(flowKey(path));
   const saved = useMemo(() => Object.fromEntries(statuses.filter(s => s.layout).map(s => [s.key, s.layout!])), [statuses]);
 
   const tiles = withDefaults(keys, live ?? saved);
@@ -857,8 +858,8 @@ export function Magnet({
   });
 
   // 拖动、调宽的入口交给状态块时是固定的函数（见下面的 handles），按下时从这里读最新的布局
-  const latest = useRef({ pos, tiles, heights, col, mobile, keys, path });
-  latest.current = { pos, tiles, heights, col, mobile, keys, path };
+  const latest = useRef({ pos, tiles, heights, col, mobile, keys, path, layoutBusy });
+  latest.current = { pos, tiles, heights, col, mobile, keys, path, layoutBusy };
 
   /** 松手：把每块的 y 对齐到实际位置后保存，下次拖动从这里排先后 */
   const commit = (all: Record<string, Tile>) => {
@@ -866,16 +867,20 @@ export function Magnet({
     const p = pack(keys, all, heights);
     const next = Object.fromEntries(keys.map(k => [k, { ...all[k], y: p[k].top }]));
     setLive(next);
-    api
-      .flowLayout(path, next)
-      .then(() => refresh())
+    void Promise.resolve()
+      .then(() =>
+        optimistic(
+          { board: b => ({ ...b, statuses: b.statuses.map(s => ({ ...s, layout: next[s.key] ?? null })) }), keys: [flowKey(path)] },
+          () => api.flowLayout(path, next),
+        ),
+      )
       .catch(toastError)
       .finally(() => setLive(null));
   };
 
   const onMove = (k: string, e: React.PointerEvent) => {
-    const { pos, tiles, heights, col, mobile, keys } = latest.current;
-    if (mobile || e.button !== 0 || (e.target as HTMLElement).closest('button, input, .card')) return;
+    const { pos, tiles, heights, col, mobile, keys, layoutBusy } = latest.current;
+    if (layoutBusy || mobile || e.button !== 0 || (e.target as HTMLElement).closest('button, input, .card')) return;
     e.preventDefault();
     const p = pos[k];
     const x0 = e.clientX;
@@ -911,8 +916,8 @@ export function Magnet({
   };
 
   const onSize = (k: string, e: React.PointerEvent) => {
-    const { pos, tiles, col, keys } = latest.current;
-    if (e.button !== 0) return;
+    const { pos, tiles, col, keys, layoutBusy } = latest.current;
+    if (layoutBusy || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const x0 = e.clientX;
