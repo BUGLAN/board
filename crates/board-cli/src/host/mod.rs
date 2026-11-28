@@ -387,6 +387,8 @@ struct Host<'a> {
     fetch_jobs: Vec<(PathBuf, std::thread::JoinHandle<std::result::Result<(), String>>)>,
     /// 派发结束后在后台做的收尾（保存 wip、在卡片上评论、解锁 worktree，`runs.rs` 的 `handoff`）
     handoffs: Vec<Handoff>,
+    /// 开始派发时在后台准备代码（拉最新、备 worktree，`runs.rs` 的 `start_prep`，#731）：准备完再启动 agent
+    preps: Vec<Prep>,
     /// 下一次清理没用的 worktree 的时间
     next_wt_sweep: Instant,
     /// 资源（CPU、内存、GPU、磁盘）：后台每 10 秒采一次，上报时带上最近一次
@@ -529,6 +531,7 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         fetch_errs: vec![],
         fetch_jobs: vec![],
         handoffs: vec![],
+        preps: vec![],
         next_wt_sweep: Instant::now(),
         res,
     };
@@ -642,8 +645,15 @@ impl Host<'_> {
             dirs: self.dir_reports(),
             dirs_rev: self.dirs_rev,
             // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志。
-            // 还在后台收尾（保存 wip）的也算：收尾完才上报结束
-            running: self.runs.iter().map(|r| r.d.id).chain(self.handoffs.iter().map(|h| h.id)).chain(self.ended.iter().map(|e| e.id)).collect(),
+            // 还在后台收尾（保存 wip）的也算：收尾完才上报结束。还在后台准备代码、agent 没起来的也算（#731）
+            running: self
+                .runs
+                .iter()
+                .map(|r| r.d.id)
+                .chain(self.preps.iter().map(|p| p.d.id))
+                .chain(self.handoffs.iter().map(|h| h.id))
+                .chain(self.ended.iter().map(|e| e.id))
+                .collect(),
             chats: Some(self.chat_ids()),
             done,
             asked: self.asked,
@@ -860,6 +870,10 @@ impl Host<'_> {
                 self.report_ended();
                 fetch = true;
             }
+            // 开始派发时的准备代码（拉最新、备 worktree）在后台做完了：启动 agent（#731）
+            if self.poll_preps(false) {
+                fetch = true;
+            }
             // 拉不到最新代码的项目目录：到时间在后台再拉一次
             if self.poll_fetches() {
                 next_beat = Instant::now();
@@ -913,8 +927,9 @@ impl Host<'_> {
                 self.upload_logs();
                 self.report_ended();
             }
-            // 空闲的 worktree 超过 36 小时没用的、多出 4 个的清掉：启动时一次，之后每小时看一次
-            if now >= self.next_wt_sweep {
+            // 空闲的 worktree 超过 36 小时没用的、多出 4 个的清掉：启动时一次，之后每小时看一次。
+            // 后台正在准备代码时先不清：它挑中的空闲 worktree 还没锁上，清理会把它删掉
+            if now >= self.next_wt_sweep && self.preps.is_empty() {
                 self.next_wt_sweep = now + Duration::from_secs(3600);
                 self.sweep_worktrees();
             }
@@ -1086,6 +1101,11 @@ impl Host<'_> {
                 r.stop(true);
                 let _ = r.child.wait();
             }
+        }
+        // 还在后台准备代码的派发：git 停不下来，等它准备完（拉取、建 worktree 各有时限），不启动 agent，记为 board host 退出
+        if !self.preps.is_empty() {
+            self.say(format!("{} 正在退出：等 {} 个派发准备完代码（不再启动 agent）", self.p.yellow("◼"), self.preps.len()));
+            self.poll_preps(true);
         }
         let runs = std::mem::take(&mut self.runs);
         for mut r in runs {

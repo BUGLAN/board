@@ -880,6 +880,18 @@ impl Host<'_> {
                 r.killed = true;
             }
         }
+        // 还在后台准备代码的：git 停不下来，记下原因，准备完不启动 agent（poll_preps）
+        for p in self.preps.iter_mut().filter(|p| p.stop.is_none()) {
+            let why = match w.running.iter().find(|x| x.id == p.d.id) {
+                Some(x) => x.stop_by.as_ref().map(|by| format!("{by} 请求停止")),
+                None if work_at > p.begun => Some("服务端上这次派发已经结束".to_string()),
+                None => None,
+            };
+            if let Some(why) = why {
+                say.push(format!("停止 {}#{}：{why}（代码准备完不启动 agent）", p.d.board, p.d.card));
+                p.stop = Some(why);
+            }
+        }
         for s in say {
             self.say(format!("{} {s}", self.p.yellow("◼")));
         }
@@ -898,6 +910,11 @@ impl Host<'_> {
         if !self.handoffs.is_empty() {
             return Ok(false);
         }
+        // 上一次派发还在后台准备代码（#731）：等它准备完再开始下一次。两次准备同时做会挑中同一个空闲的 worktree；
+        // 准备失败时（拉不到代码）这一轮也要先停下、先上报（#679）。以前准备时整个主循环都停着，也不会开始新的
+        if !self.preps.is_empty() {
+            return Ok(false);
+        }
         let max = w.host.max.max(1) as usize;
         let mut changed = false;
         let cloning = self.cloning();
@@ -905,7 +922,7 @@ impl Host<'_> {
             if self.live() >= max {
                 return Ok(changed);
             }
-            if self.runs.iter().any(|r| r.d.id == q.id) {
+            if self.runs.iter().any(|r| r.d.id == q.id) || self.preps.iter().any(|p| p.d.id == q.id) {
                 continue;
             }
             // 项目目录还在后台克隆：留在队列里，克隆完再开始（服务端看到「正在克隆」就不往这里派了，这里接住报上去之前派来的）
@@ -918,6 +935,9 @@ impl Host<'_> {
                     changed = true;
                     if !self.started(d) {
                         return Ok(self.start_failed());
+                    }
+                    if !self.preps.is_empty() {
+                        return Ok(changed);
                     }
                 }
                 Err(e) if matches!(e.code, ErrorCode::HostNameTaken | ErrorCode::InvalidToken) => return Err(e),
@@ -936,6 +956,10 @@ impl Host<'_> {
                         changed = true;
                         if !self.started(d) {
                             return Ok(self.start_failed());
+                        }
+                        // 在后台准备代码：准备完再要下一张（见上面）
+                        if !self.preps.is_empty() {
+                            return Ok(changed);
                         }
                     }
                     // 领不到（接单时段里没有命中规则的卡，这是空闲时的常态）、领的时候出错：先不再要，等下一次取到任务
@@ -965,12 +989,13 @@ impl Host<'_> {
         true
     }
 
-    /// 还没在停的 agent 个数（占着会话位：一个会话 = 一个 agent 进程）
+    /// 占着会话位的派发个数（一个会话 = 一个 agent 进程）：在跑的，加上还在后台准备代码、准备完就要起 agent 的
     pub(super) fn live(&self) -> usize {
-        self.runs.len()
+        self.runs.len() + self.preps.len()
     }
 
-    /// 服务端开始了一次派发（已领取）：在本机启动 agent；没领到时只打印。返回 false：领到了、但 agent 没起来
+    /// 服务端开始了一次派发（已领取）：在本机启动 agent；没领到时只打印。要先准备代码（拉最新、备 worktree）的，准备放到
+    /// 后台线程里做（#731），准备完由 [`Self::poll_preps`] 启动 agent。返回 false：领到了、但 agent 起不来
     /// （派发记为结束，原因写进日志、上报）
     pub(super) fn started(&mut self, d: Dispatch) -> bool {
         if d.state != "running" {
@@ -990,8 +1015,19 @@ impl Host<'_> {
         // 缓存里的命令路径不在了（升级失败被 npm 挪走、被人删了）：先重新找一遍，不拿失效的路径去启动（#536）
         self.recheck_if_gone(&d.agent);
         // 派发前更新代码：拉最新、备好这个会话的 worktree（PRD §9.1「派发前更新代码」）；没成就不启动 agent
-        let started = self.not_cloning(&d).and_then(|()| self.prepare(&d)).and_then(|code| self.spawn(&d, code.as_ref()));
-        match started {
+        match self.not_cloning(&d).and_then(|()| self.prep_plan(&d)) {
+            Ok(Some((dir, name))) => {
+                self.start_prep(d, dir, name);
+                true
+            }
+            Ok(None) => self.launch(&d, None),
+            Err(msg) => self.start_error(&d, msg),
+        }
+    }
+
+    /// 启动 agent（代码已经备好，或者不用备）。返回 false：没起来
+    fn launch(&mut self, d: &Dispatch, code: Option<&crate::code::Ready>) -> bool {
+        match self.spawn(d, code) {
             Ok(r) => {
                 // 先记进 runs 再打印：之后无论发生什么，退出流程都会结束它
                 let env = r.env.name.clone();
@@ -1007,15 +1043,18 @@ impl Host<'_> {
                 ));
                 true
             }
-            Err(msg) => {
-                self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
-                let log = self.logs.join(format!("{}.log", d.id));
-                let _ = std::fs::write(&log, format!("{msg}\n"));
-                self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None, quota: None });
-                self.report_ended();
-                false
-            }
+            Err(msg) => self.start_error(d, msg),
         }
+    }
+
+    /// agent 没起来：打印、原因写进这次派发的日志，派发记为结束、上报。返回 false
+    fn start_error(&mut self, d: &Dispatch, msg: String) -> bool {
+        self.say(format!("{} {}  {}", self.p.red("✗"), self.p.cyan(&format!("{}#{}", d.board, d.card)), msg));
+        let log = self.logs.join(format!("{}.log", d.id));
+        let _ = std::fs::write(&log, format!("{msg}\n"));
+        self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None, quota: None });
+        self.report_ended();
+        false
     }
 
     /// 项目目录还在后台克隆时不启动 agent：克隆到一半的仓库里拉不了代码、建不了 worktree
@@ -1043,11 +1082,11 @@ impl Host<'_> {
         ]
     }
 
-    /// 派发前把代码准备好：项目目录是有 `origin` 的 git 仓库时，先 `git fetch`，再备好这个会话的 worktree（停在最新的
-    /// 集成分支上），agent 就在 worktree 里启动（`code.rs`）。返回 None 表示照旧在项目目录里启动：没有仓库的项目、
-    /// 拆解（不改代码）、WSL 里的 agent（worktree 要由 WSL 里的 git 来建，还是由 skill 自己建）。
-    /// 拉不到最新代码时记下来、马上报给服务端：这台机器先不接这个项目的卡
-    pub(super) fn prepare(&mut self, d: &Dispatch) -> std::result::Result<Option<crate::code::Ready>, String> {
+    /// 派发前要不要先把代码准备好：项目目录是有 `origin` 的 git 仓库时要（返回项目目录和会话名），由 [`Self::start_prep`]
+    /// 在后台 `git fetch`、备好这个会话的 worktree（停在最新的集成分支上），agent 就在 worktree 里启动（`code.rs`）。
+    /// 返回 None 表示照旧在项目目录里启动：没有仓库的项目、拆解（不改代码）、WSL 里的 agent（worktree 要由 WSL 里的 git
+    /// 来建，还是由 skill 自己建）。这里只做本地的检查，不跑网络 git
+    pub(super) fn prep_plan(&mut self, d: &Dispatch) -> std::result::Result<Option<(PathBuf, String)>, String> {
         if d.kind == board_core::hosts::KIND_SPLIT || d.env.as_deref().is_some_and(|e| e.starts_with("wsl:")) {
             return Ok(None);
         }
@@ -1061,15 +1100,78 @@ impl Host<'_> {
         }
         // 没有会话名（旧版、异常的服务端）：不准备、不删任何目录，这张派发直接结束（#508）
         let name = d.name.clone().filter(|n| !n.trim().is_empty()).ok_or_else(|| "派发没有会话名，没有启动 agent：服务端可能太旧，先升级服务端".to_string())?;
+        Ok(Some((dir, name)))
+    }
+
+    /// 在后台准备代码（#731）：`git fetch` 卡住时要等 30 秒，建 worktree 各步要等 60 秒，放在主循环里会让上报停下，
+    /// 超过 50 秒服务端判这台机器掉线、别的在跑的派发被记成 lost。准备期间这次派发占着会话位、上报里算它在跑
+    pub(super) fn start_prep(&mut self, d: Dispatch, dir: PathBuf, name: String) {
         let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).collect();
-        let online = self.online_names();
-        match crate::code::prepare(&dir, &name, d.id, &d.branch, &in_use, online.as_deref()) {
+        let rm = self.rm().clone();
+        let (repo, id, branch) = (dir.clone(), d.id, d.branch.clone());
+        let job = std::thread::spawn(move || {
+            // 服务端上在线的名字：判断别的会话留下的 worktree 是不是空闲用。查不到时为空（锁着的一律当成有人在用）
+            let online = online_names(&rm);
+            crate::code::prepare(&repo, &name, id, &branch, &in_use, online.as_deref())
+        });
+        self.preps.push(Prep { d, dir, begun: Instant::now(), stop: None, job });
+    }
+
+    /// 后台准备代码做完的：启动 agent；准备期间被要求停止的不启动，派发记为结束。`wait` 时等所有的都做完（board host
+    /// 退出前），都不启动、记为 board host 退出。返回有没有做完的
+    pub(super) fn poll_preps(&mut self, wait: bool) -> bool {
+        let (done, busy): (Vec<Prep>, Vec<Prep>) = std::mem::take(&mut self.preps).into_iter().partition(|p| wait || p.job.is_finished());
+        self.preps = busy;
+        let any = !done.is_empty();
+        let mut failed = false;
+        for p in done {
+            let res = p.job.join().unwrap_or_else(|_| Err(crate::code::Fail::Other("准备代码的线程出错".into())));
+            let ready = self.prepared(&p.dir, res);
+            let stop = match (&p.stop, wait) {
+                (Some(why), _) => Some((format!("准备代码期间{why}，没有启动 agent"), "exit")),
+                (None, true) => Some(("board host 退出，代码准备完没有启动 agent".to_string(), "host_exit")),
+                (None, false) => None,
+            };
+            match (ready, stop) {
+                (Ok(r), None) => {
+                    if !self.launch(&p.d, Some(&r)) {
+                        crate::code::release(&r.cwd);
+                        failed = true;
+                    }
+                }
+                (Err(msg), None) => {
+                    self.start_error(&p.d, msg);
+                    failed = true;
+                }
+                (ready, Some((why, how))) => {
+                    // 备好的 worktree 没人用：解锁，留给下一个会话
+                    if let Ok(r) = ready {
+                        crate::code::release(&r.cwd);
+                    }
+                    self.say(format!("{} {}  {}", self.p.dim("■"), self.p.cyan(&format!("{}#{}", p.d.board, p.d.card)), self.p.dim(&why)));
+                    self.ended.push(Ended { id: p.d.id, code: None, tail: vec![why], events: vec![], how, why: None, quota: None });
+                }
+            }
+        }
+        // 准备失败（拉不到代码……）：同 fill 里的开始失败，这一轮不再开始别的，马上上报（#679）
+        if failed {
+            self.start_failed();
+        }
+        if any {
+            self.report_ended();
+        }
+        any
+    }
+
+    /// 准备代码的结果：打印接手、残留目录这些说明；拉不到最新代码时记下来、马上报给服务端：这台机器先不接这个项目的卡
+    fn prepared(&mut self, dir: &Path, res: std::result::Result<crate::code::Ready, crate::code::Fail>) -> std::result::Result<crate::code::Ready, String> {
+        match res {
             Ok(r) => {
                 if r.adopted {
                     self.say(format!("{} 接手了空闲的 worktree {}（依赖、构建产物都在）", self.p.dim("·"), r.cwd.display()));
                 }
-                if self.fetch_errs.iter().any(|(p, ..)| *p == dir) {
-                    self.fetch_errs.retain(|(p, ..)| *p != dir);
+                if self.fetch_errs.iter().any(|(p, ..)| p == dir) {
+                    self.fetch_errs.retain(|(p, ..)| p != dir);
                     self.beat_soon = true;
                 }
                 match &r.stale {
@@ -1098,11 +1200,11 @@ impl Host<'_> {
                         r.cwd.display()
                     ));
                 }
-                Ok(Some(r))
+                Ok(r)
             }
             Err(crate::code::Fail::Fetch(e)) => {
-                self.fetch_errs.retain(|(p, ..)| *p != dir);
-                self.fetch_errs.push((dir.clone(), e.clone(), Instant::now()));
+                self.fetch_errs.retain(|(p, ..)| p != dir);
+                self.fetch_errs.push((dir.to_path_buf(), e.clone(), Instant::now()));
                 self.beat_soon = true;
                 Err(format!("拉不到 {} 的最新代码，没有启动 agent：{e}", dir.display()))
             }
@@ -1238,11 +1340,6 @@ impl Host<'_> {
         Ok(run)
     }
 
-    /// 服务端上在线的名字：判断别的会话留下的 worktree 是不是空闲用。查不到时为空（锁着的一律当成有人在用）
-    fn online_names(&self) -> Option<Vec<String>> {
-        self.rm().get::<Vec<board_core::model::AgentInfo>>("/api/agents", &[]).ok().map(|a| a.into_iter().map(|a| a.name).collect())
-    }
-
     /// 清理空闲的 worktree（`code.rs` 的 `sweep`）：超过 36 小时没用的、多出 4 个的删掉，有没推改动的留着并写明
     pub(super) fn sweep_worktrees(&mut self) {
         let mut repos: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
@@ -1250,7 +1347,7 @@ impl Host<'_> {
         repos.dedup();
         // 在跑的、还在后台收尾的会话用着的都不碰
         let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).chain(self.handoffs.iter().map(|h| h.cwd.clone())).collect();
-        let online = self.online_names();
+        let online = online_names(self.rm());
         for repo in repos {
             if !crate::code::is_repo(&repo) {
                 continue;
@@ -1268,6 +1365,23 @@ impl Host<'_> {
             }
         }
     }
+}
+
+/// 服务端上在线的名字：判断别的会话留下的 worktree 是不是空闲用。查不到时为空（锁着的一律当成有人在用）
+fn online_names(rm: &crate::backend::Remote) -> Option<Vec<String>> {
+    rm.get::<Vec<board_core::model::AgentInfo>>("/api/agents", &[]).ok().map(|a| a.into_iter().map(|a| a.name).collect())
+}
+
+/// 开始派发时在后台准备代码（见 `Host::start_prep`，#731）
+pub(super) struct Prep {
+    /// 派发：准备期间上报里算它在跑，服务端不会先按「本机没有这个进程」结束它
+    pub(super) d: Dispatch,
+    /// 项目目录：拉不到最新代码时记进 `fetch_errs`
+    pub(super) dir: PathBuf,
+    pub(super) begun: Instant,
+    /// 准备期间要求停止的原因（有人停止、服务端已经结束）：准备完不启动 agent
+    pub(super) stop: Option<String>,
+    pub(super) job: std::thread::JoinHandle<std::result::Result<crate::code::Ready, crate::code::Fail>>,
 }
 
 /// 派发结束后在后台做的收尾（见 `Host::handoff`）

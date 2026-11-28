@@ -2659,7 +2659,7 @@ fn host_keeps_reporting_while_push_and_fetch_hang() {
     rig.online("mbp");
     let secs = slow_secs();
     // 1. agent 留下没提交的文件后异常退出：收尾推 wip 分支，push 要等好几秒。从 agent 起来之后开始量
-    //    （开始派发时的拉取、建 worktree 还在主循环里同步做，不归这里管）
+    //    （开始派发时的拉取、建 worktree 由 host_keeps_reporting_while_a_dispatch_prepares_code 管）
     std::fs::write(rig.fake.with_file_name("leave"), "做到一半的内容\n").unwrap();
     rig.mode("crashgo");
     slow(&rig, "push", Some(secs));
@@ -2787,4 +2787,68 @@ fn a_failed_start_stops_the_round_and_reports_first() {
     assert_ne!(claude["tripped"], true, "没有被熔断：{claude}");
     let (code, _) = stop(host);
     assert_eq!(code, 0);
+}
+
+/// 卡片 #731：开始派发时的准备代码（`git fetch`、备 worktree）在后台做，主循环照常上报：fetch 卡住期间上报不停，
+/// 服务端照样当派发在跑；准备完才启动 agent，agent 在备好的 worktree 里起来
+#[test]
+fn host_keeps_reporting_while_a_dispatch_prepares_code() {
+    let rig = Rig::new();
+    for t in ["一", "二", "三"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    let path = slow_git(&rig);
+    let origin = bare_origin(&rig, "origin");
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), rig.repo.to_str().unwrap()]);
+    let host = host_path(&rig, &path);
+    rig.online("mbp");
+    let secs = slow_secs();
+    let agent = rig.fake.with_file_name("agent.pid");
+    let dispatch = |card: i64| -> i64 {
+        let r = rig.board(&["dispatch", &card.to_string(), "--host", "mbp", "--json"]);
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        wait_until(&format!("#{card} 开始"), Duration::from_secs(15), || rig.show(card)["holder"] == "mbp/opus-5.5");
+        r.json()["id"].as_i64().unwrap()
+    };
+
+    // 1. fetch 卡住：准备期间照常上报，派发不被结束；准备完 agent 起来（一直睡着）
+    rig.mode("quiet");
+    slow(&rig, "fetch", Some(secs));
+    let beats = Beats::watch(&rig, "mbp");
+    dispatch(1);
+    wait_until("agent 起来了", Duration::from_secs(secs + 30), || agent.exists());
+    let gap = beats.max_gap();
+    assert!(gap < gap_limit(), "准备代码期间上报停了 {gap} 毫秒");
+    let c = rig.show(1);
+    assert!(!activity(&c).iter().any(|t| t.starts_with("派发结束")), "{:?}", activity(&c));
+    // 停掉 #1，等它结束（会话位空出来）
+    let ws = rig.workspace();
+    let id1 = ws["dispatches"].as_array().unwrap().iter().find(|d| d["card"] == 1).unwrap()["id"].as_i64().unwrap();
+    let cancel = |id: i64| {
+        board_core::Store::open(&rig.s.db)
+            .unwrap()
+            .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.dispatch_cancel(id, &board_core::Actor::human(), "buglan").map(|_| ()))
+            .unwrap()
+    };
+    cancel(id1);
+    wait_until("#1 已停止", Duration::from_secs(30), || ended(&rig.show(1), "已停止"));
+    std::fs::remove_file(&agent).unwrap();
+
+    // 2. 准备期间有人停止：准备完不启动 agent，派发记为「已停止」，评论写是谁停的
+    let id2 = dispatch(2);
+    cancel(id2);
+    wait_until("#2 已停止", Duration::from_secs(secs + 30), || ended(&rig.show(2), "已停止"));
+    assert!(activity(&rig.show(2)).iter().any(|t| t.contains("buglan 停止了这次派发")), "{:?}", activity(&rig.show(2)));
+    assert!(!agent.exists(), "准备期间被停止的派发不该启动 agent");
+
+    // 3. 准备期间 board host 退出：等准备完再退出，不启动 agent，派发记为 board host 停止
+    dispatch(3);
+    let (code, out) = stop(host);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("等 1 个派发准备完代码"), "{out}");
+    // 第 2 步在本机输出里写了为什么没启动
+    assert!(out.contains("准备代码期间buglan 请求停止，没有启动 agent"), "{out}");
+    assert!(!agent.exists(), "退出时还在准备的派发不该启动 agent");
+    wait_until("#3 结束", Duration::from_secs(10), || activity(&rig.show(3)).iter().any(|t| t.contains("board host（mbp）退出，停止了这次派发")));
 }
