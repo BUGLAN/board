@@ -1436,6 +1436,89 @@ fn layout_and_pos_bump_rev_only_when_changed() {
     assert_eq!(s.rev().unwrap(), r2);
 }
 
+/// 推送带上改到的白板（default/main#739）：每一类写操作提交后，boards.data_rev 变了的白板正确。
+/// 界面只在当前白板在其中时重取白板快照；名字上下线、机器这类只影响工作区的写不带白板
+#[test]
+fn writes_record_which_boards_changed() {
+    let mut s = store();
+    ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
+    ui(&mut s, |w| {
+        w.create_project("站点", "site", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None }).map(|_| ())
+    })
+    .unwrap();
+    let main = || Some(vec![B.to_string()]);
+    // 执行一次写，返回这次改到的白板（rev 没变时为空）
+    fn changed(s: &mut Store, f: impl FnOnce(&mut Store)) -> Option<Vec<String>> {
+        let rev = s.rev().unwrap();
+        f(s);
+        s.read(|r| r.boards_changed_since(rev)).unwrap()
+    }
+
+    // 卡片命令：新建、评论、移动、加去标签、看过
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &human(), T0, new("a")).unwrap())), main());
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &alpha(), T0, Cmd::Comment { id: 1, text: "进展".into() }).unwrap())), main());
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &human(), T0, mv(1, "review")).unwrap())), main());
+    let rev = s.rev().unwrap();
+    let bug = ui(&mut s, |w| w.create_label("default", "bug", None, false)).unwrap();
+    assert!(s.rev().unwrap() > rev);
+    assert_eq!(s.read(|r| r.boards_changed_since(rev)).unwrap(), Some(vec![]), "建标签只改工作区");
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &human(), T0, Cmd::Label { id: 1, add: vec![bug.id], remove: vec![] }).unwrap())), main());
+    exec(&mut s, B, &alpha(), T0, Cmd::New { title: "想法".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: None }).unwrap();
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &human(), T0, Cmd::Seen { id: Some(2) }).unwrap())), main(), "标记已读不记动态，也算改到");
+    // 删掉卡片上打着的标签：卡片跟着去掉它
+    assert_eq!(changed(&mut s, |s| ui(s, |w| w.delete_label("default", bug.id)).unwrap()), main());
+    // 工作流、布局、白板设置
+    assert_eq!(changed(&mut s, |s| drop(ui(s, |w| w.create_status(B, "测试中", None)).unwrap())), main());
+    assert_eq!(
+        changed(&mut s, |s| ui(s, |w| w.update_status(B, "todo", StatusPatch { name: Some("要做".into()), ..Default::default() })).unwrap()),
+        main()
+    );
+    let mut tiles = std::collections::BTreeMap::new();
+    tiles.insert("todo".to_string(), Tile { x: 0, w: 6, y: 0.0 });
+    assert_eq!(changed(&mut s, |s| ui(s, |w| w.set_flow_layout(B, &tiles)).unwrap()), main());
+    assert_eq!(changed(&mut s, |s| ui(s, |w| w.save_flow_layout(B, &tiles)).unwrap()), main());
+    assert_eq!(changed(&mut s, |s| ui(s, |w| w.set_keep_sorted(B, true)).unwrap()), main());
+    assert_eq!(changed(&mut s, |s| ui(s, |w| w.update_board(B, Some("主线"), None, None)).unwrap()), main());
+    // 项目的仓库地址、集成分支：项目下每块白板都算，别的项目不算
+    assert_eq!(
+        changed(&mut s, |s| ui(s, |w| w.set_repo_branch("default", Some("https://github.com/o/r.git"), None)).unwrap()),
+        Some(vec![B.to_string(), "default/second".to_string()])
+    );
+    // 只改工作区的：名字上线、下线，项目改名，画布上挪节点，机器上报
+    assert_eq!(changed(&mut s, |s| drop(s.write(T0, Origin::cli(), |w| w.agent_check("claude/x", None)).unwrap())), Some(vec![]));
+    assert_eq!(
+        changed(&mut s, |s| drop(s.write(T0 + 1, Origin::cli(), |w| w.agent_beat_by("claude/x", true, crate::agents::BeatBy::Cli(None))).unwrap())),
+        Some(vec![])
+    );
+    assert_eq!(
+        changed(&mut s, |s| ui(s, |w| w.update_project("default", Some("改名"), None, None)).unwrap()),
+        Some(vec![])
+    );
+    assert_eq!(changed(&mut s, |s| ui(s, |w| w.set_pos("board", B, Pos { x: 300.0, y: 0.0 })).unwrap()), Some(vec![]));
+    let rep = crate::hosts::HostReport { name: "mbp".into(), instance: "i1".into(), ..Default::default() };
+    assert_eq!(changed(&mut s, |s| drop(s.write(T0, Origin::cli(), |w| w.host_beat(&rep, None)).unwrap())), Some(vec![]));
+    // 别的白板上的卡片命令：只带那一块
+    assert_eq!(
+        changed(&mut s, |s| drop(exec(s, "site/main", &human(), T0, new("b")).unwrap())),
+        Some(vec!["site/main".to_string()])
+    );
+    // 两次推送之间改了几块：都带上
+    let rev = s.rev().unwrap();
+    exec(&mut s, B, &human(), T0, new("c")).unwrap();
+    exec(&mut s, "default/second", &human(), T0, new("d")).unwrap();
+    assert_eq!(s.read(|r| r.boards_changed_since(rev)).unwrap(), Some(vec![B.to_string(), "default/second".to_string()]));
+    // 被拒绝的命令：rev 不变，也不带白板
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &alpha(), T0, mv(3, "doing")).unwrap_err())), Some(vec![]));
+    // 删掉白板：查不到删掉的是哪块，不带 boards（界面照旧按当前白板算）；之后的推送照常带
+    let rev = s.rev().unwrap();
+    ui(&mut s, |w| w.delete_board("default/second")).unwrap();
+    assert_eq!(s.read(|r| r.boards_changed_since(rev)).unwrap(), None);
+    assert_eq!(changed(&mut s, |s| drop(exec(s, B, &human(), T0, new("e")).unwrap())), main());
+    let rev = s.rev().unwrap();
+    ui(&mut s, |w| w.delete_project("site")).unwrap();
+    assert_eq!(s.read(|r| r.boards_changed_since(rev)).unwrap(), None);
+}
+
 /* ---------------- 附件（PRD §5） ---------------- */
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";

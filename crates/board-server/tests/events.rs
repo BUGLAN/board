@@ -191,3 +191,49 @@ fn stream_sends_every_event_when_one_write_makes_more_than_a_page() {
     let want: Vec<i64> = (latest + 1..=latest + 450).collect();
     assert_eq!(got, want, "按顺序、不重不漏");
 }
+
+/// 推送带上改到的白板（default/main#739）：卡片命令带上它所在的白板；只改工作区的写（画布上挪节点）`boards` 为空，
+/// 界面据此不重取白板快照
+#[test]
+fn stream_names_the_boards_whose_snapshot_changed() {
+    use std::io::{BufRead, BufReader};
+    use std::time::Duration;
+
+    let s = local();
+    new_card(&s, "先有一张");
+    std::thread::sleep(Duration::from_millis(600));
+    let stream_agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_recv_response(Some(Duration::from_secs(5)))
+        .timeout_per_read(Some(Duration::from_secs(3)))
+        .build()
+        .into();
+    let res = stream_agent.get(format!("{}/api/stream", s.url)).call().unwrap();
+    let mut lines = BufReader::new(res.into_body().into_reader());
+    // 下一条带新 rev 的推送
+    let mut next = |after: i64| -> Value {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(lines.read_line(&mut line).expect("读推送失败") > 0, "推送提前断开了");
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let msg: Value = serde_json::from_str(data.trim()).expect("推送是 JSON");
+            if msg["rev"].as_i64().unwrap_or(0) > after {
+                return msg;
+            }
+        }
+    };
+    let first = next(-1);
+    assert!(first.get("boards").is_none(), "连上时的第一条不知道改过什么，不带 boards：{first}");
+    let rev = first["rev"].as_i64().unwrap();
+
+    new_card(&s, "再建一张");
+    let m = next(rev);
+    assert_eq!(m["boards"], json!(["default/main"]), "{m}");
+    let rev = m["rev"].as_i64().unwrap();
+
+    let r = send("PUT", &format!("{}/api/layout", s.url), &[UI], Some(json!({ "kind": "board", "id": "default/main", "x": 480.0, "y": 0.0 })));
+    assert_eq!(r.status, 200, "{}", r.text);
+    let m = next(rev);
+    assert_eq!(m["boards"], json!([]), "画布上挪节点只改工作区：{m}");
+}

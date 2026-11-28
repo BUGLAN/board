@@ -358,13 +358,16 @@ export const api = {
 export type LiveStatus = 'connecting' | 'live' | 'offline';
 
 /** 推送：rev 变了是工作区的变更；runs 变了是有新的结构化事件，ran 是有新事件的派发（会话「过程」据此马上取） */
-interface PushMessage {
+export interface PushMessage {
   rev: number;
   events: BoardEvent[];
   runs?: number;
   ran?: number[];
   /** 有新事件的机器对话 */
   chats?: number[];
+  /** 上次推送之后快照内容变过的白板（`<项目>/<白板>`）：当前白板不在其中就不用重取白板快照。
+      旧服务端、连上时的第一条没有；期间删掉过白板时为 null（查不到删了哪块）：都按原来的规则 */
+  boards?: string[] | null;
 }
 
 /** 订阅变更。返回取消订阅函数。

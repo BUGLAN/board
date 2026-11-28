@@ -538,7 +538,9 @@ fn spawn_background(state: AppState) {
     });
     // 变更推送：rev 变化时把新事件广播给所有界面和 board host。
     // agent 的结构化事件（会话「过程」）不算变更：只有 runs 变了时推 { rev（不变）, runs, ran: [有新事件的派发] }，
-    // 界面不重新取工作区，打开着这些派发的会话增量取
+    // 界面不重新取工作区，打开着这些派发的会话增量取。
+    // boards：上次推送之后快照内容变过的白板（`<项目>/<白板>`），界面只在当前白板在其中时重取白板快照；
+    // 机器、派发状态、名字上下线这类只改工作区的写为空。期间删掉过白板时为 null（查不到删了哪块，界面照旧按当前白板算）
     tokio::spawn(async move {
         let (mut rev, mut last, mut runs) = state
             .db(|st| Ok((st.rev()?, st.read(|r| r.last_event_id())?, st.read(|r| r.runs_rev())?)))
@@ -560,18 +562,19 @@ fn spawn_background(state: AppState) {
                     let events = if latest == last { vec![] } else { st.read(|r| r.events_since(last, 200))? };
                     let ran = if now_runs == runs { vec![] } else { st.read(|r| r.dispatches_with_events_since(runs))? };
                     let chats = if now_runs == runs { vec![] } else { st.read(|r| r.chats_with_events_since(runs))? };
-                    Ok(Some((now, st.hosts_rev()?, events, now_runs, ran, chats)))
+                    let boards = if now == rev { Some(vec![]) } else { st.read(|r| r.boards_changed_since(rev))? };
+                    Ok(Some((now, st.hosts_rev()?, events, now_runs, ran, chats, boards)))
                 })
                 .await;
             match r {
-                Ok(Some((now, hosts, events, now_runs, ran, chats))) => {
+                Ok(Some((now, hosts, events, now_runs, ran, chats, boards))) => {
                     rev = now;
                     runs = now_runs;
                     if let Some(e) = events.last() {
                         last = e.id;
                     }
                     // chats：有新事件的机器对话（打开着的对话增量取）
-                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events, "runs": runs, "ran": ran, "chats": chats }).to_string();
+                    let msg = json!({ "rev": rev, "hosts": hosts, "events": events, "runs": runs, "ran": ran, "chats": chats, "boards": boards }).to_string();
                     let _ = state.0.tx.send(Arc::from(msg));
                 }
                 Ok(None) => {}

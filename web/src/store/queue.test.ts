@@ -1085,6 +1085,48 @@ describe('推送与刷新', () => {
     expect(server.n.board).toBe(2);
   });
 
+  it('推送带了 boards：当前白板不在其中只取工作区，在其中才重取白板（default/main#739）', async () => {
+    const push = server.push as (m: { rev: number; events: BoardEvent[]; boards?: string[] | null }) => void;
+    // 机器心跳、名字上下线：没有动态，boards 为空
+    server.ws.rev += 1;
+    push({ rev: server.ws.rev, events: [], boards: [] });
+    await settle();
+    expect(server.n).toEqual({ workspace: 1, board: 0 });
+    // 只有别的白板变了
+    server.ws.rev += 1;
+    push({ rev: server.ws.rev, events: [], boards: ['p/b'] });
+    await settle();
+    expect(server.n).toEqual({ workspace: 2, board: 0 });
+    // 当前白板变了（标记已读、拖动状态块这类不记动态的写）
+    const rev = serverEdit('p/a', 1, { title: '没有动态的修改' });
+    push({ rev, events: [], boards: ['p/b', 'p/a'] });
+    await settle();
+    expect(server.n.board).toBe(1);
+    expect(title(1)).toBe('没有动态的修改');
+  });
+
+  it('推送带了 boards 但动态属于当前白板（一个事务的动态分几批推）：照样重取白板', async () => {
+    const push = server.push as (m: { rev: number; events: BoardEvent[]; boards?: string[] | null }) => void;
+    const rev = serverEdit('p/a', 2, { title: '后一批' });
+    push({ rev, events: [event('p/a', 2)], boards: [] });
+    await settle();
+    expect(server.n.board).toBe(1);
+    expect(title(2)).toBe('后一批');
+  });
+
+  it('boards 为 null（期间删掉过白板）：按原来的规则，没有动态时重取当前白板', async () => {
+    const push = server.push as (m: { rev: number; events: BoardEvent[]; boards?: string[] | null }) => void;
+    server.ws.rev += 1;
+    push({ rev: server.ws.rev, events: [], boards: null });
+    await settle();
+    expect(server.n.board).toBe(1);
+    // 有动态、都属于别的白板：只取工作区
+    server.ws.rev += 1;
+    push({ rev: server.ws.rev, events: [event('p/b')], boards: null });
+    await settle();
+    expect(server.n.board).toBe(1);
+  });
+
   it('刷新后没变的卡片、标签、在线名单沿用原来的对象', async () => {
     const before = D.useData.getState();
     const online = D.useData.getState().ws!.agents;

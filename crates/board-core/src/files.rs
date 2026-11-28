@@ -599,6 +599,7 @@ impl Store {
             )?;
             let id = w.tx.last_insert_rowid();
             w.changed = true;
+            w.touch_board(b.id);
             Ok(w.tx.query_row(&format!("SELECT {COLS} FROM attachments WHERE id = ?1"), [id], row)?)
         })
     }

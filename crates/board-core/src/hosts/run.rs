@@ -181,6 +181,8 @@ impl<'a> W<'a> {
             return Ok(String::new());
         }
         self.tx.execute("UPDATE cards SET claimed_from = NULL WHERE board = ?1 AND id = ?2", params![b, card])?;
+        // 卡片上的 claimed_from 在白板快照里：没有移动（下面直接返回）时也算改到了这块白板
+        self.touch_board(b);
         if col == INBOX || !flow.is_lock(&col) {
             return Ok(String::new());
         }

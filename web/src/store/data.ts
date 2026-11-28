@@ -6,7 +6,7 @@
    - 当前白板、打开的卡片都在地址栏里（lib/route.ts）：打开、关闭详情和切换白板时写进去
    ========================================================================== */
 import { create } from 'zustand';
-import { api, ApiError, connect, CLIENT_ID, type CardBatchOp } from '../lib/api';
+import { api, ApiError, connect, CLIENT_ID, type CardBatchOp, type PushMessage } from '../lib/api';
 import { applySilently, bindRoute, syncUrl } from '../lib/route';
 import * as flip from '../lib/flip';
 import { clearLabelSel, setTab, toast, useUI, type Tab } from './ui';
@@ -1211,6 +1211,17 @@ function beforeUnload(e: BeforeUnloadEvent) {
   }
 }
 
+/** 这条推送要不要重取当前白板快照。服务端带了 `boards`（快照内容变过的白板）时只看当前白板在不在其中——机器、派发状态、
+    名字上下线这类只改工作区的写为空，不用每次多下一份白板快照（default/main#739）；动态属于当前白板的也算（一个事务的动态
+    超过一页时，后面几批推送 rev 不变、boards 为空）。没带（旧服务端、期间删掉过白板）时按原来的规则：变化都属于别的白板才
+    只取工作区，没有动态的变化不知道影响哪里，按当前白板算 */
+export function pushTouches(m: Pick<PushMessage, 'events' | 'boards'>, path: string): boolean {
+  const all = m.events || [];
+  if (all.some(e => e.board === path)) return true;
+  if (Array.isArray(m.boards)) return m.boards.includes(path);
+  return !all.length;
+}
+
 export function boot() {
   refresh();
   // 版本检查不放在这里：桌面端自带的界面和网页端用同一套逻辑，要不要提示由 lib/stale-runner.ts 判断。
@@ -1226,10 +1237,8 @@ export function boot() {
       // 落后太多（rev < 0）：全量刷新
       if (m.rev < 0) done = refresh();
       else {
-        // 变化都属于别的白板：只取工作区。没有事件的变化（超时释放、机器、标签……）不知道影响哪里，按当前白板算
         notePushed(m.rev, all);
-        const here = !all.length || all.some(e => e.board === get().path);
-        if (here) wantBoard = Math.max(wantBoard, m.rev);
+        if (pushTouches(m, get().path)) wantBoard = Math.max(wantBoard, m.rev);
         wantWs = Math.max(wantWs, m.rev);
         done = pump();
       }

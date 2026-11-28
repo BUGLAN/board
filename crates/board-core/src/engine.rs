@@ -271,8 +271,19 @@ impl R<'_> {
 }
 
 impl<'a> W<'a> {
-    /// 执行一条卡片命令，返回执行后的卡片（删除时返回删除前的卡片）
+    /// 执行一条卡片命令，返回执行后的卡片（删除时返回删除前的卡片）。
+    /// 命令改了数据（会推送）就算改到了这块白板：卡片命令改的都是白板快照里的东西，推送据此带上它
     pub fn exec(&mut self, board: &BoardRef, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
+        let before = std::mem::replace(&mut self.changed, false);
+        let out = self.exec_cmd(board, actor, cmd);
+        if self.changed {
+            self.touch_board(board.id);
+        }
+        self.changed |= before;
+        out
+    }
+
+    fn exec_cmd(&mut self, board: &BoardRef, actor: &Actor, cmd: Cmd) -> Result<CardDetail> {
         // 交审、做不下去：评论、final、移动三步，都在调用方的这一个写事务里
         let cmd = match cmd {
             Cmd::Submit { id, text } => return self.hand_over(board, actor, id, text, false),
@@ -1365,6 +1376,7 @@ impl<'a> W<'a> {
         }
         if changed {
             self.changed = true;
+            self.touch_board(b);
         }
         Ok(())
     }
@@ -1373,6 +1385,7 @@ impl<'a> W<'a> {
     fn mark_split(&mut self, b: i64, id: i64) -> Result<()> {
         if self.tx.execute("UPDATE cards SET split_at = ?1 WHERE board = ?2 AND id = ?3 AND split_at IS NULL", params![self.now, b, id])? > 0 {
             self.changed = true;
+            self.touch_board(b);
         }
         Ok(())
     }
@@ -1467,6 +1480,7 @@ impl<'a> W<'a> {
                 params![to, max.map_or(0, |m| m + 1), b, id],
             )?;
             self.changed = true;
+            self.touch_board(b);
             return Ok((old.flatten().unwrap_or(0), n as usize));
         }
         let mut from_list = match from {
@@ -1492,6 +1506,7 @@ impl<'a> W<'a> {
         }
         self.write_col(b, to, &to_list)?;
         self.changed = true;
+        self.touch_board(b);
         Ok((old.unwrap_or(0), idx))
     }
 
@@ -1562,6 +1577,7 @@ impl<'a> W<'a> {
             params![end, how, b, id, n],
         )?;
         self.changed = true;
+        self.touch_board(b);
         Ok(Some((n, end - started)))
     }
 
@@ -1573,6 +1589,7 @@ impl<'a> W<'a> {
             params![b, id],
         )?;
         self.changed = true;
+        self.touch_board(b);
         Ok(run)
     }
 
@@ -1659,6 +1676,7 @@ impl<'a> W<'a> {
             self.tx.execute("INSERT INTO card_labels (board, card, label) VALUES (?1, ?2, ?3)", params![b, card, l])?;
         }
         self.changed = true;
+        self.touch_board(b);
         Ok(())
     }
 

@@ -7,7 +7,7 @@
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::*;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS boards (
   -- 不再读写（仓库地址和集成分支改到项目上，见 projects.repo / branch）；保留这两列，免得给旧库做删列迁移
   repo        TEXT NOT NULL DEFAULT '',
   branch      TEXT NOT NULL DEFAULT '',
+  -- 白板快照里的内容（卡片、工作流和布局、白板设置、所在项目的仓库……）最近一次变化时的 rev：推送据此带上这次改到的白板，
+  -- 界面只在当前白板在其中时重取白板快照
+  data_rev    INTEGER NOT NULL DEFAULT 0,
   UNIQUE (project, key)
 );
 
@@ -450,6 +453,7 @@ impl Store {
         if !add_cols(conn, "boards", &[("keep_sorted", "INTEGER NOT NULL DEFAULT 0")])?.is_empty() {
             conn.execute_batch("UPDATE boards SET keep_sorted = 1 WHERE keep_order = 0")?;
         }
+        add_cols(conn, "boards", &[("data_rev", "INTEGER NOT NULL DEFAULT 0")])?;
         // 旧数据库的状态没有排序依据：都按移入时间
         add_cols(conn, "statuses", &[("order_by", "TEXT"), ("order_desc", "INTEGER NOT NULL DEFAULT 0")])?;
         // 旧数据库的卡片不记移入时间：按最后一次换状态的动态补，没有就用新建时间
@@ -604,7 +608,19 @@ impl Store {
     /// 执行一组写操作：同一时刻只有一个写事务；出错则整体回滚
     pub fn write<T>(&mut self, now: i64, origin: Origin, f: impl FnOnce(&mut W) -> Result<T>) -> Result<T> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut w = W { tx: &tx, now, local: self.local, origin, changed: false, hosts_changed: false, config_changed: false, config_by: String::new(), dispatch_ok: false };
+        let mut w = W {
+            tx: &tx,
+            now,
+            local: self.local,
+            origin,
+            changed: false,
+            hosts_changed: false,
+            config_changed: false,
+            config_by: String::new(),
+            dispatch_ok: false,
+            touched: BTreeSet::new(),
+            boards_gone: false,
+        };
         let out = f(&mut w)?;
         // 改了会写进 agent 配置的东西：给受影响的机器下发「同步配置」请求（hosts/sync.rs）
         if w.config_changed {
@@ -613,6 +629,19 @@ impl Store {
         let (changed, hosts) = (w.changed || w.hosts_changed, w.hosts_changed);
         if changed {
             tx.execute("UPDATE meta SET value = value + 1 WHERE key = 'rev'", [])?;
+            // 改到的白板记下这次的 rev（推送按它带上 boards，见 R::boards_changed_since）
+            let mut st = tx.prepare_cached("UPDATE boards SET data_rev = (SELECT value FROM meta WHERE key = 'rev') WHERE id = ?1")?;
+            for b in &w.touched {
+                st.execute([b])?;
+            }
+            // 删掉了白板：记下这次的 rev，这次的推送不带 boards（界面照旧重取当前白板，发现它没了就换一块）
+            if w.boards_gone {
+                tx.execute(
+                    "INSERT INTO meta (key, value) VALUES ('boards_gone', (SELECT value FROM meta WHERE key = 'rev'))
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    [],
+                )?;
+            }
         }
         // 机器和派发有变化：board host 据此重新取自己的任务（任务下发需求 §十）
         if hosts {
@@ -1103,6 +1132,18 @@ impl<'a> R<'a> {
     pub fn last_event_id(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))?)
     }
+
+    /// `rev` 之后快照内容变过的白板（`<项目>/<白板>`）：推送带上它们，界面只在当前白板在其中时重取白板快照。
+    /// 这期间删掉过白板时为 None：删掉的白板查不到了，界面照旧按当前白板算（重取时发现它没了就换一块）
+    pub fn boards_changed_since(&self, rev: i64) -> Result<Option<Vec<String>>> {
+        let gone: i64 = self.conn.query_row("SELECT COALESCE((SELECT value FROM meta WHERE key = 'boards_gone'), 0)", [], |r| r.get(0))?;
+        if gone > rev {
+            return Ok(None);
+        }
+        let mut st = self.conn.prepare_cached("SELECT project || '/' || key FROM boards WHERE data_rev > ?1 ORDER BY id")?;
+        let rows = st.query_map([rev], |r| r.get(0))?;
+        Ok(Some(rows.collect::<std::result::Result<Vec<_>, _>>()?))
+    }
 }
 
 fn not_found(id: i64) -> BoardError {
@@ -1436,6 +1477,10 @@ pub struct W<'a> {
     pub(crate) config_by: String,
     /// 正在为派发领取：卡片的排队派发不挡住这次领取（见 hosts/run.rs）
     pub(crate) dispatch_ok: bool,
+    /// 这次改到的白板（白板 ID）：快照里的内容变了的，提交时记下新的 rev（boards.data_rev），推送据此带上 boards
+    pub(crate) touched: BTreeSet<i64>,
+    /// 这次删掉了白板（删白板、删项目）：删掉的白板在 boards 表里查不到了，推送说不出改到了哪几块，见 [`R::boards_changed_since`]
+    pub(crate) boards_gone: bool,
 }
 
 /// 新节点在画布上的默认位置：项目在左列，白板在项目右侧依次往下排
@@ -1581,6 +1626,7 @@ impl<'a> W<'a> {
         }
         self.tx.execute("DELETE FROM projects WHERE key = ?1", [key])?;
         self.changed = true;
+        self.boards_gone = true;
         Ok(())
     }
 
@@ -1643,6 +1689,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE boards SET description = ?1 WHERE id = ?2", params![d.trim(), b.id])?;
         }
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -1676,6 +1723,8 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE projects SET branch = ?1 WHERE key = ?2", params![t, project])?;
         }
         self.changed = true;
+        // 仓库地址、集成分支在项目下每块白板的快照里
+        self.touch_project(&project)?;
         Ok(())
     }
 
@@ -1721,6 +1770,7 @@ impl<'a> W<'a> {
         }
         self.tx.execute("DELETE FROM boards WHERE id = ?1", [b.id])?;
         self.changed = true;
+        self.boards_gone = true;
         Ok(())
     }
 
@@ -1862,6 +1912,9 @@ impl<'a> W<'a> {
     /// 删除标签：它会从项目内所有卡片上移除（外键级联）
     pub fn delete_label(&mut self, project: &str, id: i64) -> Result<()> {
         self.label_exists(project, id)?;
+        // 打着它的卡片跟着去掉这个标签（card_labels 级联删除）：这些卡片所在的白板算改到
+        let boards: Vec<i64> = self.collect("SELECT DISTINCT board FROM card_labels WHERE label = ?1", [id], |r| r.get(0))?;
+        self.touched.extend(boards);
         self.tx.execute("DELETE FROM labels WHERE id = ?1", [id])?;
         self.changed = true;
         Ok(())
@@ -1894,7 +1947,20 @@ impl<'a> W<'a> {
         self.event(board, card, &title, who, action, text)
     }
 
+    /// 记下这次改到了这块白板快照里的内容（卡片、工作流和布局、白板设置……），推送时带上它（见 [`W::touched`]）
+    pub(crate) fn touch_board(&mut self, board: i64) {
+        self.touched.insert(board);
+    }
+
+    /// 项目上的、每块白板快照里都有的内容（仓库地址、集成分支）变了：项目下所有白板都算改到
+    pub(crate) fn touch_project(&mut self, project: &str) -> Result<()> {
+        let ids: Vec<i64> = self.collect("SELECT id FROM boards WHERE project = ?1", [project], |r| r.get(0))?;
+        self.touched.extend(ids);
+        Ok(())
+    }
+
     pub(crate) fn event(&mut self, board: i64, card: i64, title: &str, who: &Actor, op: &str, text: &str) -> Result<()> {
+        self.touch_board(board);
         let system = who.kind == ActorKind::System;
         let via = if system { Via::System } else { self.origin.via };
         let client = if system { None } else { self.origin.client.as_deref() };

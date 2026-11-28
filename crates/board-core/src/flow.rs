@@ -107,6 +107,7 @@ impl<'a> W<'a> {
             params![b.id, key, name, color, sort],
         )?;
         self.changed = true;
+        self.touch_board(b.id);
         Ok(Status {
             key,
             name,
@@ -199,6 +200,7 @@ impl<'a> W<'a> {
             )?;
         }
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -217,6 +219,7 @@ impl<'a> W<'a> {
             self.tx.execute("UPDATE statuses SET sort = ?1 WHERE board = ?2 AND key = ?3", params![i as i64, b.id, k])?;
         }
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -236,6 +239,7 @@ impl<'a> W<'a> {
             self.tx.execute("INSERT OR IGNORE INTO transitions (board, src, dst) VALUES (?1, ?2, ?3)", params![b.id, a, d])?;
         }
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -265,6 +269,7 @@ impl<'a> W<'a> {
         self.tx.execute("DELETE FROM transitions WHERE board = ?1 AND (src = ?2 OR dst = ?2)", params![b.id, key])?;
         self.tx.execute("UPDATE cards SET claimed_from = NULL WHERE board = ?1 AND claimed_from = ?2", params![b.id, key])?;
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -279,7 +284,10 @@ impl<'a> W<'a> {
                  WHERE board = ?1 AND (lx IS NOT NULL OR lw IS NOT NULL OR ly IS NOT NULL)",
                 [b.id],
             )?;
-            self.changed |= n > 0;
+            if n > 0 {
+                self.changed = true;
+                self.touch_board(b.id);
+            }
             return Ok(());
         }
         Self::check_tiles(&flow, tiles)?;
@@ -289,7 +297,10 @@ impl<'a> W<'a> {
                  WHERE board = ?4 AND key = ?5 AND (lx IS NOT ?1 OR lw IS NOT ?2 OR ly IS NOT ?3)",
                 params![t.x, t.w, t.y, b.id, k],
             )?;
-            self.changed |= n > 0;
+            if n > 0 {
+                self.changed = true;
+                self.touch_board(b.id);
+            }
         }
         Ok(())
     }
@@ -315,6 +326,7 @@ impl<'a> W<'a> {
         let json = serde_json::to_string(tiles).map_err(|e| BoardError::usage(e.to_string()))?;
         self.tx.execute("UPDATE boards SET saved_layout = ?1 WHERE id = ?2", params![json, b.id])?;
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -334,6 +346,7 @@ impl<'a> W<'a> {
             )?;
         }
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 
@@ -342,6 +355,7 @@ impl<'a> W<'a> {
         let b = self.resolve_exact(path)?;
         self.tx.execute("UPDATE boards SET keep_sorted = ?1 WHERE id = ?2", params![on, b.id])?;
         self.changed = true;
+        self.touch_board(b.id);
         Ok(())
     }
 }
