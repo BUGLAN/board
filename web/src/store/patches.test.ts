@@ -254,6 +254,50 @@ describe('restoreCard', () => {
     const d4 = detail(card(4));
     expect(p.detail!(d4)).toBe(d4);
   });
+
+  it('恢复拆出的卡：原条目在白板上、没记拆解过时当帧记上；已经记着、旧服务端（undefined）、不在白板上都不动（default/main#735）', () => {
+    const inbox = (splitAt: number | null | undefined) => ({ ...snapshot('p/a', { inbox: [1] }, [{ id: 1, splitAt }]), trash: 1 });
+    const kid = { id: 2, column: 'inbox', pos: 1, movedAt: 50, card: card(2, { splitFrom: 1 }) };
+    expect(twice(D.restoreCard(kid).board!, inbox(null)).cards[1].splitAt).toBe(50);
+    expect(twice(D.restoreCard(kid).board!, inbox(20)).cards[1].splitAt).toBe(20);
+    expect(twice(D.restoreCard(kid).board!, inbox(undefined)).cards[1].splitAt).toBeUndefined();
+    const gone = { ...snapshot('p/a', { inbox: [] }), trash: 1 };
+    expect(twice(D.restoreCard(kid).board!, gone).cards[1]).toBeUndefined();
+  });
+});
+
+describe('unsplitPatch（撤销拆解，default/main#735）', () => {
+  const split = () =>
+    snapshot('p/a', { inbox: [1, 2, 3, 5], todo: [4] }, [
+      { id: 1, splitAt: 10 },
+      { id: 2, splitFrom: 1 },
+      { id: 3, splitFrom: 1 },
+    ]);
+
+  it('拆出的卡从白板上拿掉（回收站多几张），原条目清掉拆解过；重复执行结果不变', () => {
+    const b = twice(D.unsplitPatch(1, [2, 3]).board!, split());
+    expect(b.cols.inbox).toEqual([1, 5]);
+    expect(b.cards[2]).toBeUndefined();
+    expect(b.cards[1].splitAt).toBeNull();
+    expect(b.trash).toBe(2);
+    eachOnce(b);
+  });
+
+  it('原条目不在了：原样返回（拆出的卡也不动）', () => {
+    const b = split();
+    expect(D.unsplitPatch(9, [2, 3]).board!(b)).toBe(b);
+  });
+
+  it('有的拆出卡已经不在：只拿掉还在的；详情只改原条目；保存中画在原条目和拆出的卡上', () => {
+    const p = D.unsplitPatch(1, [2, 3, 8]);
+    const b = twice(p.board!, D.removeCard(3).board!(split()));
+    expect(b.cols.inbox).toEqual([1, 5]);
+    expect(b.trash).toBe(2);
+    expect(p.cards).toEqual([1, 2, 3, 8]);
+    expect(twice(p.detail!, detail(card(1, { splitAt: 10 })))).toMatchObject({ splitAt: null });
+    const other = detail(card(5));
+    expect(p.detail!(other)).toBe(other);
+  });
 });
 
 describe('mergePatch', () => {

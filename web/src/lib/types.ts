@@ -251,6 +251,9 @@ export interface Card {
   splitFrom?: number | null;
   /** 复制自：同一块白板上另一张卡的编号（「复制为新卡片」，PRD §10.8）。原卡删除后照样留着编号；旧服务端没有 */
   copiedFrom?: number | null;
+  /** 拆解过（default/main#735）：第一次有卡拆自它的时间；没拆过为 null。「未整理」里拆解过的原条目一直隐藏，
+      删掉拆出的卡也不变，只有「撤销拆解」清掉。旧服务端没有这个字段（undefined） */
+  splitAt?: number | null;
 }
 
 /** 「未整理」里的条目是不是「新」：agent 记下、人还没看过 */
@@ -428,6 +431,8 @@ export type Cmd =
   | { op: 'seen'; id?: number }
   /** 「稍后再做」（default/main#303）：收起（on）/ 放回「未整理」里的一条，仅人 */
   | { op: 'later'; id: number; on: boolean }
+  /** 撤销拆解（仅人，default/main#735）：id 是「未整理」里拆解过的原条目；拆出的卡（都还在未整理里）进回收站，原条目回到列表里 */
+  | { op: 'unsplit'; id: number }
   /** 复制为新卡片（仅人，PRD §10.8）：按给的标题、描述、标签新建一张，不带原卡的动态、领取、耗时；
       files 把新描述里引用的原卡附件复制一份；move_to（移到一个状态）/ trash（移进回收站）在同一个写事务里处理原卡 */
   | { op: 'copy'; id: number; title: string; body?: string; column?: 'inbox'; labels?: number[]; files?: boolean; move_to?: ColumnKey; trash?: boolean };

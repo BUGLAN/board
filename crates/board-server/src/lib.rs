@@ -851,6 +851,7 @@ fn card_id_of(cmd: &Cmd) -> Option<i64> {
         | Cmd::Submit { id, .. }
         | Cmd::GiveUp { id, .. }
         | Cmd::Later { id, .. }
+        | Cmd::Unsplit { id }
         | Cmd::Copy { id, .. }
         | Cmd::Claim { id: Some(id) } => Some(*id),
     }

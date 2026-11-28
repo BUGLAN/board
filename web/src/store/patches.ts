@@ -194,6 +194,7 @@ export function removeCard(id: number): Patch {
 
 /** 从回收站恢复一张卡片：当帧回到它的位置（那一列的第 pos 位，由 lib/trash.ts 决定），回收站里少一张。
     恢复时卡片还不在快照里，column、pos、card 在把卡片放上去的那一刻写定，之后每次重新叠加用的都是这一份。
+    恢复的是拆出的卡、原条目在白板上还没记「拆解过」：同服务端，当帧记上（又并进那一组；default/main#735）。
     已经在白板上的原样返回（重复执行结果不变）。detail 是打开着的这张卡片的详情：内容留着，回到白板上 */
 export function restoreCard(plan: { id: number; column: ColumnKey; pos: number; movedAt: number; card: Card }): Patch {
   const { id, column, pos, movedAt: at, card } = plan;
@@ -205,9 +206,28 @@ export function restoreCard(plan: { id: number; column: ColumnKey; pos: number; 
       const list = [...(cols[column] ?? [])];
       list.splice(Math.min(Math.max(0, pos), list.length), 0, id);
       cols[column] = list;
-      return { ...b, cols, cards: { ...b.cards, [id]: { ...card, column, movedAt: at } }, trash: Math.max(0, (b.trash ?? 0) - 1) };
+      const cards: BoardSnapshot['cards'] = { ...b.cards, [id]: { ...card, column, movedAt: at } };
+      const p = card.splitFrom != null && card.splitFrom !== id ? cards[card.splitFrom] : undefined;
+      if (p && p.splitAt === null) cards[p.id] = { ...p, splitAt: at };
+      return { ...b, cols, cards, trash: Math.max(0, (b.trash ?? 0) - 1) };
     },
     detail: d => (d.id === id ? { ...d, column } : d),
+  };
+}
+
+/** 撤销拆解（default/main#735）：拆出的卡 kids 从白板上拿掉（进回收站，同 removeCard），原条目的「拆解过」清掉，
+    当帧回到「未整理」的列表里。原条目不在了：原样返回；已经拿掉的拆出卡跳过，重复执行结果不变 */
+export function unsplitPatch(parent: number, kids: number[]): Patch {
+  const drop = kids.filter(id => id !== parent).map(removeCard);
+  return {
+    board: b => {
+      const p = b.cards[parent];
+      if (!p) return b;
+      const next = drop.reduce((x, d) => d.board!(x), b);
+      return p.splitAt == null ? next : { ...next, cards: { ...next.cards, [parent]: { ...p, splitAt: null } } };
+    },
+    detail: d => (d.id === parent && d.splitAt != null ? { ...d, splitAt: null } : d),
+    cards: [parent, ...kids],
   };
 }
 

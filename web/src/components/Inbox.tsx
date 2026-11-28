@@ -24,7 +24,7 @@ import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
 import { actorName, ago, autosize, copyText, cx, isImeKey, pref, reduceMotion, replay } from '../lib/util';
-import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData, type BatchResult } from '../store/data';
+import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, unsplitPatch, useCardBusy, useCurrent, useData, type BatchResult } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { ActorAvatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
 import { matches } from './Card';
@@ -670,7 +670,8 @@ function Age({ card: c, now }: { card: Card; now: number }) {
 
 /* ------------------------------ 拆解 ------------------------------ */
 
-/** 撤销拆解：拆出的卡（都还在未整理里）当帧删掉、进回收站，原条目随之回到列表里并闪一下；提示里可以把拆出的卡恢复回来 */
+/** 撤销拆解（服务端一条命令，default/main#735）：拆出的卡（都还在未整理里）当帧删掉、进回收站，原条目的「拆解过」清掉，
+    随之回到列表里并闪一下；提示里可以把拆出的卡恢复回来（恢复后原条目又记上拆解过、并进那一组） */
 async function undoSplit(parent: Card) {
   const s = useData.getState();
   const cards = s.board?.cards;
@@ -678,11 +679,20 @@ async function undoSplit(parent: Card) {
   const kids = (kidsOf(cards).get(parent.id) ?? []).filter(id => !isDraft(id));
   const path = s.path;
   kids.forEach(id => exits.set(id, 'delete'));
-  setInbox({ checked: useInbox.getState().checked.filter(c => !kids.includes(c)) });
-  const done = deleteCards(kids, { silent: true });
+  const checked = useInbox.getState().checked;
+  setInbox({ checked: checked.filter(c => !kids.includes(c)) });
+  const done = exec({ op: 'unsplit', id: parent.id }, unsplitPatch(parent.id, kids));
   // 原条目当帧出现在列表里：滚到它并闪一下
   requestAnimationFrame(() => reveal(parent.id));
-  if (!(await done)) return;
+  try {
+    await done;
+  } catch (e) {
+    // 拆出的卡当帧回来：不再播离场，勾选还原
+    kids.forEach(id => exits.delete(id));
+    setInbox({ checked: [...new Set([...useInbox.getState().checked, ...checked.filter(c => kids.includes(c))])] });
+    toastError(e);
+    return;
+  }
   toast({
     type: 'success',
     title: `已撤销拆解 #${parent.id}`,

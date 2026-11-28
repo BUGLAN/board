@@ -4622,10 +4622,73 @@ fn inbox_count_leaves_out_entries_already_split() {
     assert_eq!(counts(&s), (3, 0, 1, 4, 4), "原条目并进拆出的那组，单独记在 split");
     exec(&mut s, T0 + 2 * S, &Actor::human(), Cmd::Move { id: x, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
     assert_eq!(counts(&s), (2, 0, 1, 3, 3), "拆出的卡整理走了，原条目照样不算");
-    // 撤销拆解 = 删掉拆出的卡：原条目回来
+    // 拆出的卡都删了：原条目照样隐藏，不回到「未整理」（default/main#735）；没有组可显示，「已拆分」也不算它
     exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: x }).unwrap();
     exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: y }).unwrap();
+    assert_eq!(counts(&s), (1, 0, 0, 1, 2));
+    // 从回收站恢复一张：又并进那一组
+    exec(&mut s, T0 + 4 * S, &Actor::human(), Cmd::Restore { id: y }).unwrap();
+    assert_eq!(counts(&s), (2, 0, 1, 3, 3));
+    // 撤销拆解：原条目回来
+    exec(&mut s, T0 + 5 * S, &Actor::human(), Cmd::Unsplit { id: a }).unwrap();
     assert_eq!(counts(&s), (2, 0, 0, 2, 2));
+}
+
+/// 拆解过的原条目一直记着「拆解过」（split_at），只有撤销拆解清掉（default/main#735）
+#[test]
+fn split_entry_stays_hidden_until_unsplit() {
+    let mut s = store();
+    let a = inbox_card(&mut s, T0, &Actor::human(), "原始需求", None).unwrap().card.id;
+    assert_eq!(card(&s, a).card.split_at, None);
+    let x = inbox_card(&mut s, T0 + S, &Actor::agent("mbp/opus-5.5"), "拆出来的一", Some(a)).unwrap().card.id;
+    let y = inbox_card(&mut s, T0 + 2 * S, &Actor::agent("mbp/opus-5.5"), "拆出来的二", Some(a)).unwrap().card.id;
+    assert_eq!(card(&s, a).card.split_at, Some(T0 + S), "记第一次拆出的时间，再拆不改");
+    // 普通删除拆出的卡（单张、批量）都不清
+    exec(&mut s, T0 + 3 * S, &Actor::human(), Cmd::Delete { id: x }).unwrap();
+    s.write(T0 + 3 * S, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.card_batch(&b, &Actor::human(), &CardBatchOp::Delete, &[y])
+    })
+    .unwrap();
+    assert_eq!(card(&s, a).card.split_at, Some(T0 + S), "删光拆出的卡，原条目照样拆解过");
+    // 没有拆出的卡可撤：拒绝
+    let e = exec(&mut s, T0 + 4 * S, &Actor::human(), Cmd::Unsplit { id: a }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    // 恢复拆出的卡：原条目已经记着，不变；撤销拆解后再恢复，重新记上
+    exec(&mut s, T0 + 5 * S, &Actor::human(), Cmd::Restore { id: x }).unwrap();
+    exec(&mut s, T0 + 5 * S, &Actor::human(), Cmd::Restore { id: y }).unwrap();
+    assert_eq!(card(&s, a).card.split_at, Some(T0 + S));
+    // agent 不能撤销拆解
+    let e = exec(&mut s, T0 + 6 * S, &Actor::agent("mbp/opus-5.5"), Cmd::Unsplit { id: a }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    // 有一张整理走了：拒绝，什么都不动
+    exec(&mut s, T0 + 6 * S, &Actor::human(), Cmd::Move { id: y, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    let e = exec(&mut s, T0 + 7 * S, &Actor::human(), Cmd::Unsplit { id: a }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
+    assert!(e.message.contains(&format!("#{y}")), "{}", e.message);
+    assert_eq!(card(&s, x).card.column, INBOX, "被拒绝时拆出的卡不动");
+    assert_eq!(card(&s, a).card.split_at, Some(T0 + S));
+    // 拆出的卡都在「未整理」里：一条命令删掉拆出的卡、清掉拆解过，原条目记一条动态
+    exec(&mut s, T0 + 8 * S, &Actor::human(), Cmd::Delete { id: y }).unwrap();
+    let z = inbox_card(&mut s, T0 + 8 * S, &Actor::agent("mbp/opus-5.5"), "拆出来的三", Some(a)).unwrap().card.id;
+    let order = |s: &Store| s.read(|r| { let b = r.resolve(B)?; Ok(r.board_snapshot(&b, T0, true)?.cols[INBOX].clone()) }).unwrap();
+    let before = order(&s);
+    let d = exec(&mut s, T0 + 9 * S, &Actor::human(), Cmd::Unsplit { id: a }).unwrap();
+    assert_eq!(d.card.split_at, None);
+    assert!(d.activity.last().unwrap().text.contains(&format!("撤销拆解，拆出的 #{x}、#{z} 移进回收站")), "{:?}", d.activity.last());
+    assert_eq!(order(&s), vec![a], "拆出的卡进了回收站");
+    // 「恢复拆出的卡」：回到原来的位置，原条目重新记上
+    s.write(T0 + 10 * S, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.card_batch(&b, &Actor::human(), &CardBatchOp::Restore, &[x, z])
+    })
+    .unwrap();
+    assert_eq!(order(&s), before, "恢复到撤销前的位置");
+    assert_eq!(card(&s, a).card.split_at, Some(T0 + 10 * S));
+    // 不在「未整理」里的：拒绝
+    exec(&mut s, T0 + 11 * S, &Actor::human(), Cmd::Move { id: a, column: "todo".into(), top: false, index: None, order: None, before: None, after: None }).unwrap();
+    let e = exec(&mut s, T0 + 12 * S, &Actor::human(), Cmd::Unsplit { id: a }).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Usage);
 }
 
 #[test]

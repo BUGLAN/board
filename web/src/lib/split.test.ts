@@ -14,6 +14,13 @@ const board = () =>
     { id: 1, createdAt: 10 },
   ]);
 
+// 同一块白板，服务端记着「拆解过」（default/main#735）：1、9 拆过，其余没拆过
+const marked = () => {
+  const b = board();
+  for (const c of Object.values(b.cards)) b.cards[c.id] = { ...c, splitAt: c.id === 1 || c.id === 9 ? 30 : null };
+  return b;
+};
+
 describe('隐藏已经拆出卡的原条目', () => {
   it('kidsOf：每张卡拆出了哪些，按编号', () => {
     const k = kidsOf(board().cards);
@@ -36,12 +43,28 @@ describe('隐藏已经拆出卡的原条目', () => {
     expect(visibleInbox(b).map(c => c.id)).toEqual([2]);
   });
 
-  it('拆出的卡都删了（撤销拆解，进了回收站、不在白板上）：原条目回来', () => {
+  it('旧服务端（没有 splitAt）：拆出的卡都删了，原条目回来', () => {
     const b = board();
     delete b.cards[3];
     delete b.cards[4];
     b.cols.inbox = [1, 2, 5];
     expect(visibleInbox(b).map(c => c.id)).toEqual([1, 2, 5]);
+  });
+
+  it('看 splitAt：拆出的卡都删了（不在白板上），原条目照样隐藏（default/main#735）', () => {
+    const b = marked();
+    expect(visibleInbox(b).map(c => c.id)).toEqual([2, 3, 4, 5]);
+    delete b.cards[3];
+    delete b.cards[4];
+    b.cols.inbox = [1, 2, 5];
+    expect([...hiddenEntries(b.cards, b.cols.inbox)]).toEqual([1]);
+    expect(visibleInbox(b).map(c => c.id)).toEqual([2, 5]);
+  });
+
+  it('看 splitAt：撤销拆解清掉之后原条目回来；快照省略的拆出卡不再决定隐藏', () => {
+    const b = marked();
+    b.cards[1] = { ...b.cards[1], splitAt: null };
+    expect(visibleInbox({ ...b, splitOmitted: { 1: 2 } }).map(c => c.id)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('快照还没到：空', () => {
@@ -95,14 +118,28 @@ describe('canUndoSplit（能不能撤销拆解）', () => {
 });
 
 describe('撤销拆解的补丁：拆出的卡当帧拿掉，原条目当帧回来', () => {
-  it('removeCard 补丁叠上去之后原条目可见；补丁重复执行结果相同', async () => {
+  it('unsplitPatch 叠上去之后原条目可见；补丁重复执行结果相同（default/main#735）', async () => {
     vi.resetModules();
     const D = await import('../store/data');
-    const b = board();
-    const once = D.removeCard(4).board!(D.removeCard(3).board!(b));
+    const p = D.unsplitPatch(1, [3, 4]);
+    const once = p.board!(marked());
     expect(visibleInbox(once).map(c => c.id)).toEqual([1, 2, 5]);
-    const again = D.removeCard(4).board!(D.removeCard(3).board!(once));
-    expect(visibleInbox(again).map(c => c.id)).toEqual([1, 2, 5]);
+    expect(once.cards[1].splitAt).toBeNull();
+    expect(once.trash).toBe(2);
+    const again = p.board!(once);
+    expect(again).toEqual(once);
+  });
+
+  it('只删拆出的卡不让原条目回来；恢复拆出的卡后原条目又记上拆解过、并进那一组', async () => {
+    vi.resetModules();
+    const D = await import('../store/data');
+    const gone = D.removeCard(4).board!(D.removeCard(3).board!(marked()));
+    expect(visibleInbox(gone).map(c => c.id)).toEqual([2, 5]);
+    const undone = D.unsplitPatch(1, [3, 4]).board!(D.removeCard(4).board!(D.removeCard(3).board!(marked())));
+    expect(visibleInbox(undone).map(c => c.id)).toEqual([1, 2, 5]);
+    const back = D.restoreCard({ id: 3, column: 'inbox', pos: 2, movedAt: 99, card: marked().cards[3] }).board!(undone);
+    expect(back.cards[1].splitAt).toBe(99);
+    expect(visibleInbox(back).map(c => c.id)).toEqual([2, 3, 5]);
   });
 });
 

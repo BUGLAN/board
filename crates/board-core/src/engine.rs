@@ -177,6 +177,12 @@ pub enum Cmd {
         id: i64,
         on: bool,
     },
+    /// 撤销拆解（仅人，界面「未整理」拆解组的「撤销拆解」；default/main#735）：id 是「未整理」里拆解过的原条目，
+    /// 拆出的卡（白板上的）至少一张、而且都还在「未整理」里时才行。拆出的卡移进回收站（同 Delete），清掉原条目的
+    /// 「拆解过」（split_at），原条目回到「未整理」的列表里。都在一个写事务里，任何一步被拒绝都不留下
+    Unsplit {
+        id: i64,
+    },
 }
 
 /// 界面的通用批量卡片操作
@@ -321,6 +327,10 @@ impl<'a> W<'a> {
                      VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, ?7, ?8, ?9)",
                     params![b, id, title, body.as_deref().unwrap_or_default().trim(), col, self.now, actor.kind.as_str(), actor.name, from],
                 )?;
+                // 原条目记上「拆解过」：之后删掉拆出的卡它也不回到「未整理」的列表里，只有撤销拆解才回来（default/main#735）
+                if let Some(f) = from {
+                    self.mark_split(b, f)?;
+                }
                 // 新建弹窗里先上传的附件归到这张卡片
                 self.bind_attachments(b, id, body.as_deref().unwrap_or_default())?;
                 self.place(b, id, None, &col, if top { At::Top } else { At::Bottom })?;
@@ -843,6 +853,12 @@ impl<'a> W<'a> {
                 )?;
                 self.place(b, id, Some(&saved), &target, at)?;
                 self.changed = true;
+                // 恢复的是拆出的卡：原条目还在就重新记上「拆解过」，又并进这一组（撤销拆解之后点「恢复拆出的卡」）
+                let split_from: Option<i64> =
+                    self.tx.query_row("SELECT split_from FROM cards WHERE board = ?1 AND id = ?2", params![b, id], |r| r.get(0))?;
+                if let Some(f) = split_from.filter(|f| *f != id) {
+                    self.mark_split(b, f)?;
+                }
                 let text = if target == saved {
                     format!("从回收站恢复，放回「{}」", flow.name(&target))
                 } else if flow.get(&saved).is_none() {
@@ -979,6 +995,46 @@ impl<'a> W<'a> {
                     self.track(b, id, actor, if on { "later" } else { "unlater" }, text)?;
                     self.changed = true;
                 }
+                id
+            }
+            /* ---------------- 撤销拆解（仅人，只在「未整理」里；default/main#735） ---------------- */
+            Cmd::Unsplit { id } => {
+                if !actor.is_human() {
+                    return Err(BoardError::usage("撤销拆解只能在界面上做"));
+                }
+                self.ensure_not_in_trash(board, id)?;
+                let r = self.row(b, id)?;
+                if r.col != INBOX {
+                    return Err(BoardError::usage(format!("#{id} 在「{}」，不在「{INBOX_NAME}」里", flow.name(&r.col))));
+                }
+                let kids: Vec<(i64, String)> = self.collect(
+                    "SELECT id, col FROM cards WHERE board = ?1 AND split_from = ?2 AND id <> ?2 AND deleted_at IS NULL ORDER BY id",
+                    params![b, id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                if kids.is_empty() {
+                    return Err(BoardError::usage(format!("#{id} 没有拆出的卡：不用撤销拆解")));
+                }
+                if let Some((k, col)) = kids.iter().find(|(_, col)| col != INBOX) {
+                    return Err(BoardError::usage(format!(
+                        "拆出的 #{k} 已经整理到「{}」：拆出的卡都还在「{INBOX_NAME}」里时才能撤销拆解",
+                        flow.name(col)
+                    )));
+                }
+                // 一张张删，后一张的名次会因前一张已进回收站而塌缩：先记下删之前的名次，删完写回（同批量删除），
+                // 「恢复拆出的卡」时放回原来的位置
+                let mut pos = Vec::with_capacity(kids.len());
+                for (k, _) in &kids {
+                    pos.push(self.rank(b, INBOX, *k)?.unwrap_or(0) as i64);
+                }
+                for ((k, _), p) in kids.iter().zip(pos) {
+                    self.exec(board, actor, Cmd::Delete { id: *k })?;
+                    self.tx.execute("UPDATE cards SET del_pos = ?1 WHERE board = ?2 AND id = ?3", params![p, b, k])?;
+                }
+                self.tx.execute("UPDATE cards SET split_at = NULL WHERE board = ?1 AND id = ?2", params![b, id])?;
+                let names: Vec<String> = kids.iter().map(|(k, _)| format!("#{k}")).collect();
+                self.track(b, id, actor, "unsplit", &format!("撤销拆解，拆出的 {} 移进回收站", names.join("、")))?;
+                self.changed = true;
                 id
             }
             Cmd::Seen { id } => {
@@ -1313,6 +1369,14 @@ impl<'a> W<'a> {
         Ok(())
     }
 
+    /// 原条目记上「拆解过」（default/main#735）：已经记过的不变（时间留第一次的）。原条目已经永久删掉时什么都不做
+    fn mark_split(&mut self, b: i64, id: i64) -> Result<()> {
+        if self.tx.execute("UPDATE cards SET split_at = ?1 WHERE board = ?2 AND id = ?3 AND split_at IS NULL", params![self.now, b, id])? > 0 {
+            self.changed = true;
+        }
+        Ok(())
+    }
+
     fn seen_at(&self, b: i64, id: i64) -> Result<Option<i64>> {
         Ok(self
             .tx
@@ -1633,6 +1697,7 @@ fn blank_card() -> Card {
         later_at: None,
         split_from: None,
         copied_from: None,
+        split_at: None,
     }
 }
 

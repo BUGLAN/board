@@ -705,6 +705,10 @@ pub struct Card {
     /// 收起的条目不在「未整理」的列表里显示，状态、位置、标签、描述、评论都不动；离开「未整理」时清掉。旧服务端没有这个字段
     #[serde(default)]
     pub later_at: Option<i64>,
+    /// 拆解过（default/main#735）：第一次有卡 `--from` 它建出来的时间；没拆过为空。「未整理」里拆解过的原条目一直隐藏
+    /// （并进拆出的那组），删掉拆出的卡也不变，只有「撤销拆解」（[`crate::engine::Cmd::Unsplit`]）清掉。旧服务端没有这个字段
+    #[serde(default)]
+    pub split_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -832,8 +836,8 @@ pub struct BoardSnapshot {
     #[serde(default)]
     pub omitted: BTreeMap<String, usize>,
     /// 拆出的卡被上面的省略挡在快照外的原条目：原条目 ID → 省略掉的拆出卡张数（不含回收站里的）。
-    /// 界面靠快照里的「拆自」认原条目拆过没有（未整理里隐藏、能不能撤销拆解），拆出的卡全在被省略的终点状态里时
-    /// 就认不出，要看这里（default/main#534）。取全量或没有省略时为空；旧服务端没有这个字段
+    /// 界面靠快照里的「拆自」算拆成了几张、能不能撤销拆解，拆出的卡全在被省略的终点状态里时就认不出，要看这里
+    /// （default/main#534；隐藏原条目现在看卡片的 split_at，旧服务端靠它）。取全量或没有省略时为空；旧服务端没有这个字段
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub split_omitted: BTreeMap<i64, usize>,
     /// 最近的事件（新的在后）

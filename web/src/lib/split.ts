@@ -1,10 +1,11 @@
 /* ==========================================================================
    「未整理」里的拆解组（default/main#285）
-   - 原条目拆出卡之后（白板上有「拆自」是它的卡，不含回收站里的），它不再单独占一行：
+   - 原条目拆出卡之后（卡片的 splitAt：拆解过），它不再单独占一行：
      拆出的、还在未整理里的卡成组显示，组的开头写「拆自 #ID 标题」
-   - 拆出的卡都还在未整理里时可以「撤销拆解」：删掉拆出的卡，原条目回到列表里
-   - 拆出的卡整理走了，原条目照样隐藏（计数也不算它）；整理到终点状态、被快照省略了也一样：
-     快照的 splitOmitted 记着原条目被省略了几张拆出的卡（default/main#534）
+   - 拆出的卡都还在未整理里时可以「撤销拆解」：服务端一条命令删掉拆出的卡、清掉 splitAt，原条目回到列表里
+   - 拆出的卡整理走了、删掉了，原条目照样隐藏（计数也不算它；default/main#735）：只有撤销拆解让它回来
+   - 旧服务端没有 splitAt：按原来的办法，白板上有「拆自」是它的卡（不含回收站里的），或者快照的 splitOmitted
+     记着原条目被省略了几张拆出的卡（default/main#534）
    都是纯函数：输入白板上的卡片，输出隐藏哪些、怎么成组
    ========================================================================== */
 import type { BoardSnapshot, Card } from './types';
@@ -28,10 +29,14 @@ export function kidsOf(cards: Record<number, Card> | undefined): Map<number, num
   return m;
 }
 
-/** 「未整理」里隐藏的原条目：已经拆出了卡的（快照里的，或被快照省略的） */
+/** 「未整理」里隐藏的原条目：拆解过的（splitAt）。旧服务端没有 splitAt：已经拆出了卡的（快照里的，或被快照省略的） */
 export function hiddenEntries(cards: Record<number, Card> | undefined, inbox: number[], omitted?: Omitted): Set<number> {
   const kids = kidsOf(cards);
-  return new Set(inbox.filter(id => kids.has(id) || omittedKids(omitted, id) > 0));
+  const split = (id: number) => {
+    const at = cards?.[id]?.splitAt;
+    return at !== undefined ? at != null : kids.has(id) || omittedKids(omitted, id) > 0;
+  };
+  return new Set(inbox.filter(split));
 }
 
 /** 「未整理」里显示的条目（去掉已经拆出卡的原条目、收到「稍后再做」里的），顺序同 inbox */

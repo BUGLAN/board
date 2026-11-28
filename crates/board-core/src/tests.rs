@@ -2437,8 +2437,8 @@ fn hot_queries_use_their_indexes() {
     };
     has("SELECT COUNT(*) FROM cards WHERE deleted_at IS NULL AND holder IS NOT NULL AND COALESCE(beat_at, claimed_at, 0) + 50000 <= 100000", "cards_held");
     has(
-        "SELECT COUNT(*) FROM cards p WHERE p.board = 1 AND p.col = 'inbox' AND p.deleted_at IS NULL
-           AND (p.later_at IS NOT NULL OR EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL))",
+        "SELECT COUNT(*) FROM cards p WHERE p.board = 1 AND p.col = 'inbox' AND p.later_at IS NULL AND p.deleted_at IS NULL AND p.split_at IS NOT NULL
+           AND EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL)",
         "cards_split",
     );
     has("SELECT id FROM cards WHERE board = 1 AND split_from = 2 AND deleted_at IS NULL", "cards_split");
@@ -3044,6 +3044,38 @@ fn old_cards_are_not_later() {
     rusqlite::Connection::open(&path).unwrap().execute_batch("ALTER TABLE cards DROP COLUMN later_at").unwrap();
     let s = Store::open(&path).unwrap();
     assert!(snapshot(&s, B, T0).cards.values().all(|c| c.later_at.is_none()));
+}
+
+/// 旧数据库的卡片没有 split_at 列：有拆出的卡（白板上的、回收站里的）的原条目补上「拆解过」，
+/// 拆出的卡都删了的原条目升级后也不回到「未整理」（default/main#735）
+#[test]
+fn old_split_entries_are_marked_split() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    let from = |title: &str, from: i64| Cmd::New { title: title.into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: Some(from) };
+    let (a, c, d) = {
+        let mut s = Store::open(&path).unwrap();
+        s.ensure_default(T0).unwrap();
+        let a = exec(&mut s, B, &human(), T0, inbox_new("拆出的卡还在")).unwrap().card.id;
+        let c = exec(&mut s, B, &human(), T0, inbox_new("拆出的卡都删了")).unwrap().card.id;
+        let d = exec(&mut s, B, &human(), T0, inbox_new("没拆过")).unwrap().card.id;
+        exec(&mut s, B, &alpha(), T0 + 5, from("一", a)).unwrap();
+        exec(&mut s, B, &alpha(), T0 + 9, from("二", a)).unwrap();
+        let z = exec(&mut s, B, &alpha(), T0 + 7, from("三", c)).unwrap().card.id;
+        exec(&mut s, B, &human(), T0 + 8, Cmd::Delete { id: z }).unwrap();
+        (a, c, d)
+    };
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("ALTER TABLE cards DROP COLUMN split_at; DELETE FROM meta WHERE key = 'step:split_at'")
+        .unwrap();
+    let s = Store::open(&path).unwrap();
+    let snap = snapshot(&s, B, T0);
+    assert_eq!(snap.cards[&a].split_at, Some(T0 + 5), "取第一张拆出卡的建卡时间");
+    assert_eq!(snap.cards[&c].split_at, Some(T0 + 7), "拆出的卡在回收站里也算");
+    assert_eq!(snap.cards[&d].split_at, None);
+    let b = s.read(|r| r.workspace(T0)).unwrap().projects[0].boards[0].clone();
+    assert_eq!((b.counts[INBOX], b.counts[SPLIT]), (3, 1), "未整理：没拆过的一条加两张拆出的卡；c 哪里都不算");
 }
 
 /// 迁移不是原子时留下的半升级库（#509）：旧版同一批加 repo、branch，只加了 repo 就断掉——下次打开逐列补上 branch，

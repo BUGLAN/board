@@ -597,9 +597,10 @@ impl<'a> W<'a> {
                 .optional()?;
             let flow = flow_of(self.tx, board.id)?;
             if let Some((col, None)) = col {
+                // 拆解过的（default/main#735，和「未整理」隐藏原条目同一条规则）：算处理过了
                 let split = col == INBOX
                     && self.tx.query_row(
-                        "SELECT COUNT(*) > 0 FROM cards WHERE board = ?1 AND split_from = ?2 AND deleted_at IS NULL",
+                        "SELECT split_at IS NOT NULL FROM cards WHERE board = ?1 AND id = ?2",
                         params![board.id, prev],
                         |r| r.get::<_, bool>(0),
                     )?;

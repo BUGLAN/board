@@ -334,6 +334,7 @@ fn cmd_json(cmd: &Cmd) -> Value {
         | Cmd::Merge { .. }
         | Cmd::Seen { .. }
         | Cmd::Later { .. }
+        | Cmd::Unsplit { .. }
         | Cmd::Copy { .. } => unreachable!("CLI 不构造这条命令"),
     }
 }

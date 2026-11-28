@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS cards (
   copied_from     INTEGER,
   -- 「稍后再做」（default/main#303）：人把「未整理」里的这一条收起来的时间；NULL = 没收起。离开「未整理」时清掉
   later_at        INTEGER,
+  -- 拆解过（default/main#735）：第一次有卡 --from 它建出来的时间；NULL = 没拆过。「未整理」里拆解过的原条目一直隐藏，
+  -- 删掉拆出的卡也不清，只有「撤销拆解」（Cmd::Unsplit）清掉；从回收站恢复一张拆出的卡时重新记上
+  split_at        INTEGER,
   -- 在回收站里：删除的时间；NULL = 正常（PRD §8 规则 10）。回收站里的卡片和它的动态、评论、附件都还在，一直留着，只有人「永久删除」（Cmd::Purge）才真的删掉
   deleted_at      INTEGER,
   -- 回收站里：谁删的
@@ -528,6 +531,16 @@ impl Store {
         if !has_split {
             conn.execute_batch("ALTER TABLE cards ADD COLUMN split_from INTEGER")?;
         }
+        // 旧数据库的卡片没有「拆解过」（default/main#735）：有拆出的卡（白板上的、回收站里的都算）的原条目补上，
+        // 时间取第一张拆出卡的建卡时间。原来靠数白板上的拆出卡，拆出的卡删光后原条目又回到「未整理」
+        let fresh = !add_cols(conn, "cards", &[("split_at", "INTEGER")])?.is_empty();
+        step(conn, "split_at", fresh, |c| {
+            c.execute_batch(
+                "UPDATE cards SET split_at = (SELECT MIN(k.created_at) FROM cards k WHERE k.board = cards.board AND k.split_from = cards.id AND k.id <> cards.id)
+                 WHERE split_at IS NULL
+                   AND EXISTS (SELECT 1 FROM cards k WHERE k.board = cards.board AND k.split_from = cards.id AND k.id <> cards.id)",
+            )
+        })?;
         // 旧数据库的卡片没有「复制自」
         let has_copy: bool =
             conn.query_row("SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name = 'copied_from'", [], |r| r.get::<_, i64>(0))? > 0;
@@ -832,12 +845,11 @@ impl<'a> R<'a> {
                     let (col, n) = c?;
                     *b.counts.entry(col).or_default() += n;
                 }
-                // 「未整理」的计数和界面的 visibleInbox 一致：拆出卡的原条目并进拆出的那组、
+                // 「未整理」的计数和界面的 visibleInbox 一致：拆解过的原条目（split_at）并进拆出的那组、
                 // 收到「稍后再做」的都从 inbox 里减掉（两者重合时只减一次），收起的单独记在 later
                 let hidden: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM cards p WHERE p.board = ?1 AND p.col = ?2 AND p.deleted_at IS NULL
-                       AND (p.later_at IS NOT NULL
-                            OR EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL))",
+                       AND (p.later_at IS NOT NULL OR p.split_at IS NOT NULL)",
                     params![id, INBOX],
                     |r| r.get(0),
                 )?;
@@ -850,9 +862,10 @@ impl<'a> R<'a> {
                     |r| r.get(0),
                 )?;
                 b.counts.insert(LATER.to_string(), later);
+                // 「已拆分」只算还有拆出的卡在白板上的（有组可显示）：拆出的卡都删了的原条目照样隐藏，但哪里都不算
                 let split: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM cards p WHERE p.board = ?1 AND p.col = ?2 AND p.later_at IS NULL
-                       AND p.deleted_at IS NULL
+                       AND p.deleted_at IS NULL AND p.split_at IS NOT NULL
                        AND EXISTS (SELECT 1 FROM cards k WHERE k.board = p.board AND k.split_from = p.id AND k.id <> p.id AND k.deleted_at IS NULL)",
                     params![id, INBOX],
                     |r| r.get(0),
@@ -1318,7 +1331,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
                 c.deleted_at, c.deleted_by_kind, c.deleted_by_name, c.del_col, c.del_pos, c.del_from,
                 c.split_from, c.later_at,
                 (SELECT a.agent FROM agents a WHERE a.name = c.holder),
-                c.copied_from
+                c.copied_from, c.split_at
          FROM cards c WHERE 1 = 1 {cond} {skip} ORDER BY {COL_ORDER}, c.pos, c.id"
     );
     let mut st = conn.prepare(&sql)?;
@@ -1354,6 +1367,7 @@ fn cards_from(conn: &Connection, cond: &str, p: impl rusqlite::Params, skip: &[i
             split_from: r.get(28)?,
             copied_from: r.get(31)?,
             later_at: r.get(29)?,
+            split_at: r.get(32)?,
         };
         let by_kind: Option<String> = r.get(23)?;
         let row = TrashRow {
