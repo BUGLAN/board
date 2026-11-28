@@ -10,7 +10,9 @@
       （连同各自的 package-lock.json）、src-tauri/tauri.conf.json
    5. 把第 3 步生成的这一节写到 CHANGELOG.md 最上面
    6. 提交「chore: 发版 vX.Y.Z」，打附注 tag vX.Y.Z（说明里是这一版的 changelog）
-   7. --push：推 main，再推 tag（推 tag 只触发 GitHub Release 构建，不部署服务端；服务端部署由服务机的 release-lan.sh 调 deploy-lan.sh 完成，见 docs/deploy.md「升级」）；不带时只打印推送命令。
+   7. --push：推 main，再推 tag；然后等到这一版的 Release 附件 board-sha256.txt 可以下载（最多 60 分钟）才返回。
+      推 tag 只触发 GitHub Release 构建，不部署服务端；正常发版在服务机运行 release-lan.sh，它等本脚本成功后再调 deploy-lan.sh。
+      不带 --push 时只创建本地提交和 tag，打印推送命令。
       推 main 被拒（发版途中别人推了 main）：撤掉这次的发版提交和 tag，重新拉到最新再发一次；第二次还被拒才停下
    8. 推 tag 之前运行 board versions sync vX.Y.Z：按 git 历史给这一版的卡片打上版本标签（PRD §10.15）。
       只是方便：没装 board、没登录、服务端还不认这个接口时只提示一句，不影响发版
@@ -29,6 +31,16 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
 const push = args.includes('--push');
+const VERSION_FILES = [
+  'Cargo.toml',
+  'Cargo.lock',
+  'package.json',
+  'package-lock.json',
+  'web/package.json',
+  'web/package-lock.json',
+  'src-tauri/tauri.conf.json',
+];
+const RELEASE_FILES = [...VERSION_FILES, 'CHANGELOG.md'];
 /** 推 main 被拒后自动重发的那一次（脚本自己加的参数） */
 const retried = args.includes('--retried');
 const version = args.find(a => !a.startsWith('--'));
@@ -57,6 +69,50 @@ function syncVersions(tag) {
 function fail(msg) {
   console.error(`发版中止：${msg}`);
   process.exit(1);
+}
+function why(e) {
+  return String(e.stderr || e.message || e).trim();
+}
+function positiveMs(name, fallback) {
+  const n = Number(process.env[name] ?? fallback);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+function githubRepo() {
+  const remote = git('remote', 'get-url', 'origin');
+  const m = remote.match(/github\.com[:/]([^/]+)\/(.+)$/);
+  if (!m) fail(`认不出 GitHub 仓库地址：${remote}`);
+  return `${m[1]}/${m[2].replace(/\.git$/, '')}`;
+}
+
+/** 推完 tag 后等公开的校验文件真正可下载：安装脚本和 board update 第一步就取它 */
+async function waitForReleaseAssets(tag) {
+  const url = `https://github.com/${githubRepo()}/releases/download/${tag}/board-sha256.txt`;
+  const timeout = positiveMs('BOARD_RELEASE_ASSET_TIMEOUT_MS', 60 * 60 * 1000);
+  const interval = positiveMs('BOARD_RELEASE_ASSET_POLL_MS', 15 * 1000);
+  const deadline = Date.now() + timeout;
+  let attempt = 0;
+  let last = '';
+  console.log(`等待 ${tag} 的 Release 附件可下载（最多 ${Math.ceil(timeout / 60_000)} 分钟）：${url}`);
+  for (;;) {
+    attempt += 1;
+    try {
+      const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(30_000) });
+      if (res.ok) {
+        console.log(`✓ ${tag} 的 board-sha256.txt 已可下载`);
+        return;
+      }
+      last = `HTTP ${res.status}`;
+    } catch (e) {
+      last = why(e).split('\n')[0];
+    }
+    if (Date.now() >= deadline)
+      fail(
+        `${tag} 的 Release 在 ${Math.ceil(timeout / 60_000)} 分钟内没有就绪（最后一次：${last}）。` +
+          `tag 已经推送，服务端没有部署；Release 出来后运行 deploy-lan.sh。`,
+      );
+    if (attempt === 1 || attempt % 4 === 0) console.log(`  第 ${attempt} 次检查还没好（${last}），继续等…`);
+    await new Promise(r => setTimeout(r, Math.min(interval, Math.max(1, deadline - Date.now()))));
+  }
 }
 
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) fail('用法：npm run release -- <x.y.z> [--dry-run] [--push]');
@@ -178,58 +234,67 @@ function edit(file, fn) {
   const path = join(root, file);
   const before = readFileSync(path, 'utf8');
   const after = fn(before);
-  if (after === before) fail(`${file} 里没找到要改的版本号`);
+  if (after === before) throw new Error(`${file} 里没找到要改的版本号`);
   writeFileSync(path, after);
 }
 
-// Cargo.toml：只改 [workspace.package] 这一节的 version
-edit('Cargo.toml', s => {
-  const start = s.indexOf('[workspace.package]');
-  if (start < 0) return s;
-  const next = s.indexOf('\n[', start + 1);
-  const end = next < 0 ? s.length : next;
-  const body = s.slice(start, end).replace(/^(version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
-  return s.slice(0, start) + body + s.slice(end);
-});
-// Cargo.lock 里本仓库 crate 的版本号，否则 CI 的 cargo test --locked 不过
-run('cargo', ['update', '--workspace']);
-run('cargo', ['metadata', '--locked', '--no-deps', '--format-version', '1']);
-// package.json 和 package-lock.json（只改版本号，不提交、不打 tag）
-for (const dir of ['.', 'web']) {
-  execFileSync(NPM, ['version', version, '--no-git-tag-version', '--allow-same-version'], {
-    cwd: join(root, dir),
-    stdio: ['ignore', 'ignore', 'inherit'],
-    // Node 22 起 Windows 上直接 spawn .cmd 会 EINVAL，必须经过 shell
-    shell: process.platform === 'win32',
+const baseHead = git('rev-parse', 'HEAD');
+let madeCommit = false;
+let madeTag = false;
+try {
+  // Cargo.toml：只改 [workspace.package] 这一节的 version
+  edit('Cargo.toml', s => {
+    const start = s.indexOf('[workspace.package]');
+    if (start < 0) return s;
+    const next = s.indexOf('\n[', start + 1);
+    const end = next < 0 ? s.length : next;
+    const body = s.slice(start, end).replace(/^(version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
+    return s.slice(0, start) + body + s.slice(end);
   });
+  // Cargo.lock 里本仓库 crate 的版本号，否则 CI 的 cargo test --locked 不过
+  run('cargo', ['update', '--workspace']);
+  run('cargo', ['metadata', '--locked', '--no-deps', '--format-version', '1']);
+  // package.json 和 package-lock.json（只改版本号，不提交、不打 tag）
+  for (const dir of ['.', 'web']) {
+    execFileSync(NPM, ['version', version, '--no-git-tag-version', '--allow-same-version'], {
+      cwd: join(root, dir),
+      stdio: ['ignore', 'ignore', 'inherit'],
+      // Node 22 起 Windows 上直接 spawn .cmd 会 EINVAL，必须经过 shell
+      shell: process.platform === 'win32',
+    });
+  }
+  edit('src-tauri/tauri.conf.json', s => s.replace(/^(\s*"version":\s*")[^"]*(")/m, `$1${version}$2`));
+
+  /* ---------- 5. 写 CHANGELOG.md（第 3 步生成的这一节） ---------- */
+
+  const HEADER = '# 更新日志\n\n版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。\n';
+  const file = join(root, 'CHANGELOG.md');
+  const old = existsSync(file) ? readFileSync(file, 'utf8') : HEADER;
+  const at = old.indexOf('\n## ');
+  writeFileSync(file, at < 0 ? `${old.trimEnd()}\n\n${notes}` : `${old.slice(0, at + 1)}${notes}\n${old.slice(at + 1)}`);
+
+  /* ---------- 6. 提交、打 tag ---------- */
+
+  git('add', ...RELEASE_FILES);
+  git('commit', '-m', `chore: 发版 ${tag}`, '-m', `版本号改成 ${version}，CHANGELOG.md 加上 ${tag} 一节。`);
+  madeCommit = true;
+  // tag 说明：标题 + 这一版的 changelog（去掉「## vX.Y.Z · 日期」一行）。
+  // --cleanup=whitespace：默认会把 # 开头的行当注释删掉，「### 新功能」这类小标题就没了
+  git('tag', '-a', tag, '--cleanup=whitespace', '-m', `Board ${tag}`, '-m', notes.replace(/^## .*\n+/, '').trimEnd());
+  madeTag = true;
+} catch (e) {
+  const reason = why(e);
+  if (madeTag) tryGit('tag', '-d', tag);
+  if (madeCommit) tryGit('reset', '-q', '--hard', baseHead);
+  else {
+    tryGit('reset', '-q');
+    tryGit('checkout', '--', ...RELEASE_FILES);
+  }
+  const left = tryGit('status', '--porcelain');
+  if (left === null) fail(`改版本号或提交 tag 时失败，已尝试还原，但无法确认工作区状态：\n${reason}`);
+  if (left) fail(`改版本号或提交 tag 时失败，已尝试还原，工作区仍有没还原的改动：\n${reason}\n${left}`);
+  fail(`改版本号或提交 tag 时失败，已还原工作区和本地 tag：\n${reason}`);
 }
-edit('src-tauri/tauri.conf.json', s => s.replace(/^(\s*"version":\s*")[^"]*(")/m, `$1${version}$2`));
-
-/* ---------- 5. 写 CHANGELOG.md（第 3 步生成的这一节） ---------- */
-
-const HEADER = '# 更新日志\n\n版本号规则见 [AGENTS.md](AGENTS.md)「发版」。每一版由 `npm run release` 从上一版之后的提交生成。\n';
-const file = join(root, 'CHANGELOG.md');
-const old = existsSync(file) ? readFileSync(file, 'utf8') : HEADER;
-const at = old.indexOf('\n## ');
-writeFileSync(file, at < 0 ? `${old.trimEnd()}\n\n${notes}` : `${old.slice(0, at + 1)}${notes}\n${old.slice(at + 1)}`);
-
-/* ---------- 6. 提交、打 tag ---------- */
-
-git(
-  'add',
-  'Cargo.toml',
-  'Cargo.lock',
-  'package.json',
-  'package-lock.json',
-  'web/package.json',
-  'web/package-lock.json',
-  'src-tauri/tauri.conf.json',
-  'CHANGELOG.md',
-);
-git('commit', '-m', `chore: 发版 ${tag}`, '-m', `版本号改成 ${version}，CHANGELOG.md 加上 ${tag} 一节。`);
-// tag 说明：标题 + 这一版的 changelog（去掉「## vX.Y.Z · 日期」一行）。
-// --cleanup=whitespace：默认会把 # 开头的行当注释删掉，「### 新功能」这类小标题就没了
-git('tag', '-a', tag, '--cleanup=whitespace', '-m', `Board ${tag}`, '-m', notes.replace(/^## .*\n+/, '').trimEnd());
 console.log(notes);
 console.log(`已提交「chore: 发版 ${tag}」并打了 tag ${tag}（上一个 tag：${prev ?? '没有'}）。`);
 
@@ -237,7 +302,9 @@ console.log(`已提交「chore: 发版 ${tag}」并打了 tag ${tag}（上一个
 
 const cmds = [`git push origin HEAD:${BRANCH}`, `git push origin ${tag}`];
 if (!push) {
-  console.log(`\n确认无误后推送（推 tag 只触发 Release 构建，服务端部署请用 release-lan.sh）：\n  ${cmds.join('\n  ')}`);
+  console.log(
+    `\n确认无误后推送（推 tag 只触发 Release 构建；服务端还没部署时运行 deploy-lan.sh，正常发版由 release-lan.sh 自动调用）：\n  ${cmds.join('\n  ')}`,
+  );
   process.exit(0);
 }
 const base = git('rev-parse', 'HEAD~1');
@@ -273,4 +340,5 @@ try {
   console.error(String(e.stderr || e.message).trim());
   fail(`${BRANCH} 已推送，但 tag ${tag} 没推上去（没推 tag 就不会构建 Release）。重试：git push origin ${tag}`);
 }
-console.log(`已推送 ${BRANCH} 和 ${tag}，服务端部署请运行 release-lan.sh（它会调用 deploy-lan.sh）。`);
+await waitForReleaseAssets(tag);
+console.log(`已推送 ${BRANCH} 和 ${tag}。服务端还没部署时运行 deploy-lan.sh。`);

@@ -247,14 +247,19 @@ mkdir -p data/files && cp -n data/backups/files/* data/files/ && chown -R <用�
 
 发版由人决定：推 `vX.Y.Z` tag 只构建 Release 产物，不部署；服务端发版由局域网机器上的 Board「发版」卡片执行服务机部署目录里的 `release-lan.sh`（见「局域网机器直接部署」）。版本号规则见 [AGENTS.md](../AGENTS.md)「发版」：x 只由人决定；y 是重构或大升级；z 是修复和比较小的新功能。第一个 tag 是 `v0.1.0`。
 
-在 `main` 分支或分离 HEAD 上、工作区干净时执行（不用先手动 `git pull`）：
+正式发版只在服务机上进行。在 `main` 分支或分离 HEAD 上、工作区干净时执行（不用先手动 `git pull`）：
 
 ```bash
-npm run release -- 0.1.1 --dry-run   # 先看这一版有哪些提交（按 origin/main 列），不改任何文件
-npm run release -- 0.1.1 --push      # 发版并推送
+<服务器目录>/deploy/release-lan.sh 0.1.1
 ```
 
-`scripts/release.mjs` 依次：
+发版前可以在任何开发仓库只读预览这一版有哪些提交（按 `origin/main` 列，不改任何文件）：
+
+```bash
+npm run release -- 0.1.1 --dry-run
+```
+
+`release-lan.sh` 在服务机的开发仓库执行 `npm run release -- 0.1.1 --push`。`scripts/release.mjs` 依次：
 
 1. 拉到最新：`git fetch`；工作区要干净；本地只是落后于 `origin/main`（别的电脑先推了）时自动快进过去；本地有没推到 `main` 的提交、或在别的分支上时中止
 2. 核对版本号格式、tag 还不存在、比上一个 tag 大
@@ -262,7 +267,10 @@ npm run release -- 0.1.1 --push      # 发版并推送
 4. 改版本号：`Cargo.toml` 的 `workspace.package.version` 和 `Cargo.lock`、`package.json` 和 `web/package.json`（连同 `package-lock.json`）、`src-tauri/tauri.conf.json`
 5. 把第 3 步生成的这一节写到 `CHANGELOG.md` 最上面
 6. 提交「chore: 发版 vX.Y.Z」，打附注 tag `vX.Y.Z`，tag 说明里是这一版的 changelog
-7. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因
+7. 带 `--push` 时推 `main`，再推 tag；不带时只打印这两条推送命令。推 `main` 被拒（发版途中别人推了）时撤掉这次的发版提交和 tag，拉到最新后自动再发一次；第二次还被拒、或推送因为别的原因失败时，撤掉后停下，说明原因。第 4 到 6 步任何一步失败（例如 `cargo update` 断网）时会还原这 8 个文件，工作区保持干净
+8. 推完 tag 后轮询 `https://github.com/<仓库>/releases/download/vX.Y.Z/board-sha256.txt`，确认安装脚本和 `board update` 要用的附件真的可下载；最多等 60 分钟，超时就非零退出。这样 `release-lan.sh` 不会在 Release 附件出来之前部署服务端；CI 失败时服务端保持旧版
+
+`release-lan.sh` 只在 `npm run release` 成功后继续调用 `deploy-lan.sh`，把 `board-server` 装到服务器目录并重启。不要先单独运行 `npm run release -- <版本号> --push`：它只发 tag、不部署服务端，之后 `release-lan.sh` 又会因为 tag 已存在而中止。发版卡不在服务机上时不要 `--push`，按 `board-skills` 的 `work.md` 第 6 步交给人、请人把卡派到服务机。
 
 tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节时，不发版。tag 推出去后不改、不删、不挪，发错了就再发一个版本。同一个 tag 还构建桌面端安装包、打包 skill，和 Release 一起附上（见「CI：测试与发版构建」「桌面端安装包」）。
 
@@ -272,14 +280,14 @@ tag 去掉 `v` 后和 `workspace.package.version` 不一致，或者 `CHANGELOG.
 
 ## CI：测试与发版构建
 
-GitHub Actions 只负责测试和构建 Release 产物，**不再部署服务端**。服务端由局域网机器上的 Board「发版」卡片执行服务机部署目录里的 `release-lan.sh`：拉最新 `main`、`npm run release -- <版本号> --push`，再把 `board-server` 构建产物复制到 `<服务器目录>` 并重启 launchd。
+GitHub Actions 只负责测试和构建 Release 产物，**不再部署服务端**。服务端由局域网机器上的 Board「发版」卡片执行服务机部署目录里的 `release-lan.sh`：拉最新 `main`、`npm run release -- <版本号> --push`，等这一版的 `board-sha256.txt` 可下载后，再把 `board-server` 构建产物复制到 `<服务器目录>` 并重启 launchd。
 
 `.github/workflows/deploy.yml`：
 
 | 触发 | 做什么 |
 |---|---|
 | 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等）。不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
-| 推 `v*` tag | version（核对 tag、Cargo.toml、CHANGELOG.md）→ test；skill、desktop（和它们同时跑）→ release，见下图 |
+| 推 `v*` tag | version（核对 tag、Cargo.toml、CHANGELOG.md）→ test；skill、desktop（和它们同时跑）→ release（等更早的 tag 都有可下载的 Release 后建这一版的），见下图 |
 
 ```
 version（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的 workspace.package.version 和 CHANGELOG.md
@@ -293,14 +301,15 @@ desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑
                                      → npm ci → 编安装包自带的 board → cargo test -p board-desktop → tauri build（带更新签名）→ 核对安装包里的 board --version
                                      macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe、.msi 和免安装便携 .zip
                                      → 收齐更新包和签名（updater/<平台键>/）→ 生成这个平台的更新清单
-release：用 CHANGELOG.md 里这一版的一节建 GitHub Release，附上 board-skills.zip、桌面端安装包、更新包和 latest.json
+release：等更早的 tag（当前版本之前、最近一个已发布 tag 之后）都有可下载的 Release，再用 CHANGELOG.md 里这一版的一节建 GitHub Release，
+         附上 board-skills.zip、桌面端安装包、更新包和 latest.json
          （version、test、skill 和两个平台的安装包/更新清单都构建成功后）
 ```
 
 - tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：version 任务失败，不打包、不建 Release
 - 桌面端安装包任一平台构建失败：不建 Release（不留缺附件的 Release），修好后再发一个版本
 - PR、其他分支不触发
-- 同一时间只有一次发版构建，后来的排队
+- 每个 tag 各排一队（`release-${{ github.ref }}`），后来的 tag 不会把排队中的发版替换掉；release 任务建 Release 前会确认更早的 tag 都已经有可下载的 Release（`board-sha256.txt` 在里面），最多等 60 分钟
 - 服务端部署不在 CI 里：由 Board 发版卡片执行服务机部署目录里的 `release-lan.sh`（见「局域网机器直接部署」）
 
 ### 桌面端安装包
@@ -380,7 +389,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 没有配私钥时，desktop 任务在编译之前的「核对更新签名私钥」一步就失败、不建 Release：不会发出一份装不上的更新。服务端部署不经过 CI，由发版卡片另行执行，和这里的 Release 构建无关。私钥配错（例如只贴了一部分、密码不对）时 `tauri build` 报「failed to decode secret key」，同样不建 Release。
 
-发版流程不用另外操作：`npm run release -- x.y.z --push` 之后，desktop 任务带着签名打包、收齐更新包、按 tag 生成清单；release 任务把两个平台的清单合并成 `latest.json`（要求 macOS 两个架构和 Windows 都在），和安装包一起附在 Release 上。版本号在 tag、`tauri.conf.json`、`CHANGELOG.md` 和 `latest.json` 里一致（前两处不一致时构建就失败；清单的版本号和说明直接取 tag 和 CHANGELOG）。
+发版流程不用另外操作：`<服务器目录>/deploy/release-lan.sh x.y.z` 推出 tag 之后，desktop 任务带着签名打包、收齐更新包、按 tag 生成清单；release 任务把两个平台的清单合并成 `latest.json`（要求 macOS 两个架构和 Windows 都在），和安装包一起附在 Release 上。`release-lan.sh` 会等服务端要用的 `board-sha256.txt` 可下载后再部署。版本号在 tag、`tauri.conf.json`、`CHANGELOG.md` 和 `latest.json` 里一致（前两处不一致时构建就失败；清单的版本号和说明直接取 tag 和 CHANGELOG）。
 
 校验：
 
@@ -495,7 +504,7 @@ sudo launchctl kickstart -k system/com.buglan.board-server
 - 机器上装了 `com.buglan.board-server` 的 LaunchDaemon 时，脚本替换服务器目录里的二进制后杀掉进程，launchd 会按 KeepAlive 自动用新二进制拉起；没有 LaunchDaemon 时由脚本自己停旧进程、启动新进程。
 - 服务器目录的 `.env` 由根部的 `run-board-server.sh`（来自仓库 `deploy/run-board-server.sh`）读取，按 GitHub 登录模式监听 `0.0.0.0:7420`（`BOARD_HOST`、`BOARD_PORT` 可改）。`0.0.0.0` 会把纯 HTTP 暴露给局域网；只让 Cloudflare Tunnel 在本机访问时设 `BOARD_HOST=127.0.0.1`。没有 `.env` 或缺少 GitHub 登录配置时脚本直接失败，**不会**用 `--local --demo` 顶上；本机模式只由人显式运行 `cargo run -p board-server -- --local`。
 - 重启后必须运行 `deploy/verify-server.sh <版本> <7 位提交号>`：它同时核对 `/api/health` 的 `mode:github`、`version`、`commit` 和 `/` 的 Board HTML。任一项失败时部署脚本要恢复上一份二进制并重启；没有可恢复的二进制时明确标记部署失败，不能把这次部署算成功。
-- 发版：在 Board 建一张「发版」卡（正文可写版本号，例如 `0.1.41`；不写就按上一版 z+1），派到这台 Mac。卡片里的 agent 在开发仓库运行 `<服务器目录>/deploy/release-lan.sh [版本号]`：它执行 `npm run release -- <版本号> --push`（CI 只测试和构建 Release，不部署），然后自动调用 `deploy-lan.sh` 把 `board-server` 装到服务器目录并重启。
+- 发版：在 Board 建一张「发版」卡（正文可写版本号，例如 `0.1.41`；不写就按上一版 z+1），派到这台 Mac。卡片里的 agent 在开发仓库运行 `<服务器目录>/deploy/release-lan.sh [版本号]`：它执行 `npm run release -- <版本号> --push`（CI 只测试和构建 Release，不部署），等这一版的 `board-sha256.txt` 可下载后，自动调用 `deploy-lan.sh` 把 `board-server` 装到服务器目录并重启。CI 失败或 60 分钟内 Release 没就绪时脚本非零退出，服务端保持旧版。
 - 从 Windows 触发用 部署目录里的 `deploy-lan.ps1`（默认 `<用户>@<服务器>`、`<开发仓库>`，可用参数改）。
 
 ## 本机模式
