@@ -1,6 +1,6 @@
 //! 里程碑（PRD §10.15）：版本记录的同步（board versions sync）和里程碑页的分组。
 
-use crate::releases::{Group, ReleaseCommit, ReleaseSync, NONE_LIMIT};
+use crate::releases::{Group, ReleaseCommit, ReleaseSync, UnreleasedSync, NONE_LIMIT};
 use crate::*;
 
 const T0: i64 = 1_700_000_000_000;
@@ -36,6 +36,14 @@ fn commit(h: &str, at: i64, cards: &[&str]) -> ReleaseCommit {
 
 fn sync(s: &mut Store, at: i64, name: &str, commits: Vec<ReleaseCommit>) -> Result<releases::SyncResult> {
     s.write(at, Origin::cli(), |w| w.sync_release(ReleaseSync { project: "default".into(), name: name.into(), released_at: at, commits }))
+}
+
+fn next(s: &mut Store, at: i64, commits: Vec<ReleaseCommit>) -> Result<releases::UnreleasedResult> {
+    s.write(at, Origin::cli(), |w| w.sync_unreleased(UnreleasedSync { project: "default".into(), commits }))
+}
+
+fn unreleased(s: &Store) -> Vec<String> {
+    s.read(|r| r.milestones("default")).unwrap().unreleased.into_iter().map(|c| c.h).collect()
 }
 
 fn labels_of(s: &Store, id: i64) -> Vec<String> {
@@ -179,4 +187,45 @@ fn milestones_without_releases_and_limits() {
     assert_eq!(none.len(), NONE_LIMIT);
     assert!(none[0].moved_at > none[1].moved_at);
     assert!(s.read(|r| r.milestones("nope")).is_err());
+}
+
+/// 未发版的提交（§10.4）：按提交号合并，晚到的旧结果不冲掉新提交；发版之后从里面删掉
+#[test]
+fn unreleased_commits_merge_and_move_into_the_release() {
+    let mut s = store();
+    let a = new_card(&mut s, T0, "第一张");
+    sync(&mut s, T0 + H, "v0.1.0", vec![commit("aaa1111", T0, &[&format!("main#{a}")])]).unwrap();
+
+    // 两个 agent 先后推：后推的带着前一个的提交；先推的结果晚到，也不会把后一个冲掉
+    let r0 = s.rev().unwrap();
+    let r = next(&mut s, T0 + 3 * H, vec![commit("ccc3333", T0 + 3 * H, &["main#2"]), commit("bbb2222", T0 + 2 * H, &[])]).unwrap();
+    assert_eq!((r.added, r.total), (2, 2));
+    let r1 = s.rev().unwrap();
+    assert!(r1 > r0, "收了新提交要涨");
+    let r = next(&mut s, T0 + 3 * H, vec![commit("bbb2222", T0 + 2 * H, &[])]).unwrap();
+    assert_eq!((r.added, r.total), (0, 2));
+    assert_eq!(s.rev().unwrap(), r1, "没有新提交，不涨");
+    assert_eq!(unreleased(&s), vec!["ccc3333", "bbb2222"]);
+    let m = s.read(|r| r.milestones("default")).unwrap();
+    assert_eq!(m.unreleased[0].cards, vec!["main#2".to_string()]);
+
+    // 已经在版本里的（短号长短不一也认）、发版提交本身不收
+    let r = next(&mut s, T0 + 4 * H, vec![commit("aaa1111f", T0, &[]), ReleaseCommit { s: "chore: 发版 v0.1.0".into(), ..commit("rel0000", T0 + H, &[]) }]).unwrap();
+    assert_eq!(r.added, 0);
+    assert_eq!(unreleased(&s), vec!["ccc3333", "bbb2222"]);
+
+    // 发 v0.2.0：这一版的提交从未发版里删掉，之后的留着
+    let r = next(&mut s, T0 + 5 * H, vec![commit("ddd4444", T0 + 5 * H, &[])]).unwrap();
+    assert_eq!(r.total, 3);
+    let r2 = s.rev().unwrap();
+    sync(&mut s, T0 + 4 * H, "v0.2.0", vec![commit("ccc33333", T0 + 3 * H, &["main#2"]), commit("bbb2222", T0 + 2 * H, &[])]).unwrap();
+    assert!(s.rev().unwrap() > r2);
+    assert_eq!(unreleased(&s), vec!["ddd4444"]);
+    // 这一版的发版提交晚到（tag 还没取到的机器上算的）：也不收
+    let r = next(&mut s, T0 + 6 * H, vec![ReleaseCommit { s: "chore: 发版 v0.2.0".into(), ..commit("rel1111", T0 + 4 * H, &[]) }]).unwrap();
+    assert_eq!(r.added, 0);
+
+    // 项目不存在
+    let e = s.write(T0, Origin::cli(), |w| w.sync_unreleased(UnreleasedSync { project: "nope".into(), commits: vec![] })).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BoardNotFound);
 }

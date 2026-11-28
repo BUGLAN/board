@@ -58,6 +58,8 @@ fn versions_sync_labels_cards_from_git_history() {
     // 发版提交不算：v0.1.0 是两个提交，一个没写卡片行
     assert_eq!(j["versions"][1]["commits"], 2);
     assert_eq!(j["versions"][1]["loose"], 1);
+    // 没有远端：未发版的提交不同步，写明原因
+    assert!(j["unreleased"]["skipped"].is_string(), "{j}");
     assert!(s.run(ALPHA, &["labels", "--json"]).json().as_array().unwrap().is_empty());
 
     // 同步：不需要 --as、--board
@@ -91,6 +93,61 @@ fn versions_sync_labels_cards_from_git_history() {
     git(empty.path(), &["init", "-q"]);
     let r = s.raw(&s.env(), &["versions", "sync", "--dir", empty.path().to_str().unwrap(), "--json"]);
     assert_eq!(r.error_code(), "USAGE");
+}
+
+/// 未发版的提交（§10.4）：最新的 tag 之后、已经推上 origin 集成分支的提交顺带同步；本地没推的不算；发版之后归进新版本
+#[test]
+fn versions_sync_also_syncs_unreleased_commits() {
+    let s = start();
+    let a = s.run(ALPHA, &["new", "第一版的需求", "--json"]).json()["id"].as_i64().unwrap();
+    let b = s.run(ALPHA, &["new", "还没发版的", "--json"]).json()["id"].as_i64().unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let up = root.path().join("up.git");
+    std::fs::create_dir_all(&up).unwrap();
+    git(&up, &["init", "-q", "--bare", "-b", "main"]);
+    let dir = root.path().join("work");
+    git(root.path(), &["clone", "-q", up.to_str().unwrap(), dir.to_str().unwrap()]);
+    git(&dir, &["switch", "-q", "-c", "main"]);
+    commit(&dir, &format!("feat: 第一版\n\n卡片：default/main#{a}"));
+    commit(&dir, "chore: 发版 v0.1.0");
+    git(&dir, &["tag", "v0.1.0"]);
+    commit(&dir, &format!("feat: 之后的\n\n卡片：default/main#{b}"));
+    commit(&dir, "docs: 没写卡片行");
+    git(&dir, &["push", "-q", "-u", "origin", "main", "--tags"]);
+    commit(&dir, "feat: 本地还没推");
+    let d = dir.to_str().unwrap();
+    let store = || board_core::Store::open(&s.db).unwrap();
+    let unreleased = || store().read(|r| r.milestones("default")).unwrap().unreleased;
+
+    let r = s.raw(&s.env(), &["versions", "sync", "--dir", d, "--dry-run", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let j = r.json();
+    assert_eq!((j["unreleased"]["base"].as_str(), j["unreleased"]["branch"].as_str()), (Some("v0.1.0"), Some("main")), "{j}");
+    assert_eq!((j["unreleased"]["commits"].as_i64(), j["unreleased"]["cards"].as_i64()), (Some(2), Some(1)), "{j}");
+    assert!(unreleased().is_empty(), "--dry-run 不写入");
+
+    let r = s.raw(&s.env(), &["versions", "sync", "--dir", d, "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!((r.json()["unreleased"]["added"].as_i64(), r.json()["unreleased"]["total"].as_i64()), (Some(2), Some(2)));
+    let u = unreleased();
+    assert_eq!(u.iter().map(|c| c.s.as_str()).collect::<Vec<_>>(), vec!["docs: 没写卡片行", "feat: 之后的"]);
+    assert_eq!(u[1].cards, vec![format!("main#{b}")]);
+    // 文本输出里有「未发版」一行
+    let r = s.raw(&s.env(), &["versions", "sync", "--dir", d]);
+    assert!(r.out.contains("未发版") && r.out.contains("2 个提交"), "{}", r.out);
+
+    // 发 v0.2.0：只同步这个 tag，之前的未发版提交归进它，未发版清空
+    git(&dir, &["reset", "-q", "--hard", "origin/main"]);
+    commit(&dir, "chore: 发版 v0.2.0");
+    git(&dir, &["tag", "v0.2.0"]);
+    let r = s.raw(&s.env(), &["versions", "sync", "v0.2.0", "--dir", d, "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.json()["unreleased"]["total"].as_i64(), Some(0), "{}", r.out);
+    assert!(unreleased().is_empty());
+    let m = store().read(|r| r.milestones("default")).unwrap();
+    assert_eq!(m.versions[0].name, "v0.2.0");
+    assert_eq!(m.versions[0].commits.len(), 2);
 }
 
 /// 无网络时 `versions sync` 也要给出可读的错误并以退出码 1 结束，不能 panic

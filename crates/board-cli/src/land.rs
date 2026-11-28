@@ -12,7 +12,9 @@
 //! 4. **`board hold`**：领取已经失效（`NOT_HOLDER`）、连不上服务端（`UNREACHABLE`）时不推，原样报错。
 //! 5. **推集成分支**：被拒（别人先推了）时退出码 1，本地压好的提交留着；不 `--force`、不自动 rebase（rebase 之后要重新跑检查）。
 //! 6. **删 wip 分支**：卡片评论里有 `未完成的改动：wip/…`、远端还有它（这张卡是从它接着做的）时删掉。
-//! 7. 输出交审评论最后的四行。
+//! 7. **同步未发版的提交**：最新的版本 tag 之后、集成分支上的提交发给服务端（同 `board versions sync`），项目时间轴上马上多出这个提交；
+//!    仓库里没有版本 tag 时不做，失败只提示一行，不影响推送结果。
+//! 8. 输出交审评论最后的四行。
 //!
 //! `--wip`（做不下去）：只把没提交的改动提交、推到 `wip/<白板标识>/<ID>`；远端已有这条分支时，只有它的每个提交在 HEAD
 //! 里都有等价改动才覆盖，否则改推 `wip/<白板标识>/<ID>-<HEAD 短号>`，不碰原来的分支。输出 `未完成的改动：<分支>` 一行；
@@ -186,7 +188,15 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
         }
     }
 
-    // 7. 交审评论最后的四行
+    // 7. 未发版的提交：时间轴上马上看得到这个提交。失败只提示，已经推上去了
+    let project = d.path.split('/').next().unwrap_or(&d.path).to_string();
+    let unreleased: std::result::Result<Option<usize>, String> = match crate::versions::pending(dir.to_str(), &project, &branch) {
+        Ok(Some(pd)) => crate::versions::push_pending(be.remote(), &project, &pd).map(|r| Some(r.total)).map_err(|e| e.to_string()),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e),
+    };
+
+    // 8. 交审评论最后的四行
     let lines = format!("提交：{sha}\n集成分支：{branch}\n检查：{checked}\n{}", t.summary);
     if json {
         return Ok(Output::Json(json!({
@@ -197,6 +207,10 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
             "touched": t.summary,
             "wip_deleted": deleted,
             "wip_kept": kept,
+            "unreleased": match &unreleased {
+                Ok(n) => json!({ "total": n }),
+                Err(e) => json!({ "error": e }),
+            },
             "review_lines": lines,
         })));
     }
@@ -206,6 +220,9 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     }
     if let Some(w) = &kept {
         s += &format!("{} wip 分支 {w}\n", p.yellow("!"));
+    }
+    if let Err(e) = &unreleased {
+        s += &format!("{} 项目时间轴上的未发版提交没同步上（{e}）：下一次 board land 或 board versions sync 时补上\n", p.yellow("!"));
     }
     if t.code != 0 {
         s += &format!("{} 碰到了别的卡（--touched-ok）：交审评论「碰到的别的卡」一行后面逐条写为什么是有意的\n", p.yellow("!"));

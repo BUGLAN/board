@@ -71,6 +71,21 @@ describe('segmentsOf', () => {
     expect(segs[1].color).toBe(segmentsOf(m, null, statusOf)[1].color);
   });
 
+  it('未发版的提交：画在未发版这一段里，连到的卡片挂在提交下面、不再单独列；只看一块白板时同样只留连到它的', () => {
+    const u: Milestones = { ...m, unreleased: [commit('n2', 12 * DAY, ['main#6']), commit('n1', 11 * DAY)] };
+    const segs = segmentsOf(u, null, statusOf);
+    expect(segs[0].commits.map(c => c.h)).toEqual(['n2', 'n1']);
+    // #6 有提交了：还没有提交的只剩 #9、#5
+    expect(segs[0].cards.map(c => c.id)).toEqual([9, 5]);
+    expect(rowsThrough(segs, 'next')).toBe(4);
+    const ops = segmentsOf(u, 'p/ops', statusOf);
+    expect(ops[0].commits).toEqual([]);
+    expect(ops[0].cards.map(c => c.id)).toEqual([9]);
+    // 只有提交、没有未发版的卡片也有这一段
+    const only: Milestones = { versions: [], lastRelease: null, unreleased: [commit('n1', DAY)], cards: [] };
+    expect(segmentsOf(only, null, statusOf).map(s => [s.kind, s.commits.length, s.cards.length])).toEqual([['next', 1, 0]]);
+  });
+
   it('没有发版记录、也没有未发版的卡片：空', () => {
     expect(segmentsOf({ versions: [], lastRelease: null, cards: [] }, null, statusOf)).toEqual([]);
   });
@@ -112,8 +127,10 @@ describe('日期和间隔', () => {
 });
 
 describe('summary', () => {
-  it('只算版本，不算未发版；没有版本时为空', () => {
+  it('版本数和提交数，提交含未发版的；都没有时为空', () => {
     expect(summary(segmentsOf(m, null, statusOf))).toBe('3 个版本 · 5 个提交');
+    expect(summary(segmentsOf({ ...m, unreleased: [commit('n1', 11 * DAY)] }, null, statusOf))).toBe('3 个版本 · 6 个提交');
     expect(summary(segmentsOf({ ...m, versions: [] }, null, statusOf))).toBeNull();
+    expect(summary(segmentsOf({ ...m, versions: [], unreleased: [commit('n1', DAY)] }, null, statusOf))).toBe('1 个提交');
   });
 });

@@ -2,6 +2,7 @@
    里程碑（PRD §10.15）：GET /api/milestones 的类型，和页面用到的纯函数（分页、状态归类、进度、提交号）
    - 版本 = 名称是 v 加数字开头的标签；版本记录（发版时间、这一版的提交）由 board versions sync 从 git 反推后写进服务端
    - 一页是一个版本，另外两页：未发版（还没有版本标签、已经开始做的）、没有版本（最近一次发版之前做完却没有版本标签的）
+   - 未发版的提交（最新的 tag 之后、已经推上集成分支的）由 board land 推完、board versions sync 时写进服务端
    ========================================================================== */
 import type { Status } from './types';
 
@@ -46,25 +47,30 @@ export interface Milestones {
   /** 版本号从新到旧 */
   versions: VersionInfo[];
   lastRelease: number | null;
+  /** 未发版的提交，从新到旧：最新的版本 tag 之后、已经推上集成分支的；旧服务端没有这一项 */
+  unreleased?: ReleaseCommit[];
   cards: MilestoneCard[];
 }
 
 /** 一页：版本标签的 id，或者「未发版」「没有版本」 */
 export type MsKey = number | 'next' | 'none';
 
-/** 页的顺序：未发版（有发版记录或者有卡片时）、版本从新到旧、没有版本（有卡片时） */
+/** 未发版这一页有没有东西：卡片或者提交 */
+const hasNext = (m: Milestones) => m.cards.some(c => c.group === 'next') || !!m.unreleased?.length;
+
+/** 页的顺序：未发版（有发版记录、有卡片或者有提交时）、版本从新到旧、没有版本（有卡片时） */
 export function pagesOf(m: Milestones): MsKey[] {
   const out: MsKey[] = [];
-  if (m.lastRelease != null || m.cards.some(c => c.group === 'next')) out.push('next');
+  if (m.lastRelease != null || hasNext(m)) out.push('next');
   out.push(...m.versions.map(v => v.label));
   if (m.cards.some(c => c.group === 'none')) out.push('none');
   return out;
 }
 
-/** 默认打开哪一页：未发版有卡片就是它，否则最新的版本 */
+/** 默认打开哪一页：未发版有卡片或者提交就是它，否则最新的版本 */
 export function defaultPage(m: Milestones): MsKey | null {
   const pages = pagesOf(m);
-  if (pages[0] === 'next' && !m.cards.some(c => c.group === 'next')) return pages[1] ?? pages[0];
+  if (pages[0] === 'next' && !hasNext(m)) return pages[1] ?? pages[0];
   return pages[0] ?? null;
 }
 
@@ -88,15 +94,21 @@ export function startOf(m: Milestones, key: MsKey): number | null {
 /** 卡片在「白板#ID」里的写法 */
 export const cardRef = (c: Pick<MilestoneCard, 'board' | 'id'>) => `${c.board.split('/').pop()}#${c.id}`;
 
-/** 这一版里每张卡片的提交（从新到旧） */
-export function commitsByCard(v: VersionInfo | null): Map<string, ReleaseCommit[]> {
+/** 一页的提交（从新到旧）：版本是这一版的，未发版是还没发版的提交，没有版本没有提交 */
+export function commitsOf(m: Milestones, key: MsKey): ReleaseCommit[] {
+  if (key === 'next') return m.unreleased ?? [];
+  return versionOf(m, key)?.commits ?? [];
+}
+
+/** 每张卡片的提交（从新到旧） */
+export function commitsByCard(commits: ReleaseCommit[]): Map<string, ReleaseCommit[]> {
   const map = new Map<string, ReleaseCommit[]>();
-  for (const c of v?.commits ?? []) for (const r of c.cards) map.set(r, [...(map.get(r) ?? []), c]);
+  for (const c of commits) for (const r of c.cards) map.set(r, [...(map.get(r) ?? []), c]);
   return map;
 }
 
-/** 这一版里没写「卡片：#ID」的提交 */
-export const looseCommits = (v: VersionInfo | null) => (v?.commits ?? []).filter(c => !c.cards.length);
+/** 没写「卡片：#ID」的提交 */
+export const looseCommits = (commits: ReleaseCommit[]) => commits.filter(c => !c.cards.length);
 
 /* ------------------------------ 状态 ------------------------------ */
 

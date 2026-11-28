@@ -101,6 +101,32 @@ describe('提交时间轴', () => {
     expect(v1.querySelector('.gt-vwarn')!.textContent).toBe('1 张没验收');
   });
 
+  it('未发版的提交：一个提交一栏、挂着卡片；还没有提交的卡片画在提交上面；段头写提交数、卡片数', async () => {
+    server.milestones.mockResolvedValue({
+      ...data,
+      unreleased: [
+        { h: 'n2', at: 12.5 * DAY, s: 'feat: 新的', cards: ['a#6'] },
+        { h: 'n1', at: 12.5 * DAY - 15 * 60e3, s: 'docs: 说明', cards: [] },
+      ],
+      cards: [...data.cards, { board: 'p/a', id: 6, title: '推上去了', column: 'review', labels: [], holder: null, createdAt: 0, movedAt: 12 * DAY, group: 'next' }],
+    } satisfies Milestones);
+    await act(async () => root.render(<TimelinePage />));
+    await settle();
+    const next = host.querySelector('.gt-seg[data-seg="next"]')!;
+    expect(next.querySelector('.gt-vmeta')!.textContent).toMatch(/^2 个提交 · 2 张卡片 · 距上一版/);
+    // 先是还没有提交的 #5，再是两个提交（#6 挂在 n2 下面，不再单独列）
+    expect([...next.querySelectorAll('.gt-list > li')].map(li => li.querySelector('.gt-sha')?.textContent ?? li.querySelector('.gt-id')?.textContent ?? li.textContent)).toEqual([
+      '还没有提交',
+      '#5',
+      expect.stringContaining('日'),
+      'n2',
+      'n1',
+    ]);
+    expect(next.querySelector('.gt-item.solo .gt-title')!.textContent).toBe('在做的');
+    expect([...next.querySelectorAll('.gt-item.bare .gt-msg')].map(e => e.textContent)).toEqual(['docs: 说明']);
+    expect(host.querySelector('.gt-sum')!.textContent).toBe('2 个版本 · 5 个提交');
+  });
+
   it('只看一块白板：只留连到它的提交，没有提交的版本整段不显示', async () => {
     act(() => setTlBoard('p/b'));
     await act(async () => root.render(<TimelinePage />));

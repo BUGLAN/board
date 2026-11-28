@@ -3,7 +3,7 @@
    - 一个 git 提交一栏，从新到旧往下翻（无限滚动：快到底时多画一段）；提交说明里写了「卡片：…」的，栏里挂着卡片，
      点开卡片详情（不离开这一页）；没连到卡片的提交只显示提交说明，不能点
    - 按版本分段：每个版本一种颜色（时间轴线、节点、段头），段头滚动时吸顶；右栏是版本索引，点了跳过去
-   - 最上面是「未发版」：上次发版之后开始做、还没发版的卡片
+   - 最上面是「未发版」：还没发版的提交（board land 推完、board versions sync 时写进服务端），和它们上面还没有提交连着的卡片
    - 范围：项目跟着当前白板走（侧栏点项目、顶栏切换器都一样）；侧栏点白板时只看连到这块白板卡片的提交
    数据：GET /api/milestones?project=<项目>（和里程碑页同一份），切项目立即取，有推送（工作区 rev 变了）等 1.2 秒再取
    ========================================================================== */
@@ -209,6 +209,9 @@ function Segment({
     const c = cards.get(r);
     return c && roleOf(statusOf(c)) !== 'done';
   }).length;
+  // 未发版：还没有提交的卡片画在提交上面（比哪个提交都新），先画它们
+  const solo = seg.cards.slice(0, take);
+  const commits = seg.commits.slice(0, Math.max(0, take - seg.cards.length));
   return (
     <section className={cx('gt-seg', seg.kind === 'next' && 'is-next')} data-seg={seg.key} style={{ ['--vc' as string]: seg.color }}>
       <header className="gt-vh">
@@ -227,30 +230,38 @@ function Segment({
               {left > 0 && <span className="gt-vwarn">{left} 张没验收</span>}
             </>
           ) : (
-            <span className="gt-vmeta">{seg.cards.length} 张</span>
+            <span className="gt-vmeta">
+              {[seg.commits.length ? `${seg.commits.length} 个提交` : '', `${linked.size + seg.cards.length} 张卡片`, seg.prevAt != null ? `距上一版 ${gapText(Date.now() - seg.prevAt)}` : '']
+                .filter(Boolean)
+                .join(' · ')}
+            </span>
           )}
         </div>
       </header>
       <ol className="gt-list">
-        {seg.kind === 'next'
-          ? seg.cards.slice(0, take).map(c => (
-              <li key={cardRef(c)} className="gt-item has-card">
-                <i className="gt-dot" />
-                <div className="gt-body">
-                  <CardTile c={c} s={statusOf(c)} labels={labels} boardName={boardName(c.board)} />
-                </div>
+        {solo.length > 0 && seg.commits.length > 0 && (
+          <li className="gt-day" aria-hidden="true">
+            还没有提交
+          </li>
+        )}
+        {solo.map(c => (
+          <li key={cardRef(c)} className="gt-item has-card solo">
+            <i className="gt-dot" />
+            <div className="gt-body">
+              <CardTile c={c} s={statusOf(c)} labels={labels} boardName={boardName(c.board)} />
+            </div>
+          </li>
+        ))}
+        {withDays(commits).map(({ c, day }) => (
+          <Fragment key={c.h}>
+            {day && (
+              <li className="gt-day" aria-hidden="true">
+                {day}
               </li>
-            ))
-          : withDays(seg.commits.slice(0, take)).map(({ c, day }) => (
-              <Fragment key={c.h}>
-                {day && (
-                  <li className="gt-day" aria-hidden="true">
-                    {day}
-                  </li>
-                )}
-                <CommitItem c={c} cards={cards} statusOf={statusOf} labels={labels} boardName={boardName} />
-              </Fragment>
-            ))}
+            )}
+            <CommitItem c={c} cards={cards} statusOf={statusOf} labels={labels} boardName={boardName} />
+          </Fragment>
+        ))}
       </ol>
     </section>
   );

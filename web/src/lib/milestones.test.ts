@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardRef, cardsOf, commitsByCard, defaultPage, gap, looseCommits, matchCard, pagesOf, roleOf, sortCards, startOf, summarize, type MilestoneCard, type Milestones } from './milestones';
+import { cardRef, cardsOf, commitsByCard, commitsOf, defaultPage, gap, looseCommits, matchCard, pagesOf, roleOf, sortCards, startOf, summarize, type MilestoneCard, type Milestones } from './milestones';
 import type { Status } from './types';
 
 const st = (key: string, name: string, p: Partial<Status> = {}): Status => ({ key, name, color: 'todo', claim: false, lock: false, final: false, layout: null, to: [], ...p });
@@ -70,12 +70,22 @@ describe('里程碑', () => {
   });
 
   it('提交号按卡片对上，没写卡片行的单独列出', () => {
-    const v = m.versions[1];
-    const by = commitsByCard(v);
+    const by = commitsByCard(commitsOf(m, m.versions[1].label));
     expect(by.get(cardRef(m.cards[1]))?.map(c => c.h)).toEqual(['b2', 'b1']);
     expect(by.get('site#9')?.map(c => c.h)).toEqual(['b1']);
-    expect(looseCommits(v).map(c => c.h)).toEqual(['b0']);
-    expect(looseCommits(null)).toEqual([]);
+    expect(looseCommits(commitsOf(m, m.versions[1].label)).map(c => c.h)).toEqual(['b0']);
+    expect(commitsOf(m, 'none')).toEqual([]);
+    // 旧服务端没有未发版的提交
+    expect(commitsOf(m, 'next')).toEqual([]);
+  });
+
+  it('未发版的提交：这一页也按卡片对上提交号；只有提交、没有卡片时也有这一页，默认打开它', () => {
+    const u: Milestones = { ...m, unreleased: [{ h: 'n2', at: 300, s: 'feat: n2', cards: ['main#5'] }, { h: 'n1', at: 250, s: 'docs: n1', cards: [] }] };
+    expect(commitsByCard(commitsOf(u, 'next')).get('main#5')?.map(c => c.h)).toEqual(['n2']);
+    expect(looseCommits(commitsOf(u, 'next')).map(c => c.h)).toEqual(['n1']);
+    const only: Milestones = { versions: [], lastRelease: null, unreleased: u.unreleased, cards: [] };
+    expect(pagesOf(only)).toEqual(['next']);
+    expect(defaultPage(only)).toBe('next');
   });
 
   it('状态归类、进度和排序', () => {

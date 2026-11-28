@@ -9,6 +9,10 @@
 //!   终点状态里的只算最近一次发版之后移进去的）和「没有版本」（最近一次发版之前就到了终点、却没有版本标签的卡片，
 //!   最多 [`NONE_LIMIT`] 张）。只有「未整理」里的不算：还没进工作流的想法。
 //! - 分组只看状态的规则（[`group_of`]），不看状态名称：可领取、锁定都算「未发版」，终点才看时间。
+//! - 未发版的提交：最新的版本 tag 之后、已经推上集成分支的提交，`board land` 推完、`board versions sync` 时由 CLI 从 git 算出来写进来
+//!   （[`W::sync_unreleased`]）。按提交号合并，不整份覆盖：几个 agent 同时推、旧仓库晚到的结果不会冲掉新提交（集成分支不 force，提交只会多）。
+//!   已经在某个版本里的提交、发版提交本身不收；同步一个版本时把这一版的提交从里面删掉，所以发版之后自然清空，两边谁先到都一样。
+//!   短提交号在各台机器上长短可能不同，按前缀认同一个提交（[`same_commit`]）。
 
 use crate::error::{BoardError, ErrorCode, Result};
 use crate::model::{Actor, Label, INBOX};
@@ -31,6 +35,14 @@ CREATE TABLE IF NOT EXISTS releases (
   synced_at   INTEGER NOT NULL,
   PRIMARY KEY (project, name)
 );
+-- 未发版的提交（PRD §10.4、§10.15）：最新的版本 tag 之后、已经推上集成分支的提交，一个项目一行；
+-- board land 推完、board versions sync 时写入，按提交号合并（见 releases.rs 模块说明）
+CREATE TABLE IF NOT EXISTS unreleased (
+  project     TEXT PRIMARY KEY REFERENCES projects(key) ON DELETE CASCADE,
+  -- 和 releases.commits 同样的 JSON 数组，按时间从新到旧
+  commits     TEXT NOT NULL,
+  synced_at   INTEGER NOT NULL
+);
 "#;
 
 /// 自动新建的版本标签用的颜色（色板里的紫色）
@@ -39,8 +51,8 @@ pub const VERSION_COLOR: &str = "#8B5CF6";
 /// 「没有版本」最多列多少张（最近到终点的在前）
 pub const NONE_LIMIT: usize = 300;
 
-/// 一次同步最多带多少个提交
-const COMMITS_MAX: usize = 5000;
+/// 一次同步最多带多少个提交；未发版的提交最多存这么多（多了丢最早的）
+pub const COMMITS_MAX: usize = 5000;
 
 /// 版本标签：名称是 `v`（不区分大小写）加数字开头
 pub fn is_version_name(name: &str) -> bool {
@@ -63,6 +75,17 @@ pub fn version_cmp(a: &str, b: &str) -> Ordering {
         }
     }
     Ordering::Equal
+}
+
+/// 发版提交本身：`chore` 开头、说明里写着这个 tag 名（例如「chore: 发版 v0.1.21」），不算进哪个版本，也不算未发版
+pub fn is_release_commit(subject: &str, tag: &str) -> bool {
+    subject.trim_start().starts_with("chore") && subject.split(|c: char| c.is_whitespace() || c == ':' || c == '：').any(|w| w == tag)
+}
+
+/// 两个短提交号是不是同一个提交：git 按仓库大小决定短号的长度，各台机器上可能不一样长，一个是另一个的前缀就算
+pub fn same_commit(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// 一个提交
@@ -89,6 +112,24 @@ pub struct ReleaseSync {
     pub released_at: i64,
     #[serde(default)]
     pub commits: Vec<ReleaseCommit>,
+}
+
+/// `POST /api/releases/next` 的请求：最新的版本 tag 之后、已经推上集成分支的提交
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnreleasedSync {
+    pub project: String,
+    #[serde(default)]
+    pub commits: Vec<ReleaseCommit>,
+}
+
+/// 同步未发版提交的结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreleasedResult {
+    /// 这次新收的提交数
+    pub added: usize,
+    /// 现在一共有几个未发版的提交
+    pub total: usize,
 }
 
 /// 同步一个版本的结果
@@ -161,6 +202,8 @@ pub struct Milestones {
     pub versions: Vec<VersionInfo>,
     /// 最近一次发版的时间（所有版本记录里最晚的）；还没有版本记录时为空
     pub last_release: Option<i64>,
+    /// 未发版的提交（从新到旧）：最新的版本 tag 之后、已经推上集成分支的；没同步过时为空
+    pub unreleased: Vec<ReleaseCommit>,
     pub cards: Vec<MilestoneCard>,
 }
 
@@ -278,13 +321,83 @@ impl W<'_> {
              ON CONFLICT (project, name) DO UPDATE SET released_at = excluded.released_at, commits = excluded.commits, synced_at = excluded.synced_at",
             params![project, label.name, req.released_at, serde_json::to_string(&commits).unwrap_or_else(|_| "[]".into()), self.now],
         )?;
-        self.changed |= created || !added.is_empty() || !same;
+        // 这一版的提交、发版提交本身不再算未发版
+        let pruned = self.prune_unreleased(&project, |c| commits.iter().any(|x| same_commit(&x.h, &c.h)) || is_release_commit(&c.s, &label.name))?;
+        self.changed |= created || !added.is_empty() || !same || pruned;
         let uses: i64 = self.tx.query_row(
             "SELECT COUNT(*) FROM card_labels cl JOIN cards c ON c.board = cl.board AND c.id = cl.card WHERE cl.label = ?1 AND c.deleted_at IS NULL",
             [label.id],
             |r| r.get(0),
         )?;
         Ok(SyncResult { label: Label { uses, ..label }, created, added, already, missing })
+    }
+
+    /// 写入未发版的提交（`board land` 推完、`board versions sync`）：按提交号合并进已有的；已经在某个版本里的、
+    /// 发版提交本身不收。只有收了新提交才涨 rev
+    pub fn sync_unreleased(&mut self, req: UnreleasedSync) -> Result<UnreleasedResult> {
+        let project = req.project.trim().to_string();
+        if req.commits.len() > COMMITS_MAX {
+            return Err(BoardError::usage(format!("一次最多同步 {COMMITS_MAX} 个提交")));
+        }
+        let exists: Option<String> = self.tx.query_row("SELECT key FROM projects WHERE key = ?1", [&project], |r| r.get(0)).optional()?;
+        if exists.is_none() {
+            return Err(BoardError::new(ErrorCode::BoardNotFound, format!("项目「{project}」不存在")));
+        }
+        // 版本记录里的提交和版本名：这些提交已经发版了
+        let mut names: Vec<String> = Vec::new();
+        let mut released: Vec<String> = Vec::new();
+        {
+            let mut st = self.tx.prepare("SELECT name, commits FROM releases WHERE project = ?1")?;
+            let rows = st.query_map([&project], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (name, json) = row?;
+                names.push(name);
+                released.extend(serde_json::from_str::<Vec<ReleaseCommit>>(&json).unwrap_or_default().into_iter().map(|c| c.h));
+            }
+        }
+        let mut commits = self.unreleased_of(&project)?;
+        let mut added = 0usize;
+        for c in req.commits {
+            if c.h.trim().is_empty()
+                || released.iter().any(|h| same_commit(h, &c.h))
+                || names.iter().any(|n| is_release_commit(&c.s, n))
+                || commits.iter().any(|x| same_commit(&x.h, &c.h))
+            {
+                continue;
+            }
+            commits.push(c);
+            added += 1;
+        }
+        commits.sort_by(|a, b| b.at.cmp(&a.at));
+        commits.truncate(COMMITS_MAX);
+        self.tx.execute(
+            "INSERT INTO unreleased (project, commits, synced_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (project) DO UPDATE SET commits = excluded.commits, synced_at = excluded.synced_at",
+            params![project, serde_json::to_string(&commits).unwrap_or_else(|_| "[]".into()), self.now],
+        )?;
+        self.changed |= added > 0;
+        Ok(UnreleasedResult { added, total: commits.len() })
+    }
+
+    /// 项目现在存着的未发版提交（从新到旧）
+    fn unreleased_of(&self, project: &str) -> Result<Vec<ReleaseCommit>> {
+        let json: Option<String> = self.tx.query_row("SELECT commits FROM unreleased WHERE project = ?1", [project], |r| r.get(0)).optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default())
+    }
+
+    /// 从未发版的提交里删掉符合条件的；删了才写回，返回删没删
+    fn prune_unreleased(&mut self, project: &str, gone: impl Fn(&ReleaseCommit) -> bool) -> Result<bool> {
+        let mut commits = self.unreleased_of(project)?;
+        let n = commits.len();
+        commits.retain(|c| !gone(c));
+        if commits.len() == n {
+            return Ok(false);
+        }
+        self.tx.execute(
+            "UPDATE unreleased SET commits = ?2, synced_at = ?3 WHERE project = ?1",
+            params![project, serde_json::to_string(&commits).unwrap_or_else(|_| "[]".into()), self.now],
+        )?;
+        Ok(true)
     }
 }
 
@@ -405,7 +518,9 @@ impl R<'_> {
         none.sort_by(|a, b| b.moved_at.unwrap_or(b.created_at).cmp(&a.moved_at.unwrap_or(a.created_at)));
         none.truncate(NONE_LIMIT);
         cards.extend(none);
-        Ok(Milestones { versions, last_release, cards })
+        let unreleased: Option<String> = self.conn.query_row("SELECT commits FROM unreleased WHERE project = ?1", [project], |r| r.get(0)).optional()?;
+        let unreleased = unreleased.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+        Ok(Milestones { versions, last_release, unreleased, cards })
     }
 }
 
@@ -452,6 +567,24 @@ mod unit {
         // 还没有任何版本记录：终点的都算没有版本
         assert_eq!(group_of("done", true, Some(150), 10, None), Some(Group::None));
         assert_eq!(group_of("todo", false, None, 150, None), Some(Group::Next));
+    }
+
+    #[test]
+    fn release_commits() {
+        assert!(is_release_commit("chore: 发版 v0.1.21", "v0.1.21"));
+        assert!(is_release_commit("chore(release): v1.2.0", "v1.2.0"));
+        assert!(!is_release_commit("chore: 发版 v0.1.21", "v0.1.2"));
+        assert!(!is_release_commit("feat: 支持 v0.1.21 的格式", "v0.1.21"));
+    }
+
+    /// 短提交号长短不一时按前缀认
+    #[test]
+    fn commits_match_by_prefix() {
+        assert!(same_commit("af4e1c7", "af4e1c7ec"));
+        assert!(same_commit("af4e1c7ec", "af4e1c7"));
+        assert!(same_commit("af4e1c7", "af4e1c7"));
+        assert!(!same_commit("af4e1c7", "af4e1c8"));
+        assert!(!same_commit("", "af4e1c7"));
     }
 
     #[test]

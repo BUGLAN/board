@@ -136,6 +136,8 @@ fn squashes_pushes_and_prints_review_lines() {
     );
     // 本地认得刚推上去的提交：worktree 是干净的
     assert!(!git(&r.work, &["branch", "-r", "--contains", "HEAD"]).is_empty());
+    // 仓库里没有版本 tag：不同步未发版的提交
+    assert_eq!(v["unreleased"], serde_json::json!({ "total": null }), "{v}");
 
     // 参数缺了直接拒绝
     let e = land(&s, &r, &["--checked", "x"]);
@@ -143,6 +145,25 @@ fn squashes_pushes_and_prints_review_lines() {
     assert!(e.json()["error"]["message"].as_str().unwrap().contains("--message-file"));
     let e = land(&s, &r, &["--message-file", r.msg.to_str().unwrap()]);
     assert!(e.json()["error"]["message"].as_str().unwrap().contains("--checked"));
+}
+
+/// 推完顺带同步未发版的提交（§10.4）：仓库里有版本 tag 时，项目时间轴上马上多出这个提交；没有 tag 时不做
+#[test]
+fn syncs_unreleased_commits_after_pushing() {
+    let s = server();
+    let r = repo();
+    git(&r.up, &["tag", "v0.1.0", "main"]);
+    git(&r.work, &["fetch", "-q", "--tags", "origin"]);
+    r.commit("a.txt", "first line of the file\nsecond line of the file\nthird line from the agent\n", "wip 1");
+    let out = land(&s, &r, &normal(&r, &[]));
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    let v = out.json();
+    assert_eq!(v["unreleased"]["total"], 1, "{v}");
+    let m = board_core::Store::open(&s.db).unwrap().read(|x| x.milestones("default")).unwrap();
+    assert_eq!(m.unreleased.len(), 1);
+    assert_eq!(m.unreleased[0].h, v["commit"].as_str().unwrap());
+    assert_eq!(m.unreleased[0].s, "feat: 第三行");
+    assert_eq!(m.unreleased[0].cards, vec!["main#1".to_string()]);
 }
 
 /// 本地误建了同名分支 origin/main：land 仍以远端最新提交为基点，不被旧分支带回去

@@ -339,6 +339,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/search", get(search))
         .route("/milestones", get(milestones))
         .route("/releases", post(sync_release))
+        .route("/releases/next", post(sync_unreleased))
         .route("/cmd", post(cmd))
         .route("/cards/batch", post(card_batch))
         .route("/agents", get(agents::list))
@@ -758,6 +759,24 @@ async fn sync_release(
         Caller::Agent { .. } => Origin::cli(),
     };
     let out = s.db(move |st| st.write(now_ms(), origin, |w| w.sync_release(req))).await?;
+    s.0.poke.notify_one();
+    Ok(Json(out))
+}
+
+/// `POST /api/releases/next`：写入未发版的提交（`board land` 推完、`board versions sync`，PRD §9）：
+/// 最新的版本 tag 之后、已经推上集成分支的提交，按提交号合并进已有的
+async fn sync_unreleased(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    headers: HeaderMap,
+    Json(v): Json<Value>,
+) -> ApiResult<board_core::releases::UnreleasedResult> {
+    let req: board_core::releases::UnreleasedSync = parse(v)?;
+    let origin = match caller {
+        Caller::Human { .. } => Origin::ui(client_of(&headers)),
+        Caller::Agent { .. } => Origin::cli(),
+    };
+    let out = s.db(move |st| st.write(now_ms(), origin, |w| w.sync_unreleased(req))).await?;
     s.0.poke.notify_one();
     Ok(Json(out))
 }

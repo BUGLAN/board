@@ -6,10 +6,14 @@
 //! - 项目：`--project`，不写时取提交里出现最多的项目；连到别的项目的卡片不管。
 //! - 每个版本一次 `POST /api/releases`：服务端建好版本标签（不存在时）、给连到的卡片打上、存下这一版的提交。
 //!   同一个版本可以反复同步，结果一样；只同步某几个 tag 时写在 sync 后面。
+//! - 版本之后再同步一次未发版的提交（[`pending`]）：最新的版本 tag 之后、已经推上 `origin/<集成分支>` 的提交，
+//!   `POST /api/releases/next`，服务端按提交号合并。`board land` 推完也调它。没有 origin 上的集成分支时跳过，
+//!   失败只提示（版本已经同步好了）。
 
 use crate::backend::Remote;
 use crate::output::{Output, Paint};
-use board_core::releases::{is_version_name, version_cmp, ReleaseCommit, SyncResult};
+use crate::code::integration_branch;
+use board_core::releases::{is_release_commit, is_version_name, version_cmp, ReleaseCommit, SyncResult, UnreleasedResult, COMMITS_MAX};
 use board_core::*;
 use serde_json::json;
 use std::collections::HashMap;
@@ -26,11 +30,6 @@ pub(crate) fn card_refs(body: &str) -> Vec<(String, String, i64)> {
             (!project.is_empty() && !board.is_empty() && !board.contains('/')).then(|| (project.to_string(), board.to_string(), id))
         })
         .collect()
-}
-
-/// 发版提交本身：`chore` 开头、说明里写着这个 tag 名（例如「chore: 发版 v0.1.21」）
-pub(crate) fn is_release_commit(subject: &str, tag: &str) -> bool {
-    subject.trim_start().starts_with("chore") && subject.split(|c: char| c.is_whitespace() || c == ':' || c == '：').any(|w| w == tag)
 }
 
 struct Tag {
@@ -90,6 +89,46 @@ fn commits(dir: Option<&str>, range: &str, tag: &str) -> Result<Vec<Raw>> {
         .collect())
 }
 
+/// 提交写成发给服务端的样子：只留连到这个项目的卡片（「白板#ID」）
+fn to_release(cs: &[Raw], project: &str) -> Vec<ReleaseCommit> {
+    cs.iter()
+        .map(|c| ReleaseCommit {
+            h: c.h.clone(),
+            at: c.at,
+            s: c.s.clone(),
+            cards: c.refs.iter().filter(|(pr, _, _)| pr == project).map(|(_, b, id)| format!("{b}#{id}")).collect(),
+        })
+        .collect()
+}
+
+/// 未发版的提交（见模块说明）
+pub(crate) struct Pending {
+    /// 最新的版本 tag
+    pub base: String,
+    /// 集成分支
+    pub branch: String,
+    /// 从新到旧，最多 [`COMMITS_MAX`] 个
+    pub commits: Vec<ReleaseCommit>,
+}
+
+/// 算未发版的提交：最新的版本 tag 之后、已经推上 `origin/<集成分支>` 的（不含合并提交）。用远端的分支、不用 HEAD：
+/// 本地还没推的提交不算。branch 是项目设置里的集成分支（空时用远端默认分支）。
+/// 仓库里没有版本 tag 时 `Ok(None)`；认不出集成分支、远端没有它时 `Err(原因)`
+pub(crate) fn pending(dir: Option<&str>, project: &str, branch: &str) -> std::result::Result<Option<Pending>, String> {
+    let all = tags(dir).map_err(|e| e.to_string())?;
+    let Some(base) = all.last() else { return Ok(None) };
+    let branch = integration_branch(std::path::Path::new(dir.unwrap_or(".")), branch)?;
+    let range = format!("{}..refs/remotes/origin/{branch}", base.name);
+    let mut commits = to_release(&commits(dir, &range, &base.name).map_err(|e| e.to_string())?, project);
+    commits.truncate(COMMITS_MAX);
+    Ok(Some(Pending { base: base.name.clone(), branch, commits }))
+}
+
+/// 把未发版的提交发给服务端
+pub(crate) fn push_pending(rm: &Remote, project: &str, p: &Pending) -> Result<UnreleasedResult> {
+    rm.post("/api/releases/next", json!({ "project": project, "commits": p.commits }))
+}
+
 pub fn run(pos: &[String], project: Option<&str>, dir: Option<&str>, dry_run: bool, json: bool, p: &Paint, rm: &Remote) -> Result<Output> {
     if pos.get(1).map(String::as_str) != Some("sync") {
         return Err(BoardError::usage("用法：board versions sync [<tag>…] [--project <项目>] [--dir <仓库>] [--dry-run]"));
@@ -138,15 +177,7 @@ pub fn run(pos: &[String], project: Option<&str>, dir: Option<&str>, dry_run: bo
     let mut total_added = 0usize;
     // 新的在前
     for (t, cs) in per.iter().rev() {
-        let commits: Vec<ReleaseCommit> = cs
-            .iter()
-            .map(|c| ReleaseCommit {
-                h: c.h.clone(),
-                at: c.at,
-                s: c.s.clone(),
-                cards: c.refs.iter().filter(|(pr, _, _)| *pr == project).map(|(_, b, id)| format!("{b}#{id}")).collect(),
-            })
-            .collect();
+        let commits = to_release(cs, &project);
         let mut cards: Vec<&String> = commits.iter().flat_map(|c| &c.cards).collect();
         cards.sort();
         cards.dedup();
@@ -187,8 +218,47 @@ pub fn run(pos: &[String], project: Option<&str>, dir: Option<&str>, dry_run: bo
             }
         }
     }
+
+    // 未发版的提交：项目设置里的集成分支（--dry-run 不连服务端，用远端默认分支）；失败只提示
+    let want = if dry_run {
+        String::new()
+    } else {
+        rm.get::<Workspace>("/api/workspace", &[]).ok().and_then(|w| w.projects.into_iter().find(|x| x.key == project)).map(|x| x.branch).unwrap_or_default()
+    };
+    // 和上面的版本号对齐：一个汉字占两格，三个字加 4 个空格是 10 格
+    let label = p.cyan("未发版    ");
+    let unreleased = match pending(dir, &project, &want) {
+        Ok(Some(pd)) => {
+            let n = pd.commits.len();
+            let mut cards: Vec<&String> = pd.commits.iter().flat_map(|c| &c.cards).collect();
+            cards.sort();
+            cards.dedup();
+            let from = p.dim(&format!("{} 之后的 origin/{}", pd.base, pd.branch));
+            let res = if dry_run { None } else { Some(push_pending(rm, &project, &pd)) };
+            let mut v = json!({ "base": pd.base, "branch": pd.branch, "commits": n, "cards": cards.len() });
+            match res {
+                None => text += &format!("{} {label}  {} 张卡片 · {n} 个提交  {from}\n", p.dim("·"), cards.len()),
+                Some(Ok(r)) => {
+                    let added = if r.added > 0 { format!("（新收 {}）", r.added) } else { String::new() };
+                    text += &format!("{} {label}  {} 张卡片 · {n} 个提交{added}  {from}\n", p.green("✓"), cards.len());
+                    v["added"] = json!(r.added);
+                    v["total"] = json!(r.total);
+                }
+                Some(Err(e)) => {
+                    text += &format!("{} {label}  没同步上：{e}\n", p.yellow("!"));
+                    v["error"] = json!(e.to_string());
+                }
+            }
+            v
+        }
+        Ok(None) => json!(null),
+        Err(why) => {
+            text += &format!("{} {label}  {}\n", p.dim("·"), p.dim(&format!("没同步：{why}")));
+            json!({ "skipped": why })
+        }
+    };
     if json {
-        return Ok(Output::Json(json!({ "project": project, "dryRun": dry_run, "versions": rows })));
+        return Ok(Output::Json(json!({ "project": project, "dryRun": dry_run, "versions": rows, "unreleased": unreleased })));
     }
     text += &if dry_run {
         p.dim(&format!("没有写入（--dry-run）：项目 {project}，{} 个版本\n", rows.len()))
@@ -211,13 +281,5 @@ mod tests {
         );
         assert!(card_refs("卡片：default#3").is_empty());
         assert!(card_refs("卡片：default/main#0").is_empty());
-    }
-
-    #[test]
-    fn skips_release_commits() {
-        assert!(is_release_commit("chore: 发版 v0.1.21", "v0.1.21"));
-        assert!(is_release_commit("chore(release): v1.2.0", "v1.2.0"));
-        assert!(!is_release_commit("chore: 发版 v0.1.21", "v0.1.2"));
-        assert!(!is_release_commit("feat: 支持 v0.1.21 的格式", "v0.1.21"));
     }
 }

@@ -2,7 +2,7 @@
    项目 Tab 的提交时间轴（PRD §10.4）用到的纯函数：分段、版本颜色、日期分隔、间隔文字
    数据和里程碑页同一份：GET /api/milestones（lib/milestones.ts 的类型）
    ========================================================================== */
-import { sortCards, type MilestoneCard, type Milestones, type ReleaseCommit } from './milestones';
+import { cardRef, sortCards, type MilestoneCard, type Milestones, type ReleaseCommit } from './milestones';
 import type { Status } from './types';
 
 /** 版本的颜色：按发版先后轮流取，相邻两版色相隔得远；新发一版不改老版本的颜色。
@@ -23,13 +23,14 @@ export interface Seg {
   releasedAt: number | null;
   /** 上一个版本发版的时间（算间隔）；没有上一个版本为空 */
   prevAt: number | null;
-  /** 这一版的提交（从新到旧）；未发版为空 */
+  /** 这一版的提交（从新到旧）；未发版是还没发版的提交 */
   commits: ReleaseCommit[];
-  /** 未发版：上次发版之后开始做的卡片（按里程碑页的顺序）；版本为空 */
+  /** 未发版：还没有提交连着的卡片（上次发版之后开始做的，按里程碑页的顺序），画在这一段的提交上面；版本为空 */
   cards: MilestoneCard[];
 }
 
 /** 分段：board 是只看的白板路径（null 看整个项目）。
+    - 最上面是未发版：还没发版的提交（服务端没有时为空），和还没有提交连着的未发版卡片；两样都没有时没有这一段
     - 只算有发版记录的版本（手动建的版本标签没有提交，不进时间轴）
     - 只看一块白板时，只留连到这块白板卡片的提交；一个提交都不剩的版本整段不显示 */
 export function segmentsOf(data: Milestones, board: string | null, statusOf: (c: MilestoneCard) => Status | undefined): Seg[] {
@@ -37,12 +38,15 @@ export function segmentsOf(data: Milestones, board: string | null, statusOf: (c:
   const hit = (c: ReleaseCommit) => !bk || c.cards.some(r => r.startsWith(`${bk}#`));
   const released = data.versions.filter((v): v is typeof v & { releasedAt: number } => v.releasedAt != null);
   const segs: Seg[] = [];
+  const unreleased = data.unreleased ?? [];
+  const linked = new Set(unreleased.flatMap(c => c.cards));
+  const pending = unreleased.filter(hit);
   const next = sortCards(
-    data.cards.filter(c => c.group === 'next' && (!board || c.board === board)),
+    data.cards.filter(c => c.group === 'next' && (!board || c.board === board) && !linked.has(cardRef(c))),
     statusOf,
   );
-  if (next.length)
-    segs.push({ kind: 'next', key: 'next', name: '未发版', color: 'var(--c-doing)', releasedAt: null, prevAt: released[0]?.releasedAt ?? null, commits: [], cards: next });
+  if (next.length || pending.length)
+    segs.push({ kind: 'next', key: 'next', name: '未发版', color: 'var(--c-doing)', releasedAt: null, prevAt: released[0]?.releasedAt ?? null, commits: pending, cards: next });
   released.forEach((v, i) => {
     const commits = v.commits.filter(hit);
     if (!commits.length) return;
@@ -109,9 +113,10 @@ export function gapText(ms: number) {
   return `${Math.round(h / 24)} 天`;
 }
 
-/** 页头右边的总数：19 个版本 · 193 个提交（只算版本，不算未发版）；一个版本都没有时为空 */
+/** 页头右边的总数：19 个版本 · 193 个提交（提交含未发版的）；一个版本、一个提交都没有时为空 */
 export function summary(segs: Seg[]) {
-  const vs = segs.filter(s => s.kind === 'version');
-  if (!vs.length) return null;
-  return `${vs.length} 个版本 · ${vs.reduce((a, s) => a + s.commits.length, 0)} 个提交`;
+  const vs = segs.filter(s => s.kind === 'version').length;
+  const n = segs.reduce((a, s) => a + s.commits.length, 0);
+  if (!vs && !n) return null;
+  return [vs ? `${vs} 个版本` : '', n ? `${n} 个提交` : ''].filter(Boolean).join(' · ');
 }

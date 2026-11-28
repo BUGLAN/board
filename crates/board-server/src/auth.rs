@@ -429,7 +429,7 @@ pub(crate) async fn guard(State(s): State<AppState>, mut req: Request, next: Nex
                     || path.starts_with("/files/")
                     || host_path(&path, &["work", "mcp", "providers", "git"])))
                 || (m == Method::POST
-                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/dispatches/move" | "/releases")
+                    && (matches!(path.as_str(), "/cmd" | "/files" | "/agents/check" | "/agents/beat" | "/agents/next" | "/dispatches" | "/dispatches/cancel" | "/dispatches/move" | "/releases" | "/releases/next")
                         || host_path(&path, &["beat", "begin", "pull", "round", "rename", "selftested", "synced"])
                         || host_path3(&path, "skills", |t| t == "imported")
                         || host_path3(&path, "ls", |t| t.parse::<i64>().is_ok())

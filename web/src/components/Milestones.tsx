@@ -15,6 +15,7 @@ import {
   cardRef,
   cardsOf,
   commitsByCard,
+  commitsOf,
   defaultPage,
   gap,
   looseCommits,
@@ -200,8 +201,9 @@ function VersionView({
   const sorted = useMemo(() => sortCards(cards, statusOf), [cards, statusOf]);
   const open = sorted.filter(c => roleOf(statusOf(c)) !== 'done');
   const done = sorted.filter(c => roleOf(statusOf(c)) === 'done');
-  const commits = useMemo(() => commitsByCard(v), [v]);
-  const loose = looseCommits(v);
+  const pageCommits = useMemo(() => commitsOf(data, page), [data, page]);
+  const commits = useMemo(() => commitsByCard(pageCommits), [pageCommits]);
+  const loose = looseCommits(pageCommits);
   const released = v?.releasedAt != null;
   const start = startOf(data, page);
   const i = pages.indexOf(page);
@@ -303,7 +305,8 @@ function metaText(data: Milestones, page: MsKey, s: Summary, start: number | nul
   if (page === 'next') {
     const last = data.versions.find(v => v.releasedAt != null);
     const doing = s.byStatus.filter(x => x.role === 'doing').reduce((a, x) => a + x.n, 0);
-    return [last ? `${last.name} 之后` : '还没有发过版', `${s.total} 张已经开始做`, doing ? `${doing} 张正在做` : ''].filter(Boolean).join(' · ');
+    const n = data.unreleased?.length ?? 0;
+    return [last ? `${last.name} 之后` : '还没有发过版', `${s.total} 张已经开始做`, doing ? `${doing} 张正在做` : '', n ? `${n} 个提交` : ''].filter(Boolean).join(' · ');
   }
   const v = versionOf(data, page);
   if (!v) return '';
