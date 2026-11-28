@@ -18,9 +18,6 @@
 /* 卡片详情：只有摘要、动态还在加载时 */
 .d-activity:empty::before { content: ""; }
 
-/* 画布节点拖动时不要被入场动画干扰 */
-.cv-node.dragging { animation: none !important; }
-
 /* 页头的白板名太长时省略 */
 .crumbs b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

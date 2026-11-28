@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react';
 import { newProject, openBoard, openCard } from '../lib/actions';
 import { api } from '../lib/api';
-import { canvasHighlight } from '../lib/canvasHighlight';
 import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { hiddenRules, sidebarLabels } from '../lib/sidebarLabels';
 import type { BoardEvent, Card, Label } from '../lib/types';
@@ -25,6 +24,7 @@ import { StatsSide } from './StatsTab';
 import { Skeleton } from './Skeleton';
 import { visibleInbox } from '../lib/split';
 import { SideSelect } from './BoardSelect';
+import { setTlBoard, useTlScope } from '../store/timeline';
 
 /** 每个标签的名称、提示和图标；顺序由 lib/tabs 的 TAB_ORDER 决定（和数字快捷键一致），设置固定在底部 */
 const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
@@ -32,7 +32,7 @@ const TAB_META: Record<Tab, { label: string; tip: string; icon: ReactNode }> = {
   inbox: { label: '未整理', tip: '未整理', icon: <InboxIcon24 /> },
   milestones: { label: '里程碑', tip: '里程碑 · 按版本看卡片', icon: <MilestonesIcon24 /> },
   stats: { label: '大盘', tip: '大盘 · 白板和项目的统计', icon: <StatsIcon24 /> },
-  projects: { label: '项目', tip: '项目 · 白板总览', icon: <ProjectsIcon24 /> },
+  projects: { label: '项目', tip: '项目 · 提交时间轴', icon: <ProjectsIcon24 /> },
   hosts: { label: '机器', tip: '机器 · board host', icon: <HostsIcon24 /> },
   agent: { label: 'Agent', tip: 'Agent · 接入、共用配置、自动领取', icon: <AgentIcon24 /> },
   settings: { label: '设置', tip: '设置', icon: <SettingsIcon24 /> },
@@ -866,9 +866,22 @@ export function ProjectsSide() {
         n.add(key);
       }
       pref.set('projTreeClosed', [...n]);
-      if (!n.has(key)) window.dispatchEvent(new CustomEvent('project:focus', { detail: key }));
       return n;
     });
+  const scope = useTlScope();
+  /** 点项目：时间轴看整个项目；换项目时当前白板换成它的第一块（项目跟着当前白板走），收起的展开 */
+  const pickProject = (key: string) => {
+    const p = projects.find(x => x.key === key);
+    if (!p) return;
+    setTlBoard(null);
+    if (key !== pk && p.boards[0]) openBoard(p.boards[0].path, { stay: true });
+    if (closed.has(key)) toggle(key);
+  };
+  /** 点白板：时间轴只看这块白板，再点一次回到整个项目；当前白板也换成它（不离开项目 Tab） */
+  const pickBoard = (b: string) => {
+    setTlBoard(scope.board === b ? null : b);
+    openBoard(b, { stay: true });
+  };
   const ctx = (kind: 'project' | 'board', id: string) => (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -903,7 +916,7 @@ export function ProjectsSide() {
         </Tip>
       </header>
       <SideFilter value={q} onChange={setQ} placeholder="筛选项目和白板" />
-      <div className="side-scroll" role="tree" onPointerLeave={() => canvasHighlight(null)}>
+      <div className="side-scroll" role="tree">
         {!ws ? (
           <SkeletonTree />
         ) : rows.length ? (
@@ -911,18 +924,42 @@ export function ProjectsSide() {
             const isClosed = closed.has(p.key) && !query;
             const working = new Set(p.boards.flatMap(b => b.holders)).size;
             return (
-              <div key={p.key} className={cx('pt-proj', isClosed && 'closed')} data-project={p.key} role="treeitem" aria-expanded={!isClosed}>
+              <div
+                key={p.key}
+                className={cx('pt-proj', isClosed && 'closed')}
+                data-project={p.key}
+                role="treeitem"
+                aria-expanded={!isClosed}
+                aria-selected={scope.project === p.key && !scope.board}
+              >
                 <div
-                  className={cx('pt-row proj', p.key === pk && 'in-current')}
+                  className={cx('pt-row proj', p.key === pk && 'in-current', scope.project === p.key && !scope.board && 'current')}
                   tabIndex={0}
-                  onClick={() => toggle(p.key)}
-                  onKeyDown={key(() => toggle(p.key))}
+                  style={{ ['--pc' as string]: p.color }}
+                  onClick={() => pickProject(p.key)}
+                  onKeyDown={e => {
+                    // ← 收起、→ 展开（树的惯例）；回车、空格选这个项目
+                    if ((e.key === 'ArrowLeft' && !isClosed) || (e.key === 'ArrowRight' && isClosed)) {
+                      e.preventDefault();
+                      toggle(p.key);
+                    } else key(() => pickProject(p.key))(e);
+                  }}
                   onContextMenu={ctx('project', p.key)}
-                  onPointerEnter={() => canvasHighlight(p.key)}
                 >
-                  <svg className="chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="m6 8 4 4 4-4" />
-                  </svg>
+                  <button
+                    type="button"
+                    className="pt-chev"
+                    aria-label={isClosed ? '展开' : '收起'}
+                    tabIndex={-1}
+                    onClick={e => {
+                      e.stopPropagation();
+                      toggle(p.key);
+                    }}
+                  >
+                    <svg className="chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m6 8 4 4 4-4" />
+                    </svg>
+                  </button>
                   <ProjectAvatar name={p.name} color={p.color} className="sm" />
                   <span className="nm">{p.name}</span>
                   {working > 0 && (
@@ -941,14 +978,14 @@ export function ProjectsSide() {
                     {bs.map(b => (
                       <div
                         key={b.path}
-                        className={cx('pt-row brd', b.path === path && 'current')}
+                        className={cx('pt-row brd', scope.board === b.path && 'current')}
                         tabIndex={0}
                         role="treeitem"
+                        aria-selected={scope.board === b.path}
                         style={{ ['--pc' as string]: p.color }}
-                        onClick={() => openBoard(b.path)}
-                        onKeyDown={key(() => openBoard(b.path))}
+                        onClick={() => pickBoard(b.path)}
+                        onKeyDown={key(() => pickBoard(b.path))}
                         onContextMenu={ctx('board', b.path)}
-                        onPointerEnter={() => canvasHighlight(b.path)}
                       >
                         <span className="pt-bic">
                           <Icon name="board" />

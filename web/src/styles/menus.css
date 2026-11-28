@@ -1,0 +1,87 @@
+/* ==========================================================================
+   顶栏的项目 / 白板切换器，⋯ 菜单和选择框的选项菜单（.ctx）
+   ========================================================================== */
+
+/* ---------------- 顶栏切换器：白板分组 ---------------- */
+.pj-sep { color: var(--text-4); font-weight: 300; }
+.pj-board { font-weight: 500; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-switch { max-width: 380px; }
+.pj-menu { width: 380px; }
+.pj-group { display: flex; align-items: center; gap: 8px; padding: 10px 10px 4px; font-size: 12px; }
+.pj-group b { font-weight: 600; }
+.pj-group .mono { font-size: 11px; color: var(--text-3); }
+.pj-row { padding-left: 18px; }
+.pj-bic { width: 28px; height: 28px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--pc); background: color-mix(in srgb, var(--pc) 14%, transparent); flex: none; }
+.pj-bic svg { width: 16px; height: 16px; }
+.pj-bic.lg { width: 44px; height: 44px; border-radius: var(--r-md); }
+.pj-bic.lg svg { width: 22px; height: 22px; }
+
+/* ---------------- ⋯ 菜单 ---------------- */
+.ctx {
+  position: fixed; z-index: 280; min-width: 210px; padding: 5px; border-radius: var(--r-md);
+  background: var(--glass-strong); backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
+  opacity: 0; transform: scale(.96) translateY(-4px); pointer-events: none; visibility: hidden;
+  transition: opacity var(--dur-1), transform var(--dur-2) var(--spring-soft), visibility 0s linear var(--dur-2);
+}
+.ctx.on { opacity: 1; transform: none; pointer-events: auto; visibility: visible; transition: opacity var(--dur-1), transform var(--dur-2) var(--spring-soft), visibility 0s; }
+.ctx-title { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px; font-size: 12.5px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.ctx-title b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.ctx-title .pj-bic { width: 22px; height: 22px; border-radius: var(--r-xs); }
+.ctx button[data-do] { display: flex; align-items: center; gap: 9px; width: 100%; height: 32px; padding: 0 9px; border-radius: var(--r-sm); font-size: 13px; color: var(--text); text-align: left; }
+.ctx button[data-do] svg { width: 15px; height: 15px; color: var(--text-3); }
+.ctx button[data-do]:hover, .ctx button[data-do]:focus-visible { background: color-mix(in srgb, var(--text) 7%, transparent); outline: none; }
+.ctx button[data-do] code { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); }
+.ctx button.danger { color: var(--danger-text); }
+.ctx button.danger svg { color: var(--danger); }
+.ctx button[disabled] { opacity: .4; pointer-events: none; }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.ctx-swatches { display: flex; gap: 6px; padding: 6px 9px 8px; }
+.ctx-swatches .swatch { width: 18px; height: 18px; border-radius: var(--r-xs); }
+
+.dialog.pj-modal .input.sel { width: 100%; height: 36px; padding: 0 10px; }
+
+@media (max-width: 760px) {
+  .pj-sep, .pj-board { display: none; }
+  .pj-menu { width: auto; }
+}
+
+/* ---------------- 白板页头「提示词」菜单 ---------------- */
+/* 状态块排序菜单 */
+/* 卡片详情「移动到」 */
+/* 选择框的选项：至少和选择框一样宽（脚本写 min-width），选项多了在自己里面滚；层级在表单弹窗（.dialog-wrap 320）之上 */
+.ctx.ctx-select { z-index: 330; min-width: 0; max-width: calc(100vw - 16px); max-height: min(308px, calc(100vh - 32px)); overflow-y: auto; overscroll-behavior: contain; }
+.ctx-select button[data-do] { height: 30px; gap: 12px; font-size: 12.5px; white-space: nowrap; }
+.ctx-select .sel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 手机上选项比屏幕还长（供应商 · 模型名）：换行显示全文，不在屏幕边缘截断（default/main#384） */
+@media (max-width: 760px) {
+  .ctx-select button[data-do] { height: auto; min-height: 36px; padding-top: 7px; padding-bottom: 7px; white-space: normal; }
+  .ctx-select .sel-name { overflow-wrap: anywhere; }
+}
+.ctx-select button.on { font-weight: 600; color: color-mix(in oklab, var(--brand), var(--ink)); }
+.ctx-select button.on svg { width: 14px; height: 14px; color: currentColor; }
+.ctx.ctx-move { width: 240px; }
+.ctx-move .mv-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ctx-move .mv-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ctx-move .mv-count { font-size: 11px; color: var(--text-3); }
+.ctx-move .mv-note { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.ctx-move .mv-note svg { width: 12px; height: 12px; }
+.ctx-move .mv-item.vetoed .mv-name, .ctx-move .mv-item.vetoed .mv-dot { opacity: .45; }
+.ctx-move .mv-item.vetoed { cursor: not-allowed; }
+.ctx.ctx-prompts { width: min(400px, calc(100vw - 16px)); }
+/* 默认单行：标题 + 截断的句子摘要，不再一次堆四段长句 */
+.ctx .qp-item { display: flex; flex-direction: row; align-items: baseline; gap: 8px; height: auto; padding: 6px 9px; }
+.ctx button.qp-item[data-do] { height: auto; align-items: baseline; gap: 8px; padding: 6px 9px; }
+.qp-title { flex: none; font-size: 13px; font-weight: 550; color: var(--text); white-space: nowrap; }
+.ctx .qp-text { display: block; flex: 1; min-width: 0; font-family: var(--f-mono); font-size: 11px; line-height: 1.6; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qp-labels { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 9px; }
+.ctx .qp-item.qp-labels { flex-direction: column; align-items: stretch; gap: 3px; }
+.qp-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.qp-chips button { border-radius: var(--r-xs); transition: transform var(--dur-1) var(--spring-soft); }
+.qp-chips button:hover { transform: translateY(-1px); }
+.qp-chips button:active { transform: scale(.95); }
+.qp-chips button:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.qp-empty { font-size: 12px; color: var(--text-3); }
+.ctx .qp-chips button[data-do] { display: inline-flex; width: auto; height: auto; padding: 0; gap: 0; }
+.ctx .qp-chips button[data-do]:hover, .ctx .qp-chips button[data-do]:focus-visible { background: none; }
+.ctx-title > svg { width: 15px; height: 15px; flex: none; color: var(--text-3); }

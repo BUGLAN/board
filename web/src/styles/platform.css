@@ -67,9 +67,7 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .app > .activitybar { grid-row: 3; grid-column: 1; }
 
   /* 「未整理」在手机上就是主区的「未整理」页（筛选放在页头下面），不显示侧栏 */
-  /* 手机上「项目」显示树，画布留给大屏 */
-  .app[data-tab="projects"] > .sidepanel { display: block; }
-  .app[data-tab="projects"] > .main { display: none; }
+  /* 「项目」在手机上就是主区的时间轴，换项目用顶栏的切换器，不显示侧栏的项目树 */
   .app[data-side="closed"] .sidepanel { margin-right: 0; transform: none; opacity: 1; visibility: visible; pointer-events: auto; }
   .side-inner { width: 100%; }
   .side-resize { display: none; }

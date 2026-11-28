@@ -9,6 +9,7 @@
    ========================================================================== */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { create } from 'zustand';
+import { openCardAt } from '../lib/actions';
 import { api } from '../lib/api';
 import {
   cardRef,
@@ -22,6 +23,7 @@ import {
   roleOf,
   sortCards,
   startOf,
+  statusLookup,
   summarize,
   versionOf,
   type MilestoneCard,
@@ -33,7 +35,7 @@ import {
 import { statusColor } from '../lib/schema';
 import type { Label, ProjectInfo, Status } from '../lib/types';
 import { cx, dateTime, reduceMotion, since } from '../lib/util';
-import { jumpDetail, openDetail, setPath, useCurrent, useData } from '../store/data';
+import { useCurrent, useData } from '../store/data';
 import { overlayOpen } from '../store/ui';
 import { AgentAvatar, LabelChip, Tip, Title, useNow } from './bits';
 import { Icon } from './Icon';
@@ -97,18 +99,7 @@ function usePage(): { data: Milestones | null; page: MsKey | null; pages: MsKey[
 
 /** 卡片所在的状态（按白板找） */
 function useStatusOf(project: ProjectInfo | undefined) {
-  return useMemo(() => {
-    const flows = new Map<string, Status[]>((project?.boards ?? []).map(b => [b.path, b.statuses]));
-    return (c: MilestoneCard) => flows.get(c.board)?.find(s => s.key === c.column);
-  }, [project]);
-}
-
-/** 打开卡片详情：别的白板上的先切过去（不离开里程碑 Tab） */
-async function openMsCard(path: string, id: number) {
-  if (path !== useData.getState().path) await setPath(path);
-  const open = useData.getState().detailId;
-  if (open != null && open !== id) await jumpDetail(id);
-  else await openDetail(id);
+  return useMemo(() => statusLookup(project?.boards ?? []), [project]);
 }
 
 /** J / K、上下按钮：在页之间走（到头就停） */
@@ -392,7 +383,7 @@ function Row({
   const role = roleOf(s);
   const others = labels.filter(l => c.labels.includes(l.id) && !/^v\d/i.test(l.name));
   return (
-    <button type="button" className={cx('msp-row', role === 'done' && 'is-done')} onClick={() => void openMsCard(c.board, c.id)}>
+    <button type="button" className={cx('msp-row', role === 'done' && 'is-done')} onClick={() => void openCardAt(c.board, c.id)}>
       <i className="msp-dot" data-role={role} style={{ ['--sc' as string]: statusColor(s?.color ?? 'todo') }} title={s?.name} />
       <span className="msp-id mono">#{c.id}</span>
       <span className="msp-title">

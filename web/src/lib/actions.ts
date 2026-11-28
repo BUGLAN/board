@@ -5,7 +5,7 @@ import { api } from './api';
 import { boardPrompt, detailPrompt, type QuickPrompt } from './prompt';
 import { boardFlow, cardTotal, INBOX, KEY_RE, PROJECT_COLORS, slug } from './schema';
 import { projectDirError } from './projectDir';
-import type { CardDetail, Pos } from './types';
+import type { CardDetail } from './types';
 import { copyText, isMobile } from './util';
 import { batchCards, batchMovePatch, boardMeta, canCardBack, canCardFwd, cardBackStep, cardFwdStep, isDraft, jumpDetail, jumpToCard, openDetail, optimistic, patchProject, projectKey, setPath, useData, type BatchResult, type Patch } from '../store/data';
 import {
@@ -31,6 +31,15 @@ export function openBoard(path: string, { stay = false } = {}) {
   setPath(path);
   const tab = useUI.getState().tab;
   if (!stay && tab !== 'board' && tab !== 'inbox') setTab('board');
+}
+
+/** 打开某块白板上的一张卡片的详情，不换 Tab（里程碑、项目时间轴用）：别的白板上的先切过去；
+    已经开着别的卡片时是「换一张」，能返回 */
+export async function openCardAt(path: string, id: number) {
+  if (path !== data().path) await setPath(path);
+  const open = data().detailId;
+  if (open != null && open !== id) await jumpDetail(id);
+  else await openDetail(id);
 }
 
 /** 打开卡片详情（「未整理」的条目切到未整理 Tab） */
@@ -149,7 +158,7 @@ const keyError = (k: string) => (KEY_RE.test(k) ? null : '标识只能用小写�
 const projectTaken = (k: string) => !!data().ws?.projects.some(p => p.key === k);
 const boardTaken = (pk: string, k: string) => !!data().ws?.projects.find(p => p.key === pk)?.boards.some(b => b.key === k);
 
-export function newProject({ pos }: { pos?: Pos } = {}) {
+export function newProject() {
   closeSwitcher();
   const fields: FormField[] = [
     { name: 'name', label: '项目名称', placeholder: '例如：官网改版', required: true },
@@ -181,7 +190,7 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
     onSubmit: async v => {
       const { key } = await optimistic(null, () =>
         api.createProject({
-          name: v.name, key: v.key, desc: v.desc, color: v.color, pos, dir: v.dir?.trim() || undefined,
+          name: v.name, key: v.key, desc: v.desc, color: v.color, dir: v.dir?.trim() || undefined,
           board: { name: v.boardName, key: v.boardKey || 'main' },
         }),
       );
@@ -199,7 +208,7 @@ export function newProject({ pos }: { pos?: Pos } = {}) {
   });
 }
 
-export function newBoard(pk = data().path.split('/')[0], { pos }: { pos?: Pos } = {}) {
+export function newBoard(pk = data().path.split('/')[0]) {
   closeSwitcher();
   const projects = data().ws?.projects ?? [];
   openForm({
@@ -219,11 +228,10 @@ export function newBoard(pk = data().path.split('/')[0], { pos }: { pos?: Pos } 
     ],
     onSubmit: async v => {
       const { path } = await optimistic(null, () =>
-        api.createBoard({ project: v.project, name: v.name, key: v.key, desc: v.desc, pos: v.project === pk ? pos : undefined }),
+        api.createBoard({ project: v.project, name: v.name, key: v.key, desc: v.desc }),
       );
       if (useUI.getState().tab === 'projects') {
         toast({ type: 'success', title: `已创建白板「${v.name.trim()}」`, text: `BOARD=${path}`, action: { label: '打开', fn: () => openBoard(path) } });
-        window.dispatchEvent(new CustomEvent('board:focus', { detail: path }));
       } else {
         afterCreate(path);
         toast({ type: 'success', title: `已创建白板「${v.name.trim()}」`, text: `agent 用 BOARD=${path} 接入。` });
@@ -232,11 +240,10 @@ export function newBoard(pk = data().path.split('/')[0], { pos }: { pos?: Pos } 
   });
 }
 
+/** 建好之后：在项目 Tab 上留在这一页（时间轴换到新项目），别处打开新白板 */
 function afterCreate(path: string) {
-  if (useUI.getState().tab === 'projects') {
-    setPath(path);
-    window.dispatchEvent(new CustomEvent('board:focus', { detail: path }));
-  } else openBoard(path);
+  if (useUI.getState().tab === 'projects') setPath(path);
+  else openBoard(path);
 }
 
 const saved = () => toast({ type: 'success', title: '已保存', duration: 1400 });

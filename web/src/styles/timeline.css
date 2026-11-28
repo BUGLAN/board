@@ -1,0 +1,163 @@
+/* ==========================================================================
+   项目 Tab：提交时间轴（components/Timeline）
+   一栏 = 时间轴（节点） | 提交说明（右端是时间）+ 卡片；按版本分段，--vc 是这一版的颜色
+   ========================================================================== */
+
+.page-tl { position: relative; overflow: hidden; container-type: inline-size; }
+.gt-scroll { flex: 1; min-height: 0; overflow-y: auto; scroll-padding-top: 48px; }
+.gt-wrap {
+  --gt-rw: 22px; /* 时间轴那一列 */
+  --gt-gap: 10px;
+  --gt-rail-x: calc(var(--gt-rw) / 2);
+  /* 内容区宽度、内边距和里程碑、未整理、大盘、机器、设置一致：--page-w（tokens.css），切 Tab 时左右边界不动 */
+  width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 24px 28px 120px;
+  /* 时间轴 | 版本索引（右栏，跟着滚动吸顶） */
+  display: grid; grid-template-columns: minmax(0, 1fr) 96px; column-gap: 28px; align-items: start;
+}
+.gt-main { min-width: 0; }
+.gt-wrap > .gt-main:last-child { grid-column: 1 / -1; }
+
+/* ---------------- 页头 ---------------- */
+/* 页头用里程碑页的 .msp-crumb（项目 › 白板），这里只补跨两栏和右边的总数 */
+.gt-crumb { grid-column: 1 / -1; min-height: 34px; margin-bottom: 4px; }
+.gt-sum { margin-left: auto; }
+
+/* ---------------- 一段：版本 ---------------- */
+.gt-seg + .gt-seg { margin-top: 10px; }
+.gt-vh, .gt-item {
+  display: grid; grid-template-columns: var(--gt-rw) minmax(0, 1fr); column-gap: var(--gt-gap);
+}
+.gt-vh {
+  position: sticky; top: 0; z-index: 3; align-items: center; min-height: 48px; margin: 0 -12px; padding: 0 12px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4);
+}
+/* 段头的节点：比提交的节点大一号的菱形 */
+.gt-vdot {
+  justify-self: center; width: 12px; height: 12px; border-radius: 3px; transform: rotate(45deg);
+  background: var(--vc); box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px color-mix(in srgb, var(--vc) 30%, transparent);
+}
+.gt-vbody { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.gt-vname {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: var(--r-xs);
+  font: 700 13.5px var(--f-mono); letter-spacing: -.01em;
+  color: color-mix(in oklab, var(--vc) 72%, var(--ink));
+  background: color-mix(in srgb, var(--vc) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vc) 32%, transparent);
+}
+.gt-vdate { font-size: 12.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.gt-vmeta { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.gt-vwarn {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 15%, transparent);
+}
+.is-next .gt-vname { font-family: var(--f-sans); font-size: 13px; }
+
+/* ---------------- 时间轴 ---------------- */
+.gt-list { position: relative; margin: 0; padding: 4px 0 8px; list-style: none; }
+.gt-list::before {
+  content: ""; position: absolute; top: -10px; bottom: -10px; left: calc(var(--gt-rail-x) - 1px); width: 2px; border-radius: 2px;
+  background: color-mix(in srgb, var(--vc) 50%, transparent);
+}
+.gt-seg:last-of-type .gt-list::before { bottom: 0; }
+.is-next .gt-list::before {
+  background: repeating-linear-gradient(to bottom, color-mix(in srgb, var(--vc) 60%, transparent) 0 4px, transparent 4px 9px);
+}
+
+.gt-item { position: relative; padding: 5px 0; }
+.gt-item.has-card { padding-bottom: 9px; }
+/* 提交时间：提交说明这一行的右端 */
+.gt-t { flex: none; margin-left: auto; padding-left: 12px; font-size: 11px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gt-dot {
+  position: relative; z-index: 1; justify-self: center; width: 10px; height: 10px; margin-top: 6px; border-radius: 50%;
+  background: var(--vc); box-shadow: 0 0 0 3px var(--bg);
+}
+.gt-item.bare .gt-dot { width: 8px; height: 8px; margin-top: 7px; background: var(--bg); box-shadow: inset 0 0 0 1.6px color-mix(in srgb, var(--vc) 75%, transparent), 0 0 0 3px var(--bg); }
+.is-next .gt-dot { margin-top: 15px; background: var(--bg); box-shadow: inset 0 0 0 2px var(--vc), 0 0 0 3px var(--bg); }
+
+.gt-day {
+  padding: 12px 0 2px calc(var(--gt-rw) + var(--gt-gap));
+  font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--text-3);
+}
+.gt-day:first-child { padding-top: 4px; }
+
+/* ---------------- 一栏：提交 ---------------- */
+.gt-body { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
+.gt-commit { display: flex; align-items: baseline; gap: 8px; min-height: 22px; padding-top: 2px; font-size: 12.5px; color: var(--text-2); }
+.gt-sha { flex: none; font-size: 11px; color: var(--text-3); }
+.gt-msg { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* 没连到卡片的提交：只有提交说明，整句显示、不能点 */
+.gt-item.bare .gt-msg { white-space: normal; color: var(--text-3); text-wrap: pretty; }
+.gt-item.bare { cursor: default; }
+
+.gt-card {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 7px 10px 7px 12px; border-radius: var(--r-md);
+  text-align: left; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-1);
+  transition: box-shadow var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out), background-color var(--dur-2);
+}
+.gt-card:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vc) 45%, var(--line-2)), var(--shadow-2); transform: translateY(-1px); }
+.gt-card:active { transform: translateY(0); }
+.gt-card:focus-visible { outline-offset: 2px; }
+.gt-id { flex: none; min-width: 34px; font-size: 11.5px; font-weight: 600; color: var(--text-3); }
+.gt-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 550; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gt-title code { font-family: var(--f-mono); font-size: .9em; padding: 0 .3em; border-radius: var(--r-xs); background: var(--surface-3); }
+.gt-tags { display: flex; align-items: center; gap: 6px; flex: none; }
+.gt-board { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs); font-size: 11px; color: var(--text-2); background: var(--surface-3); white-space: nowrap; }
+.gt-av { width: 18px; height: 18px; font-size: 9.5px; }
+.gt-st {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 11px; font-weight: 600; color: color-mix(in oklab, var(--sc), var(--ink)); background: color-mix(in srgb, var(--sc) 13%, transparent);
+}
+/* 做完的最多：不抢眼，只留一个点 */
+.gt-st[data-role="done"] { padding: 0 2px 0 0; font-weight: 500; color: var(--text-3); background: none; }
+.gt-st[data-role="done"]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--sc); }
+.gt-gone { align-self: flex-start; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--r-xs); font-size: 11px; color: var(--text-3); border: 1px dashed var(--line-2); }
+
+/* 到底了：时间轴收个尾 */
+.gt-end { position: relative; height: 26px; }
+.gt-end::before {
+  content: ""; position: absolute; top: 6px; left: calc(var(--gt-rail-x) - 5px); width: 10px; height: 2px; border-radius: 2px; background: var(--line-3);
+}
+.gt-more { height: 1px; }
+
+/* ---------------- 版本索引 ---------------- */
+.gt-index {
+  position: sticky; top: 12px; max-height: calc(100dvh - var(--topbar-h) - 48px);
+  display: flex; flex-direction: column; gap: 1px; overflow-y: auto; scrollbar-width: none;
+}
+.gt-index::-webkit-scrollbar { display: none; }
+.gt-ix {
+  flex: none; display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border-radius: var(--r-xs);
+  font: 500 11.5px var(--f-mono); color: var(--text-3); text-align: left;
+  transition: background-color var(--dur-2), color var(--dur-2);
+}
+.gt-ix i { flex: none; width: 3px; height: 13px; border-radius: 2px; background: var(--vc); opacity: .5; transition: opacity var(--dur-2), height var(--dur-2) var(--ease-out); }
+.gt-ix:hover { color: var(--text); }
+.gt-ix:hover i { opacity: .9; }
+.gt-ix.on { color: var(--text); font-weight: 650; background: color-mix(in srgb, var(--vc) 12%, transparent); }
+.gt-ix.on i { opacity: 1; height: 16px; }
+.gt-ix.is-next { font-family: var(--f-sans); }
+@container (max-width: 1020px) {
+  .gt-index { display: none; }
+  .gt-wrap > .gt-main { grid-column: 1 / -1; }
+}
+
+/* ---------------- 空、加载 ---------------- */
+.gt-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 80px 0; font-size: 13px; color: var(--text-3); }
+.gt-empty b { font-size: 15px; font-weight: 600; color: var(--text-2); }
+.gt-empty code { font-family: var(--f-mono); font-size: .92em; padding: 1px 5px; border-radius: var(--r-xs); background: var(--surface-3); }
+.gt-sk { display: flex; flex-direction: column; gap: 14px; padding-top: 14px; }
+.gt-sk-row { padding-left: calc(var(--gt-rw) + var(--gt-gap)); }
+
+/* ---------------- 手机 ---------------- */
+@media (max-width: 760px) {
+  .gt-wrap { --gt-rw: 16px; --gt-gap: 8px; padding: 14px 16px 120px; }
+  .gt-card { flex-wrap: wrap; align-items: flex-start; row-gap: 6px; }
+  .gt-id { padding-top: 2px; }
+  .gt-title { flex-basis: calc(100% - 44px); white-space: normal; }
+  .gt-tags { flex-basis: 100%; padding-left: 44px; flex-wrap: wrap; }
+  .gt-vmeta { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gt-card, .gt-card:hover { transition: none; transform: none; }
+}

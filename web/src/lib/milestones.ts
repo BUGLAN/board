@@ -105,6 +105,12 @@ export type Role = 'done' | 'review' | 'error' | 'doing' | 'todo';
 /** 进度条从左到右、各状态张数的顺序 */
 export const ROLE_ORDER: Role[] = ['done', 'review', 'error', 'doing', 'todo'];
 
+/** 按卡片所在白板的工作流找它的状态（项目里的白板列表进来）；白板或状态找不到时为空 */
+export function statusLookup(boards: { path: string; statuses: Status[] }[]): (c: Pick<MilestoneCard, 'board' | 'column'>) => Status | undefined {
+  const flows = new Map(boards.map(b => [b.path, b.statuses]));
+  return c => flows.get(c.board)?.find(s => s.key === c.column);
+}
+
 export function roleOf(s: Pick<Status, 'final' | 'error' | 'lock' | 'claim'> | undefined): Role {
   if (!s) return 'todo';
   if (s.final) return 'done';

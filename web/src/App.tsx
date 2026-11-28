@@ -36,16 +36,16 @@ import {
   flash, toast, useUI, type Tab,
 } from './store/ui';
 
-/* 项目画布、Agent、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
+/* 项目时间轴、Agent、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
    只在当前 Tab 挂载，不随数据刷新在后台渲染。启动后空闲时预取，切过去不用等 */
-const loadCanvas = () => import('./components/Canvas');
+const loadTimeline = () => import('./components/Timeline');
 const loadSettings = () => import('./components/Settings');
 const loadAgent = () => import('./components/agent/AgentPage');
-const CanvasPage = lazy(() => loadCanvas().then(m => ({ default: m.CanvasPage })));
+const TimelinePage = lazy(() => loadTimeline().then(m => ({ default: m.TimelinePage })));
 const SettingsPage = lazy(() => loadSettings().then(m => ({ default: m.SettingsPage })));
 const AgentPage = lazy(() => loadAgent().then(m => ({ default: m.AgentPage })));
 const prefetch = () => {
-  void loadCanvas();
+  void loadTimeline();
   void loadSettings();
   void loadAgent();
   void import('./components/hosts/HostsPage');
@@ -59,8 +59,8 @@ const OP_LABEL: Record<string, string> = {
   timeout: '释放', lost: '异常退出', beat: '心跳', release: '强制释放', label: '标签', delete: '删除', dispatch: '派发', merge: '合并',
 };
 
-const PAGE: Record<Tab, 'board' | 'canvas' | 'stats' | 'hosts' | 'inbox' | 'milestones' | 'agent' | 'settings'> = {
-  board: 'board', inbox: 'inbox', milestones: 'milestones', projects: 'canvas', stats: 'stats', hosts: 'hosts', agent: 'agent', settings: 'settings',
+const PAGE: Record<Tab, 'board' | 'timeline' | 'stats' | 'hosts' | 'inbox' | 'milestones' | 'agent' | 'settings'> = {
+  board: 'board', inbox: 'inbox', milestones: 'milestones', projects: 'timeline', stats: 'stats', hosts: 'hosts', agent: 'agent', settings: 'settings',
 };
 
 /** 侧栏收起 / 展开时主内容跟着平移（只动 transform，不逐帧改宽度）：
@@ -271,10 +271,10 @@ function BoardApp() {
               <Page show={page === 'board'}>
                 <BoardView />
               </Page>
-              <Page show={page === 'canvas'}>
-                {page === 'canvas' && (
-                  <Lazy name="canvas">
-                    <CanvasPage />
+              <Page show={page === 'timeline'}>
+                {page === 'timeline' && (
+                  <Lazy name="tl">
+                    <TimelinePage />
                   </Lazy>
                 )}
               </Page>

@@ -8,7 +8,7 @@ import { setAgentMeta } from './agentMeta';
 import type { Milestones } from './milestones';
 import { readPrompts, type Prompt } from './prompts';
 import { normChatView, normDispatches, normHost, normHosts, normMcp, normProviders, normSession, normSkills, normWorkspace } from './normalize';
-import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Pos, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile, Chat, ChatView } from './types';
+import type { Attachment, DirList, BoardEvent, BoardSnapshot, CardCron, CardCronInput, CardDetail, ClaimRule, Cmd, Dispatch, ErrorCode, GitCred, HostInfo, HostWorkspace, Label, McpServer, Me, Provider, ProviderView, SearchHit, ServerInfo, SessionView, SkillInfo, Stats, StatsScope, Status, Tile, TokenInfo, TrashCard, Workspace, ProviderEndpoint, SkillImportPick, Sched, HostCopy, Profile, Chat, ChatView } from './types';
 
 export type CardBatchOp =
   | { op: 'move'; column: string }
@@ -170,7 +170,6 @@ export const api = {
     key: string;
     desc?: string;
     color?: string;
-    pos?: Pos;
     /** 项目目录（#488）：留空用项目标识 */
     dir?: string;
     board: { name: string; key: string; desc?: string };
@@ -182,7 +181,7 @@ export const api = {
     req('PATCH', `/api/projects/${q(key)}`, patch),
   deleteProject: (key: string) => req('DELETE', `/api/projects/${q(key)}`),
 
-  createBoard: (b: { project: string; name: string; key: string; desc?: string; pos?: Pos }) =>
+  createBoard: (b: { project: string; name: string; key: string; desc?: string }) =>
     req<{ path: string }>('POST', '/api/boards', b),
   updateBoard: (path: string, patch: { name?: string; desc?: string; readme?: string; repo?: string; branch?: string; auto?: boolean }) =>
     req('PATCH', `/api/boards/${path}`, patch),
@@ -212,8 +211,6 @@ export const api = {
   labelBatch: (board: string, ids: number[], add: number[], remove: number[]) =>
     req<{ changed: number[]; failed: { id: number; code: ErrorCode; message: string }[]; rev: number }>('POST', '/api/labels/batch', { board, ids, add, remove }),
   deleteLabel: (project: string, id: number) => req('DELETE', `/api/labels/${q(project)}/${id}`),
-
-  layout: (kind: 'project' | 'board', id: string, pos: Pos) => req('PUT', '/api/layout', { kind, id, x: pos.x, y: pos.y }),
 
   /* 工作流（board 是「项目/白板」路径） */
   createStatus: (board: string, name: string, color?: string) => req<Status>('POST', `/api/flow/${board}`, { name, color }),

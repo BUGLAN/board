@@ -163,6 +163,40 @@
 .recent-foot button { padding: 2px 8px; border-radius: var(--r-xs); font-size: 11.5px; font-weight: 500; color: color-mix(in oklab, var(--brand), var(--ink)); background: var(--surface-3); }
 .recent-foot button:hover { color: var(--brand-fg); background: var(--brand); }
 
+/* ---------------- 侧栏：项目树（项目 Tab；点项目 / 白板选时间轴的范围） ---------------- */
+.pt-proj + .pt-proj { margin-top: 2px; }
+.pt-row {
+  position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 4px 8px 4px 10px;
+  font-size: 13px; color: var(--text-2); text-align: left; cursor: pointer; border-radius: 0; outline-offset: -2px;
+  transition: background-color var(--dur-1), color var(--dur-1);
+}
+.pt-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+.pt-row .chev { width: 14px; height: 14px; color: var(--text-3); transition: transform var(--dur-3) var(--spring-soft); flex: none; }
+.pt-proj.closed .pt-row.proj .chev { transform: rotate(-90deg); }
+.pt-row.proj .nm { font-weight: 600; color: var(--text); }
+.pt-row .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pt-row .key { font-size: 11px; color: var(--text-3); }
+.pt-row .n { font-family: var(--f-mono); font-size: 11px; color: var(--text-3); min-width: 14px; text-align: right; }
+.pt-live { display: inline-flex; align-items: center; gap: 3px; font-family: var(--f-mono); font-size: 11px; color: color-mix(in oklab, var(--c-doing), var(--ink)); }
+.pt-live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: breathe 2.4s var(--ease-in-out) infinite; }
+.pt-more { width: 22px; height: 22px; border-radius: var(--r-xs); display: grid; place-items: center; color: var(--text-3); opacity: 0; flex: none; transition: opacity var(--dur-1), background-color var(--dur-1); }
+.pt-more svg { width: 15px; height: 15px; }
+.pt-row:hover .pt-more, .pt-row:focus-within .pt-more { opacity: 1; }
+.pt-more:hover { background: var(--surface-3); color: var(--text); }
+.pt-children { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-3) var(--ease-out); }
+.pt-children > div { overflow: hidden; min-height: 0; }
+.pt-proj.closed .pt-children { grid-template-rows: 0fr; }
+.pt-row.brd { padding-left: 34px; }
+.pt-row.brd::before { content: ""; position: absolute; left: 20px; top: 0; bottom: 0; width: 1px; background: var(--line-2); }
+.pt-bic { width: 18px; height: 18px; display: grid; place-items: center; color: var(--pc); flex: none; }
+.pt-bic svg { width: 15px; height: 15px; }
+.pt-row.brd.current { background: color-mix(in srgb, var(--pc) 13%, transparent); color: var(--text); box-shadow: inset 2px 0 0 var(--pc); }
+.pt-row.brd.current .nm { font-weight: 600; }
+/* 收起 / 展开只在箭头上：点整行是选范围 */
+.pt-chev { flex: none; display: grid; place-items: center; width: 18px; height: 18px; margin: 0 -2px; border-radius: var(--r-xs); color: var(--text-3); }
+.pt-chev:hover { background: var(--surface-3); color: var(--text); }
+.pt-row.proj.current { background: color-mix(in srgb, var(--pc) 13%, transparent); box-shadow: inset 2px 0 0 var(--pc); }
+
 /* ---------------- 未整理：空状态的插图（「未整理」页） ---------------- */
 .ie-art { position: relative; width: 64px; height: 50px; margin-bottom: 8px; }
 .ie-art i { position: absolute; left: 8px; right: 8px; height: 12px; border-radius: var(--r-xs); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); animation: ie-float 3.2s var(--ease-in-out) infinite; }

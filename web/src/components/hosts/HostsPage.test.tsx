@@ -387,7 +387,7 @@ describe('手机适配的样式还在（机器 tab、机器详情）', () => {
     // 「每个项目一个目录：<工作空间>\<项目>」这串路径没有空格，要能在中间断行
     expect(detail).toMatch(/\.hd-ws-main > small \{[^}]*overflow-wrap: anywhere/);
     // 选择框的选项列表（供应商 · 模型名很长）不比屏幕宽
-    expect(css('canvas.css')).toMatch(/\.ctx\.ctx-select \{[^}]*max-width: calc\(100vw - 16px\)/);
+    expect(css('menus.css')).toMatch(/\.ctx\.ctx-select \{[^}]*max-width: calc\(100vw - 16px\)/);
   });
 });
 
