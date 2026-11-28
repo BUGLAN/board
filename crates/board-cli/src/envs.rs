@@ -546,11 +546,31 @@ fn locate(env: &Env, cmd: &str, also: &[String]) -> Option<(String, String)> {
                     .map(str::to_string)
             };
             match hit {
-                Some(path) => Some((arg, path)),
+                Some(path) => {
+                    let path = if env.kind == Kind::GitBash { git_bash_path(&path).unwrap_or(path) } else { path };
+                    Some((arg, path))
+                }
                 None => fallback().map(|path| (path.clone(), path)),
             }
         }
     }
+}
+
+/// Git Bash 的 `command -v` 给出的是 MSYS 路径（`/c/...`，Cygwin 下也有 `/cygdrive/c/...`）：Windows 的 `Path`
+/// 不认它，要换成盘符路径。`/usr/bin/...` 这类 MSYS 根里的路径不能按盘符猜，原样返回 None
+fn git_bash_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/cygdrive/").or_else(|| path.strip_prefix('/'))?;
+    let (drive, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let mut chars = drive.chars();
+    let drive = chars.next()?;
+    if chars.next().is_some() || !drive.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(if tail.is_empty() {
+        format!("{}:\\", drive.to_ascii_uppercase())
+    } else {
+        format!("{}:\\{}", drive.to_ascii_uppercase(), tail.replace('/', "\\"))
+    })
 }
 
 /// 在 env 里 `<prog> --version` 的第一行（跳过 shell 自己的提示）
@@ -944,6 +964,35 @@ mod tests {
         let order = s(&["git-bash", "wsl:*", "pwsh", "powershell"]);
         let ids: Vec<&str> = supported(&order, &envs).iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["git-bash", "wsl:Ubuntu", "wsl:Debian", "pwsh"], "不在顺序里的（cmd）不选；本机没有的跳过");
+    }
+
+    /// Git Bash 报的 MSYS 盘符路径在 Windows 上换成原生路径；MSYS 根里的 `/usr/...` 不能猜成盘符
+    #[test]
+    fn git_bash_paths_become_windows_paths() {
+        assert_eq!(
+            git_bash_path("/c/Users/me/AppData/Roaming/npm/codex").as_deref(),
+            Some(r"C:\Users\me\AppData\Roaming\npm\codex")
+        );
+        assert_eq!(
+            git_bash_path("/cygdrive/d/Program Files/npm/codex.cmd").as_deref(),
+            Some(r"D:\Program Files\npm\codex.cmd")
+        );
+        assert_eq!(git_bash_path("/c").as_deref(), Some(r"C:\"));
+        assert_eq!(git_bash_path("/usr/bin/codex"), None);
+        assert_eq!(git_bash_path(r"C:\Users\me\codex"), None);
+    }
+
+    /// 真实 Git Bash 里探测一个 Windows 程序：`locate` 要把 `/c/...` 换成盘符路径，
+    /// 后面找 npm 包里的 `.exe`、判断安装位置都才拿得到文件
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_probe_reports_a_windows_path() {
+        let Some(git) = discover().into_iter().find(|e| e.kind == Kind::GitBash) else { return };
+        let c = probe(&git, "where.exe", &[]);
+        assert!(c.found, "Git Bash 里应找得到 where.exe");
+        let path = c.path.expect("探测结果要带路径");
+        assert!(!path.starts_with('/'), "还是 MSYS 路径：{path}");
+        assert!(Path::new(&path).is_file(), "不是 Windows 上能直接打开的文件：{path}");
     }
 
     #[test]
