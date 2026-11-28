@@ -146,6 +146,12 @@ fn git_credential_is_masked_and_only_the_host_token_reads_it() {
     let headers = [("authorization", bearer.as_str())];
     let r = send("POST", &format!("{}/api/hosts/win/beat", s.url), &headers, Some(json!({ "name": "win", "instance": "i1" })));
     assert_eq!(r.status, 200, "{}", r.text);
+    // 新机器默认不同步 Git 凭据：自己的令牌也拿不到原文（派发出去的 agent 拿的就是这个令牌，#686）；打开同步后才给
+    let r = send("GET", &format!("{}/api/hosts/win/git", s.url), &headers, None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+    assert!(r.text.contains("不改"), "{}", r.text);
+    let r = send("PATCH", &format!("{}/api/hosts/win", s.url), &[UI], Some(json!({ "syncGit": true })));
+    assert_eq!(r.status, 200, "{}", r.text);
     // 没设时：cred 是 null，取原文也是 null
     let r = send("GET", &format!("{}/api/git", s.url), &[UI], None);
     assert_eq!(r.body["cred"], Value::Null, "{}", r.text);

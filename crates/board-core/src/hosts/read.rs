@@ -68,6 +68,17 @@ pub(crate) struct HostRow {
 pub(super) const HOST_COLS: &str =
     "id, name, instance, os, version, agents, workspace, max, paused, agent, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]') AS rules, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180) AS max_run, COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20) AS idle_run, selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT json_group_array(json_object('id', id, 'name', name, 'agent', agent, 'provider', provider, 'model', model, 'effort', effort, 'note', note, 'only', json(only), 'sort', sort, 'createdAt', created_at)) FROM profiles), '[]') AS profiles_json, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
 
+/// 库里存着的目录：origin 去掉 http(s) 地址里的用户信息（#686）。上报时已经去掉了，这里管升级前存下的、
+/// 和离线机器（不再上报、不会被新的检查结果覆盖）的
+fn clean_origins(mut dirs: Vec<HostDir>) -> Vec<HostDir> {
+    for d in &mut dirs {
+        if let Some(o) = d.origin.as_mut() {
+            *o = crate::fit::strip_userinfo(o);
+        }
+    }
+    dirs
+}
+
 fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
     let agents_raw: String = r.get("agents")?;
     let workspace_raw: Option<String> = r.get("workspace")?;
@@ -85,7 +96,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         envs: serde_json::from_str(&envs_raw).unwrap_or_default(),
         run: serde_json::from_str(&run).unwrap_or_default(),
         workspace_raw,
-        dirs: serde_json::from_str(&dirs_raw).unwrap_or_default(),
+        dirs: clean_origins(serde_json::from_str(&dirs_raw).unwrap_or_default()),
         dirs_rev: r.get("dirs_rev")?,
         dirs_at: r.get("dirs_at")?,
         dirs_by: r.get("dirs_by")?,
@@ -589,6 +600,21 @@ impl<'a> R<'a> {
         Ok(h.token == Some(token) && h.online(now))
     }
 
+    /// 这个令牌能不能取这台机器要同步的密钥原文（Git 令牌、MCP 密钥，#686）：除了 [`Self::host_uses_token`]，
+    /// 这台机器还要打开了对应的同步（「Git 凭据」「MCP」用服务器的）。关着时 board host 自己不来取；派发出去的 agent
+    /// 拿的也是这台机器的令牌，不能借它把没同步的密钥原文取走。供应商 key 不看开关（派发时按角色要用）
+    pub fn host_secret(&self, name: &str, token: i64, kind: HostSecret, now: i64) -> Result<SecretAccess> {
+        let Some(h) = self.host_row(name)? else { return Ok(SecretAccess::NotThisHost) };
+        if h.token != Some(token) || !h.online(now) {
+            return Ok(SecretAccess::NotThisHost);
+        }
+        let on = match kind {
+            HostSecret::Git => h.sync_git,
+            HostSecret::Mcp => h.sync_mcp,
+        };
+        Ok(if on { SecretAccess::Ok } else { SecretAccess::SyncOff })
+    }
+
     /// `GET /api/hosts/mine`：这个令牌是哪台在线机器用的（`board check --agent <标识>` 在旧服务端上自己拼名字时用它）。
     /// 本机模式（服务端以 `--local` 运行，本机来的请求没有令牌）返回本机这一台：按本机主机名转成的机器名找，
     /// 找不到时（机器名改过、还没重新上报）取唯一的一台。登录的界面不带令牌，不看令牌找时为空
@@ -915,4 +941,23 @@ impl<'a> W<'a> {
             |r| r.get(0),
         )?)
     }
+}
+
+/// 机器取的是哪一种密钥原文（[`R::host_secret`]）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSecret {
+    /// 「Git 凭据」：看 `sync_git`
+    Git,
+    /// 「MCP」：看 `sync_mcp`
+    Mcp,
+}
+
+/// [`R::host_secret`] 的结果
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretAccess {
+    Ok,
+    /// 机器不在、离线，或者它现在用的不是这个令牌
+    NotThisHost,
+    /// 是这台机器的令牌，但这台机器没打开对应的同步
+    SyncOff,
 }

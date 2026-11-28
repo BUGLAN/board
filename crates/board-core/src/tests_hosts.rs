@@ -6759,3 +6759,52 @@ fn migration_turns_picks_into_profile_machines() {
     assert_eq!(sched.rules[0].profile, p.id);
     assert!(!sched.profiles.iter().any(|p| p.agent == "dsh"), "兜底的 agent 不建角色");
 }
+
+/// #686：机器上报的 git origin 去掉 http(s) 地址里的用户信息再存；升级前存下的（库里还带着令牌的）读出来时也去掉。
+/// SSH 写法原样留着（`git@` 是用户名，界面上会把它存成项目的仓库地址）
+#[test]
+fn reported_origin_drops_https_credentials() {
+    let mut s = store();
+    let mut rep = report("mbp", "i1", vec![]);
+    rep.dirs[0] = HostDir { board: B.into(), path: "/tmp/default".into(), status: Some("ok".into()), origin: Some("https://oauth2:glpat-secret@gitlab.com/o/r.git".into()), checked_at: Some(T0), ..Default::default() };
+    let w = beat(&mut s, T0, &rep).unwrap();
+    assert_eq!(w.host.dirs[0].origin.as_deref(), Some("https://gitlab.com/o/r.git"));
+    assert_eq!(host(&s, T0).dirs[0].origin.as_deref(), Some("https://gitlab.com/o/r.git"));
+    let raw: String = s.conn().query_row("SELECT dirs FROM hosts WHERE name = 'mbp'", [], |r| r.get(0)).unwrap();
+    assert!(raw.contains("https://gitlab.com/o/r.git") && !raw.contains("glpat-secret"), "{raw}");
+    let ws = serde_json::to_string(&s.read(|r| r.workspace(T0)).unwrap()).unwrap();
+    assert!(!ws.contains("glpat-secret"), "{ws}");
+    // 升级前存下的：直接写进库里，读出来也是去掉的
+    let old = raw.replace("https://gitlab.com/o/r.git", "https://u:old-token@gitlab.com/o/r.git");
+    s.conn().execute("UPDATE hosts SET dirs = ?1 WHERE name = 'mbp'", [&old]).unwrap();
+    assert_eq!(host(&s, T0).dirs[0].origin.as_deref(), Some("https://gitlab.com/o/r.git"));
+    assert!(!serde_json::to_string(&s.read(|r| r.workspace(T0)).unwrap()).unwrap().contains("old-token"));
+    // SSH 写法不动
+    rep.dirs[0].origin = Some("git@github.com:o/r.git".into());
+    rep.dirs[0].checked_at = Some(T0 + S);
+    let w = beat(&mut s, T0 + S, &rep).unwrap();
+    assert_eq!(w.host.dirs[0].origin.as_deref(), Some("git@github.com:o/r.git"));
+}
+
+/// #686：机器取 Git 令牌、MCP 密钥原文，除了要是这台机器在用的令牌、在线，还要它打开了对应的同步（新机器默认都关着）
+#[test]
+fn host_secrets_follow_the_sync_switches() {
+    use crate::hosts::{HostSecret, SecretAccess};
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    let at = |s: &Store, token: i64, kind: HostSecret, now: i64| s.read(|r| r.host_secret("mbp", token, kind, now)).unwrap();
+    assert_eq!(at(&s, 1, HostSecret::Git, T0 + S), SecretAccess::SyncOff, "新机器默认不同步 Git 凭据");
+    assert_eq!(at(&s, 1, HostSecret::Mcp, T0 + S), SecretAccess::SyncOff);
+    ui(&mut s, |w: &mut W| w.host_update("mbp", &HostPatch { sync_git: Some(true), ..Default::default() }).map(|_| ())).unwrap();
+    assert_eq!(at(&s, 1, HostSecret::Git, T0 + S), SecretAccess::Ok);
+    assert_eq!(at(&s, 1, HostSecret::Mcp, T0 + S), SecretAccess::SyncOff, "两个开关各管各的");
+    ui(&mut s, |w: &mut W| w.host_update("mbp", &HostPatch { sync_mcp: Some(true), ..Default::default() }).map(|_| ())).unwrap();
+    assert_eq!(at(&s, 1, HostSecret::Mcp, T0 + S), SecretAccess::Ok);
+    // 别的令牌、离线、不存在的机器：照旧不给
+    assert_eq!(at(&s, 2, HostSecret::Git, T0 + S), SecretAccess::NotThisHost);
+    assert_eq!(at(&s, 1, HostSecret::Git, T0 + 10 * 60 * S), SecretAccess::NotThisHost, "离线");
+    assert_eq!(s.read(|r| r.host_secret("nope", 1, HostSecret::Git, T0 + S)).unwrap(), SecretAccess::NotThisHost);
+    // 关掉之后又不给
+    ui(&mut s, |w: &mut W| w.host_update("mbp", &HostPatch { sync_git: Some(false), ..Default::default() }).map(|_| ())).unwrap();
+    assert_eq!(at(&s, 1, HostSecret::Git, T0 + S), SecretAccess::SyncOff);
+}

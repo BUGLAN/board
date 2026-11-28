@@ -66,6 +66,7 @@ pub use dispatch::*;
 pub use manage::*;
 pub use model::*;
 pub(crate) use read::*;
+pub use read::{HostSecret, SecretAccess};
 pub use report::*;
 use run::*;
 pub use settings::*;

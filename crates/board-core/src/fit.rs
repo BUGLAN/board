@@ -101,6 +101,22 @@ pub fn repo_key(url: &str) -> String {
     out.to_lowercase()
 }
 
+/// 去掉 http(s) 地址里的用户信息：`https://oauth2:glpat-xxx@gitlab.com/o/r.git` → `https://gitlab.com/o/r.git`（#686）。
+/// 机器原样上报 `git remote get-url origin`，用令牌克隆的仓库会把令牌带进来；存库、发给别的令牌之前都要去掉。
+/// 只管 http(s)：`git@host:o/r`、`ssh://git@host/o/r` 里的 `git@` 是 SSH 用户名、不是密钥，界面上还会把机器的 origin
+/// 存成项目的仓库地址，去掉了别的机器就克隆不了。[`repo_key`] 本来就不看用户信息，比对结果不受影响
+pub fn strip_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return url.to_string();
+    }
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..end].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
 /// 分配「任意机器」的派发时的一台候选机器（已经确认能接、现在能开始）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -208,7 +224,7 @@ impl R<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_host, repo_key, Candidate};
+    use super::{pick_host, repo_key, strip_userinfo, Candidate};
 
     fn c(name: &str, free: i64, last_at: i64) -> Candidate {
         Candidate { name: name.into(), free, last_at }
@@ -250,5 +266,26 @@ mod tests {
         // 本机路径、盘符不当成 scp 写法
         assert_eq!(repo_key("/srv/git/board.git"), "/srv/git/board");
         assert_eq!(repo_key("C:\\repos\\board"), "c:\\repos\\board");
+    }
+
+    /// #686：http(s) 地址里的用户信息（多半是令牌）去掉，别的写法原样；去掉前后 repo_key 一样
+    #[test]
+    fn userinfo_is_stripped_from_http_urls_only() {
+        let cases = [
+            ("https://oauth2:glpat-xxx@gitlab.com/o/r.git", "https://gitlab.com/o/r.git"),
+            ("https://u:t@host/r.git", "https://host/r.git"),
+            ("HTTP://token@host:8080/o/r", "HTTP://host:8080/o/r"),
+            ("https://u:p@ss@host/r", "https://host/r"),
+            ("https://host/o/r@v1", "https://host/o/r@v1"),
+            ("https://host?x=a@b", "https://host?x=a@b"),
+            ("https://github.com/o/r.git", "https://github.com/o/r.git"),
+            ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+            ("ssh://git@github.com/o/r", "ssh://git@github.com/o/r"),
+            ("/srv/git/r.git", "/srv/git/r.git"),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(strip_userinfo(raw), want, "{raw}");
+            assert_eq!(repo_key(&strip_userinfo(raw)), repo_key(raw), "{raw}");
+        }
     }
 }

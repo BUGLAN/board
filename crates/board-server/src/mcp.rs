@@ -11,6 +11,7 @@ use crate::{client_of, parse, ApiError, ApiResult, AppState};
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::{Extension, Json};
+use board_core::hosts::{HostSecret, SecretAccess};
 use board_core::mcp::McpServer;
 use board_core::*;
 use serde_json::{json, Value};
@@ -45,12 +46,22 @@ pub(crate) async fn for_host(State(s): State<AppState>, Extension(caller): Exten
     };
     let name = name.trim().to_string();
     let now = now_ms();
-    let own = s.db(move |st| st.read(|r| r.host_uses_token(&name, token, now))).await?;
-    if !own {
-        return Err(ApiError(BoardError::new(
-            ErrorCode::NotLoggedIn,
-            "密钥原文只发给这台机器用的令牌：机器不在这台机器上，或它的令牌不是你用的这个；界面上用 GET /api/mcp（密钥打码）",
-        )));
+    // 还要这台机器打开了「MCP 用服务器的」（#686）：派发出去的 agent 拿的也是这台机器的令牌
+    let access = s.db(move |st| st.read(|r| r.host_secret(&name, token, HostSecret::Mcp, now))).await?;
+    match access {
+        SecretAccess::Ok => {}
+        SecretAccess::NotThisHost => {
+            return Err(ApiError(BoardError::new(
+                ErrorCode::NotLoggedIn,
+                "密钥原文只发给这台机器用的令牌：机器不在这台机器上，或它的令牌不是你用的这个；界面上用 GET /api/mcp（密钥打码）",
+            )))
+        }
+        SecretAccess::SyncOff => {
+            return Err(ApiError(BoardError::new(
+                ErrorCode::NotLoggedIn,
+                "这台机器的 MCP 是「不改」：不发密钥原文。要用服务器的 MCP，在机器设置里打开这台机器的同步",
+            )))
+        }
     }
     Ok(Json(s.db(|st| st.read(|r| r.mcp_servers())).await?))
 }

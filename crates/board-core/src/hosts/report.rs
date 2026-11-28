@@ -154,6 +154,18 @@ impl<'a> W<'a> {
         } else {
             rep
         };
+        // 上报的 git origin 去掉 http(s) 地址里的用户信息再用（#686）：用令牌克隆的仓库会把令牌原样报上来，
+        // 存进库里之后任何令牌 GET /api/workspace 都读得到
+        let stripped;
+        let rep = if rep.dirs.iter().any(|d| d.origin.as_deref().is_some_and(|o| crate::fit::strip_userinfo(o) != o)) {
+            stripped = HostReport {
+                dirs: rep.dirs.iter().map(|d| HostDir { origin: d.origin.as_deref().map(crate::fit::strip_userinfo), ..d.clone() }).collect(),
+                ..rep.clone()
+            };
+            &stripped
+        } else {
+            rep
+        };
         check_host_name(&rep.name).map_err(BoardError::usage)?;
         if rep.instance.trim().is_empty() {
             return Err(BoardError::usage("缺少 instance"));

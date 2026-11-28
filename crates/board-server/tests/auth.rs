@@ -531,6 +531,11 @@ fn host_and_dispatch_routes_only_take_that_hosts_token() {
     let mut back = report("a2");
     back["resume"] = json!("a1");
     assert_eq!(send("POST", &url("/hosts/host-a/beat"), &a, Some(back)).status, 200);
+    // 这台机器没打开 MCP 同步：自己的令牌也拿不到密钥原文（派发出去的 agent 拿的就是这个令牌，#686）；打开后照常
+    let r = send("GET", &url("/hosts/host-a/mcp"), &a, None);
+    assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{}", r.text);
+    assert!(r.text.contains("不改"), "{}", r.text);
+    assert_eq!(send("PATCH", &url("/hosts/host-a"), &[UI], Some(json!({ "syncMcp": true }))).status, 200);
     assert_eq!(send("GET", &url("/hosts/host-a/mcp"), &a, None).status, 200);
     assert_eq!(send("POST", &url(&format!("/dispatches/{d}/log")), &a, Some(json!({ "lines": ["真的日志"] }))).status, 200);
     let session = send("GET", &url(&format!("/sessions/{d}")), &[UI], None);
@@ -640,6 +645,13 @@ fn only_machine_tokens_register_new_hosts() {
     assert_eq!((r.status, r.code().as_str()), (409, "HOST_NAME_TAKEN"), "{}", r.text);
     let r = send("POST", &url("/hosts/devbox/beat"), &dev, Some(report("devbox", "d1")));
     assert_eq!(r.status, 200, "{}", r.text);
+    // 新机器默认不同步 MCP、Git 凭据：这两样的原文要打开同步才给（#686）；供应商不看开关
+    assert_eq!(send("GET", &url("/hosts/devbox/providers"), &dev, None).status, 200);
+    for p in ["mcp", "git"] {
+        let r = send("GET", &url(&format!("/hosts/devbox/{p}")), &dev, None);
+        assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{p}: {}", r.text);
+    }
+    assert_eq!(send("PATCH", &url("/hosts/devbox"), &[UI], Some(json!({ "syncMcp": true, "syncGit": true }))).status, 200);
     for p in ["mcp", "providers", "git"] {
         assert_eq!(send("GET", &url(&format!("/hosts/devbox/{p}")), &dev, None).status, 200, "{p}");
     }
@@ -647,6 +659,8 @@ fn only_machine_tokens_register_new_hosts() {
     let other = format!("Bearer {}", new_host_token(&s.db, "other", "other"));
     let other = [("authorization", other.as_str())];
     assert_eq!(send("POST", &url("/hosts/other/beat"), &other, Some(report("other", "o1"))).status, 200);
+    // B 打开了同步：拿不到是因为令牌不对，不是开关
+    assert_eq!(send("PATCH", &url("/hosts/other"), &[UI], Some(json!({ "syncMcp": true, "syncGit": true }))).status, 200);
     for p in ["mcp", "providers", "git"] {
         let r = send("GET", &url(&format!("/hosts/other/{p}")), &dev, None);
         assert_eq!((r.status, r.code().as_str()), (401, "NOT_LOGGED_IN"), "{p}: {}", r.text);
