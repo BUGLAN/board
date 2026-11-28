@@ -510,11 +510,12 @@ fn requires_login() {
     assert!(!s.home.join(".board").exists(), "不应该在 HOME 下创建 ~/.board");
 }
 
-/// BOARD_DOWNLOAD 不能是任意 HTTP：中间人可以同时改压缩包和校验文件
+/// BOARD_DOWNLOAD 不能是任意 HTTP：中间人可以同时改压缩包和校验文件。
+/// 用复制出去的 board：target/debug 里编过桌面端时，原地的 board 会被当成桌面端自带的，拿不到这个报错
 #[test]
 fn update_rejects_plain_http_download_sources() {
     let s: Server = start();
-    let r = s.raw(&[("BOARD_DOWNLOAD", "http://example.com".into())], &["update", "--latest", "--json"]);
+    let r = s.raw_standalone(&[("BOARD_DOWNLOAD", "http://example.com".into())], &["update", "--latest", "--json"]);
     assert_eq!((r.code, r.error_code().as_str()), (1, "USAGE"), "{}{}", r.out, r.err);
     assert!(r.json()["error"]["message"].as_str().unwrap().contains("BOARD_DOWNLOAD"), "{}{}", r.out, r.err);
 }

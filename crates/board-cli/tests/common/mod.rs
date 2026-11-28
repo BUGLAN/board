@@ -112,6 +112,11 @@ impl Server {
     pub fn raw(&self, env: &[(&str, String)], args: &[&str]) -> Run {
         board(&self.home, env, args)
     }
+    /// 同上，执行的是复制到临时目录里的 board（见 [`standalone_board`]）：测 `board update` 这类看自己装在哪里的命令
+    pub fn raw_standalone(&self, env: &[(&str, String)], args: &[&str]) -> Run {
+        let dir = tempfile::tempdir().unwrap();
+        board_at(&standalone_board(dir.path()), &self.home, env, args, None)
+    }
     /// 直接在服务端数据库里新建标签（标签只能在界面上新建）
     pub fn create_label(&self, name: &str) {
         self.create_label_as(name, false);
@@ -185,7 +190,22 @@ pub fn board(home: &Path, env: &[(&str, String)], args: &[&str]) -> Run {
 
 /// 同上，并把 input 写进标准输入
 pub fn board_stdin(home: &Path, env: &[(&str, String)], args: &[&str], input: Option<&str>) -> Run {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_board"));
+    board_at(Path::new(env!("CARGO_BIN_EXE_board")), home, env, args, input)
+}
+
+/// 单独安装的 board：把测试编出的 board 复制进 `dir`（一个只有它的目录），返回复制出的路径。
+/// 编过桌面端（`cargo test -p board-desktop`、`npm run desktop:dev`）后 `target/debug` 里有 `board-desktop`，
+/// 原地的 board 会被当成桌面端自带的，`board update`、`board host --install` 直接拒绝
+pub fn standalone_board(dir: &Path) -> PathBuf {
+    let src = Path::new(env!("CARGO_BIN_EXE_board"));
+    let exe = dir.join(src.file_name().unwrap());
+    std::fs::copy(src, &exe).unwrap();
+    exe
+}
+
+/// 同 [`board_stdin`]，执行给定路径的 board
+pub fn board_at(exe: &Path, home: &Path, env: &[(&str, String)], args: &[&str], input: Option<&str>) -> Run {
+    let mut cmd = Command::new(exe);
     isolate(&mut cmd, home).args(args);
     for (k, v) in env {
         cmd.env(k, v);
