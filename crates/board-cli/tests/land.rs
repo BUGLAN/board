@@ -387,6 +387,31 @@ fn does_not_delete_a_wip_branch_for_another_card() {
     assert_eq!(git(&r.up, &["rev-parse", "refs/heads/wip/main/2"]), tip, "别的卡的分支还在");
 }
 
+/// #681：pre-commit、pre-push 钩子打印的内容超过管道缓冲（约 64 KB）时照常提交、推送，不卡到超时
+#[cfg(unix)]
+#[test]
+fn hooks_printing_a_lot_do_not_block_land() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = server();
+    let r = repo();
+    let hooks = r.work.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    // 每个钩子往标准输出、标准错误各打 200 KB
+    let noisy = "#!/bin/sh\nhead -c 204800 /dev/zero | tr '\\0' x\nhead -c 204800 /dev/zero | tr '\\0' y >&2\nexit 0\n";
+    for h in ["pre-commit", "pre-push"] {
+        std::fs::write(hooks.join(h), noisy).unwrap();
+        std::fs::set_permissions(hooks.join(h), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    r.commit("a.txt", "first line of the file\nsecond line of the file\nthird line from the agent\n", "wip 1");
+    let t = std::time::Instant::now();
+    let out = land(&s, &r, &normal(&r, &[]));
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    assert_eq!(out.json()["pushed"], true);
+    assert!(t.elapsed() < std::time::Duration::from_secs(60), "用了 {:?}", t.elapsed());
+    assert_eq!(git(&r.up, &["log", "-1", "--format=%B", "refs/heads/main"]).lines().last(), Some("卡片：default/main#1"));
+}
+
 /// wip 推送跳过 pre-push 钩子（做不下去时钩子正是拦路的那一步）；正常 land 仍然跑钩子
 #[cfg(unix)]
 #[test]

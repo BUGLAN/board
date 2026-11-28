@@ -16,13 +16,38 @@ pub const ASKPASS_MARKER: &str = "BOARD_INTERNAL_GIT_ASKPASS";
 
 /// 创建一个不会停下来等人的 git 命令
 pub fn command() -> Command {
-    let mut c = Command::new("git");
+    let mut c = Command::new(program());
     c.env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
         .env("SSH_ASKPASS_REQUIRE", "force");
     let helper = askpass();
     c.env("GIT_ASKPASS", &helper).env("SSH_ASKPASS", helper).env(ASKPASS_MARKER, "1");
     c
+}
+
+#[cfg(not(test))]
+fn program() -> std::ffi::OsString {
+    "git".into()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 测试里换成假的 git（例如卡住不动的）：只影响当前测试线程
+    static PROGRAM: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn program() -> std::ffi::OsString {
+    PROGRAM.with(|p| p.borrow().clone()).map(Into::into).unwrap_or_else(|| "git".into())
+}
+
+/// 测试用：`f` 里本线程跑的 git 都换成 `git`
+#[cfg(test)]
+pub fn with_program<T>(git: &Path, f: impl FnOnce() -> T) -> T {
+    PROGRAM.with(|p| *p.borrow_mut() = Some(git.to_path_buf()));
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    PROGRAM.with(|p| *p.borrow_mut() = None);
+    out.unwrap_or_else(|e| std::panic::resume_unwind(e))
 }
 
 fn askpass() -> PathBuf {

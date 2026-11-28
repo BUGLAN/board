@@ -66,15 +66,20 @@ pub fn git_output(dir: &Path, args: &[&str], limit: Duration) -> Result<std::pro
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("没法运行 git：{e}"))?;
+    // 一启动就开始读标准输出、标准错误（#681）：输出超过管道缓冲（约 64 KB，例如上千个改动文件的 status、钩子打印很多）时，
+    // 不读的话 git 阻塞在写上退不出来，一直等到超时被杀
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
     let start = Instant::now();
     // 大多数 git 命令几毫秒就结束：从 1 毫秒起翻倍等，最多 40 毫秒，不让每次调用都白等 40 毫秒
     let mut nap = Duration::from_millis(1);
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if start.elapsed() >= limit => {
                 let _ = child.kill();
                 let _ = child.wait();
+                // 不等读线程：git 起的子进程（钩子、ssh）可能还拿着管道，等它们会把超时又拖长。管道关了线程自己结束
                 return Err(format!("{} 秒还没做完，已经停掉", limit.as_secs()));
             }
             Ok(None) => {
@@ -83,8 +88,29 @@ pub fn git_output(dir: &Path, args: &[&str], limit: Duration) -> Result<std::pro
             }
             Err(e) => return Err(format!("等 git 结束时出错：{e}")),
         }
+    };
+    Ok(std::process::Output { status, stdout: joined(stdout)?, stderr: joined(stderr)? })
+}
+
+type Reader = std::thread::JoinHandle<std::io::Result<Vec<u8>>>;
+
+/// 在后台线程里把管道读到底
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> Option<Reader> {
+    pipe.map(|mut r| {
+        std::thread::spawn(move || {
+            let mut buf = vec![];
+            r.read_to_end(&mut buf).map(|_| buf)
+        })
+    })
+}
+
+/// 等读线程读完（git 已经退出），拿到读到的内容
+fn joined(t: Option<Reader>) -> Result<Vec<u8>, String> {
+    match t.map(|t| t.join()) {
+        None => Ok(vec![]),
+        Some(Ok(r)) => r.map_err(|e| format!("读不到 git 的输出：{e}")),
+        Some(Err(_)) => Err("读不到 git 的输出：读取线程出错".into()),
     }
-    child.wait_with_output().map_err(|e| format!("读不到 git 的输出：{e}"))
 }
 
 /// git 失败时的原因：标准错误的最后一行（最多 300 个字符），没有时写「git 失败」
@@ -253,16 +279,48 @@ fn worktrees(repo: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// 目录里没推到远端的改动：没提交的文件、不在任何远端分支上的提交；都推了时为空
+/// 目录里没推到远端的改动：没提交的文件、不在任何远端分支上的提交；都推了时为空。
+/// 是 git 仓库、git 却出错或超时（读不出状态）时也算有（#681）：宁可多存一次 wip，也不把读不出来当成没有改动，
+/// 让 `board base` 切走、board host 解锁、清理删掉
 pub fn unpushed(dir: &Path) -> Option<String> {
-    let mut parts = vec![];
-    let dirty = git(dir, &["status", "--porcelain"], QUICK).map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
-    if dirty > 0 {
-        parts.push(format!("{dirty} 个文件没提交"));
+    unpushed_within(dir, QUICK)
+}
+
+fn unpushed_within(dir: &Path, limit: Duration) -> Option<String> {
+    // 不是 git 仓库（目录不在，它和上级目录里都没有 .git）：没有要保存的
+    let abs = dir.canonicalize().ok()?;
+    if !abs.is_dir() || !abs.ancestors().any(|p| p.join(".git").exists()) {
+        return None;
     }
-    if let Ok(head) = git(dir, &["rev-parse", "--short", "HEAD"], QUICK) {
-        if git(dir, &["branch", "-r", "--contains", "HEAD"], QUICK).is_ok_and(|s| s.is_empty()) {
-            parts.push(format!("提交 {head} 不在任何远端分支上"));
+    let unread = |e: String| format!("读不出状态：{e}");
+    let mut parts = vec![];
+    match git(dir, &["status", "--porcelain"], limit) {
+        Ok(s) => {
+            let dirty = s.lines().filter(|l| !l.trim().is_empty()).count();
+            if dirty > 0 {
+                parts.push(format!("{dirty} 个文件没提交"));
+            }
+        }
+        Err(e) => return Some(unread(e)),
+    }
+    // HEAD 认不出（退出码 1）：还没有提交，没有要推的
+    let head = match git_output(dir, &["rev-parse", "--verify", "--quiet", "--short", "HEAD"], limit) {
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) if o.status.code() == Some(1) => None,
+        Ok(o) => {
+            parts.push(unread(git_error(&o)));
+            None
+        }
+        Err(e) => {
+            parts.push(unread(e));
+            None
+        }
+    };
+    if let Some(head) = head {
+        match git(dir, &["branch", "-r", "--contains", "HEAD"], limit) {
+            Ok(s) if s.is_empty() => parts.push(format!("提交 {head} 不在任何远端分支上")),
+            Ok(_) => {}
+            Err(e) => parts.push(unread(e)),
         }
     }
     (!parts.is_empty()).then(|| parts.join("，"))
@@ -1252,5 +1310,56 @@ mod tests {
         std::fs::remove_file(marker).unwrap();
         assert!(release(&a));
         assert_eq!(lock_of(&r, &a), None);
+    }
+
+    /// #681：输出超过管道缓冲（约 64 KB）时 git 不会卡到超时。3000 个改动文件的 status 有一百多 KB
+    #[test]
+    fn big_output_does_not_block_git() {
+        let r = rig();
+        let a = prep(&r.repo, "a/big", 1, "").unwrap().cwd;
+        // 放在根目录：同一个目录下的未跟踪文件 status 只列一行目录
+        for i in 0..3000 {
+            std::fs::write(a.join(format!("generated-file-{i:05}-with-a-fairly-long-name.txt")), "x").unwrap();
+        }
+        let out = git_output(&a, &["status", "--porcelain"], QUICK).unwrap();
+        assert!(out.stdout.len() > 128 * 1024, "{} 字节", out.stdout.len());
+        let t = Instant::now();
+        assert_eq!(unpushed(&a).as_deref(), Some("3000 个文件没提交"));
+        assert!(t.elapsed() < Duration::from_secs(2), "用了 {:?}", t.elapsed());
+    }
+
+    /// #681：git 出错、超时（读不出状态）时算有没推的改动：会话结束不解锁，`board base` 不切走（tests/base.rs）。
+    /// 不是 git 仓库、目录不在时照旧不算
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_status_counts_as_unpushed() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = rig();
+        let a = prep(&r.repo, "a/slow", 1, "").unwrap().cwd;
+        assert_eq!(unpushed(&a), None);
+        // 假 git：status 卡住（sleep 是 sh 的子进程，git 被杀后它还拿着管道），别的命令交给真 git
+        let real = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+        let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
+        let fake = r.repo.parent().unwrap().join("slow-git");
+        std::fs::write(&fake, format!("#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = status ] && {{ sleep 30; exit 0; }}; done\nexec '{real}' \"$@\"\n")).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let t = Instant::now();
+        let got = crate::gitcmd::with_program(&fake, || unpushed_within(&a, Duration::from_secs(1)));
+        assert!(got.as_deref().is_some_and(|s| s.starts_with("读不出状态：") && s.contains("还没做完")), "{got:?}");
+        assert!(t.elapsed() < Duration::from_secs(5), "不等还拿着管道的子进程：用了 {:?}", t.elapsed());
+        // 会话结束：读不出状态就不解锁
+        assert!(!crate::gitcmd::with_program(&fake, || release(&a)));
+        assert_eq!(lock_of(&r, &a).as_deref(), Some("a/slow"));
+        // git 出错（worktree 的 git 目录没了）同样算
+        let gitdir = git(&a, &["rev-parse", "--absolute-git-dir"], QUICK).unwrap();
+        std::fs::write(a.join(".git"), "gitdir: /nonexistent/board-test\n").unwrap();
+        assert!(unpushed(&a).is_some_and(|s| s.starts_with("读不出状态：")));
+        std::fs::write(a.join(".git"), format!("gitdir: {gitdir}\n")).unwrap();
+        assert_eq!(unpushed(&a), None);
+        // 不是 git 仓库、不存在：不算
+        let plain_dir = r.repo.parent().unwrap().join("plain");
+        std::fs::create_dir(&plain_dir).unwrap();
+        assert_eq!(unpushed(&plain_dir), None);
+        assert_eq!(unpushed(&plain_dir.join("nope")), None);
     }
 }

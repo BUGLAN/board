@@ -228,6 +228,41 @@ fn keeps_unsaved_changes_and_does_not_switch() {
     assert_eq!(v["unpushed"].as_array().unwrap().len(), 1, "{v}");
 }
 
+/// #681：worktree 的状态读不出来（git status 卡到超时）时当成有没推的改动，不切换
+#[cfg(unix)]
+#[test]
+fn does_not_switch_when_git_status_times_out() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = server();
+    let r = repo();
+    let (_, v) = base(&s, &r.main);
+    let wt = PathBuf::from(v["worktree"].as_str().unwrap());
+    r.push("other", "origin/main", "main", "b.txt", "pushed by someone else\n", "feat: 别的卡\n\n卡片：default/main#91");
+    let head = git(&wt, &["rev-parse", "HEAD"]);
+    // PATH 里先找到的 git：第一次 status 卡住（board 等 10 秒后停掉它），之后和别的命令都交给真 git
+    let real = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+    let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
+    let bin = r.root.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let once = r.root.join("slow-once");
+    let script = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = status ] && [ ! -e '{once}' ]; then : > '{once}'; sleep 60; exit 0; fi; done\nexec '{real}' \"$@\"\n",
+        once = once.display()
+    );
+    std::fs::write(bin.join("git"), script).unwrap();
+    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let mut env = s.env();
+    env.extend([("BOARD_AS", ALPHA.to_string()), ("BOARD", "default".to_string()), ("PATH", path)]);
+    let out = common::board(&s.home, &env, &["base", "1", "--dir", r.main.to_str().unwrap(), "--json"]);
+    let v: Value = serde_json::from_str(&out.out).unwrap_or_else(|e| panic!("{e}：{}{}", out.out, out.err));
+    assert_eq!(out.code, 1, "{v}");
+    assert_eq!(v["step"], "save", "{v}");
+    assert!(v["next"].as_str().unwrap().contains("读不出状态"), "{v}");
+    assert!(once.exists(), "确实走到了卡住的 status");
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), head, "没有切换");
+}
+
 /// 卡片评论里有「未完成的改动：wip/main/1」、远端有这条分支：切过去、rebase 到最新集成分支；冲突时停在冲突上
 #[test]
 fn continues_from_the_wip_branch() {
