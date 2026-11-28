@@ -791,12 +791,11 @@ impl R<'_> {
         if to <= from {
             return Err(BoardError::usage("时间范围不对：to 要大于 from"));
         }
-        if to - from > SPAN_MAX {
-            return Err(BoardError::usage(format!("时间范围最长 {} 天", SPAN_MAX / DAY)));
-        }
+        // 带溢出检查的减法：release 构建不查溢出，`to - from` 回绕成负数会绕过跨度检查，按小时分桶一路推到 9999 年（#683）
+        let span = to.checked_sub(from).filter(|s| *s <= SPAN_MAX).ok_or_else(|| BoardError::usage(format!("时间范围最长 {} 天", SPAN_MAX / DAY)))?;
+        let pfrom = from.checked_sub(span).ok_or_else(|| BoardError::usage("时间超出范围：from 太早"))?;
+        let pto = from;
         let tz = TimeZone::get(q.tz.trim()).map_err(|_| BoardError::usage(format!("不认识的时区「{}」，要用 IANA 时区，例如 Asia/Shanghai", q.tz)))?;
-        let span = to - from;
-        let (pfrom, pto) = (from - span, from);
         let d = self.stats_data()?;
 
         // 范围内的白板

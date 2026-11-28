@@ -94,6 +94,11 @@ name = "providers"
 path = "tests/providers.rs"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "stats"
+path = "tests/stats.rs"
+required-features = ["test-hooks"]
+
 [dev-dependencies]
 # 测试里核对应用清单的类型：和 rust-embed 的 mime-guess 是同一个库
 mime_guess = "2"

@@ -334,6 +334,17 @@ fn buckets_follow_the_time_zone() {
     assert_eq!(bad.unwrap_err().code, ErrorCode::Usage);
 }
 
+/// #683：`to - from`、`from - span` 会溢出的时间范围返回 USAGE，不 panic（debug），也不绕过跨度检查（release 回绕）
+#[test]
+fn stats_rejects_overflowing_ranges() {
+    let s = store();
+    for (from, to) in [(-1, i64::MAX), (i64::MIN, i64::MIN + 1), (i64::MIN, 0), (i64::MIN + 1, i64::MIN + 2), (i64::MAX - 1, i64::MAX)] {
+        let q = StatsQuery { scope: Scope::All, path: None, from, to, tz: "America/New_York".into() };
+        let r = s.read(|r| r.stats(&q, BASE));
+        assert_eq!(r.err().map(|e| e.code), Some(ErrorCode::Usage), "from={from} to={to}");
+    }
+}
+
 /// 验收 6：可领取状态有卡、30 分钟没有任何领取：空转 30 分钟；只空 10 分钟时不计
 #[test]
 fn idle_counts_gaps_of_fifteen_minutes_or_more() {
