@@ -286,27 +286,31 @@ GitHub Actions 只负责测试和构建 Release 产物，**不再部署服务端
 
 | 触发 | 做什么 |
 |---|---|
-| 推 `main` | test：`npm ci` → `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）和桌面端的单元测试（`cargo test -p board-desktop`：ACL、路径校验、更新、登录等）。不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
-| 推 `v*` tag | version（核对 tag、Cargo.toml、CHANGELOG.md）→ test；skill、desktop（和它们同时跑）→ release（等更早的 tag 都有可下载的 Release 后建这一版的），见下图 |
+| 推 `main` | test：`npm ci --ignore-scripts`、`npm --prefix web ci`（两个 lockfile 和 package.json 对不上时失败）→ `cargo test` → 界面类型检查（`npm --prefix web run typecheck`）→ 界面单元测试（`npm --prefix web test`）；同时在 Windows 上跑 `board heartbeat` 的测试、agent 名字与心跳的测试、多行正文经过 skill 入口 `board.cmd` 的测试（`cargo test --locked -p board-cli --test heartbeat --test agents --test multiline`）、board-cli 的全部单元测试（含只在 Windows 编译的回归）和桌面端、board-core 的单元测试（`cargo test -p board-desktop -p board-core`：ACL、路径校验、更新、登录等）。不部署。改动全部在 `docs/`、`README.md` 里时不跑 |
+| 推 `v*` tag | version（核对 tag、Cargo.toml、CHANGELOG.md）→ test、heartbeat-windows；skill、desktop（和它们同时跑）→ release（等更早的 tag 都有可下载的 Release 后建这一版的），见下图 |
 
 ```
 version（GitHub 托管的 ubuntu-latest）：核对 tag、Cargo.toml 的 workspace.package.version 和 CHANGELOG.md
-test（GitHub 托管的 ubuntu-latest）：npm ci → cargo test → 界面类型检查/单测（tag 上也跑一遍再打包）
-heartbeat-windows（GitHub 托管的 windows-latest，推 main 时）：board-cli 的 heartbeat / agents / multiline 测试，
-                                     以及 cargo test -p board-desktop（桌面端的单元测试；不需要先编安装包自带的 board：
+test（GitHub 托管的 ubuntu-latest）：npm ci（根目录、web/ 都按 lockfile 严格装）→ cargo test → 界面类型检查/单测（tag 上也跑一遍再打包）
+heartbeat-windows（GitHub 托管的 windows-latest，推 main 和 tag）：board-cli 的 heartbeat / agents / multiline 测试，
+                                     全部 board-cli 单元测试（含只在 Windows 编译的回归），
+                                     以及 cargo test -p board-desktop -p board-core（不需要先编安装包自带的 board：
                                      src-tauri/build.rs 在 src-tauri/binaries 里没有 sidecar 时按不带 sidecar 构建）
 skill（GitHub 托管的 macos-latest）：node scripts/build-skill-bin.mjs --zip，编 macOS（arm64、x64）、Linux（x64、arm64，musl）、
                                      Windows（x64）的 board，放进 skill 的 bin/，打包成 board-skills.zip
 desktop（GitHub 托管的 macos-latest、windows-latest，两个平台同时跑）：核对 tag 和 tauri.conf.json 的版本号
-                                     → npm ci → 编安装包自带的 board → cargo test -p board-desktop → tauri build（带更新签名）→ 核对安装包里的 board --version
+                                     → npm ci（同上）→ npm run build:web（不带签名私钥）→ 编安装包自带的 board
+                                     → cargo test -p board-desktop -p board-core（macOS 上跑 launchd 用例）
+                                     → tauri build（带更新签名；关闭 beforeBuildCommand，不再运行 npm）→ 核对安装包里的 board --version
                                      macOS：通用（Apple Silicon + Intel）.dmg；Windows：NSIS 安装包 .exe、.msi 和免安装便携 .zip
                                      → 收齐更新包和签名（updater/<平台键>/）→ 生成这个平台的更新清单
 release：等更早的 tag（当前版本之前、最近一个已发布 tag 之后）都有可下载的 Release，再用 CHANGELOG.md 里这一版的一节建 GitHub Release，
          附上 board-skills.zip、桌面端安装包、更新包和 latest.json
-         （version、test、skill 和两个平台的安装包/更新清单都构建成功后）
+         （version、test、heartbeat-windows、skill 和两个平台的安装包/更新清单都构建成功后）
 ```
 
 - tag 去掉 `v` 后和 `Cargo.toml` 的 `workspace.package.version` 不一致，或者 `CHANGELOG.md` 里没有这一版的一节：version 任务失败，不打包、不建 Release
+- Windows 专有测试失败、或 lockfile 和 package.json 对不上：不建 Release
 - 桌面端安装包任一平台构建失败：不建 Release（不留缺附件的 Release），修好后再发一个版本
 - PR、其他分支不触发
 - 每个 tag 各排一队（`release-${{ github.ref }}`），后来的 tag 不会把排队中的发版替换掉；release 任务建 Release 前会确认更早的 tag 都已经有可下载的 Release（`board-sha256.txt` 在里面），最多等 60 分钟
@@ -421,7 +425,7 @@ GitHub Release 里的附件，都从 tag 指向的提交构建（`.github/workfl
 
 3. 把 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints` **临时**改成 `["http://127.0.0.1:8000/latest.json"]`（调试构建允许 http），回到上一版（例如 `0.1.12`）用同一个 dev 密钥再打一次包运行，在设置 → 桌面端更新点「检查更新」：应提示 0.1.13，下载、校验签名、安装后提示重启，重启后「当前版本」是 0.1.13。
 
-4. 验证完把版本号、`pubkey`、`endpoints` 都改回去：`npm test` 会核对 `endpoints` 是线上地址，`npm run release` 会核对版本号和 tag。
+4. 验证完把版本号、`pubkey`、`endpoints` 都改回去：`npm test` 会核对 `endpoints` 是线上地址、`pubkey` 是当前这把密钥，`npm run release` 会核对版本号和 tag。
 
 检查失败、签名不对、清单写坏（`node scripts/updater-manifest.mjs --dry-run` 会拦下）时都不会动当前版本，可以重试。
 

@@ -157,6 +157,7 @@ fn should_report(reported: u64, sent: u64, total: Option<u64>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     // 装完的结果：Windows 上由安装器拉起新版本，界面不用重启（restart=false）；
     // macOS / Linux 装着还在旧进程里，要界面调用 update_restart（restart=true）。
@@ -209,5 +210,29 @@ mod tests {
         assert!(should_report(0, 1, Some(0)), "总大小为 0 时不能除零，也不能一直不报");
         assert!(!should_report(0, 9, Some(1000)), "还差一点到 1% 的不报");
         assert!(should_report(0, 10, Some(1000)), "到了 1% 就报");
+    }
+
+    // 安装包里的更新地址和公钥决定已安装的桌面端能不能继续收到更新。按 docs/deploy.md 本机验证时
+    // 会临时改成 localhost / dev 公钥，忘了改回来就会发出一版永远连本机、只认 dev 密钥的安装包。
+    #[test]
+    fn production_updater_config_is_still_trusted() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let updater = &config["plugins"]["updater"];
+        assert_eq!(
+            updater["endpoints"],
+            serde_json::json!(["https://github.com/buglan/board/releases/latest/download/latest.json"]),
+            "更新地址要指回线上 latest.json（本机验证后改回来）"
+        );
+
+        const KEY_ID: &str = "13719EA91A91FB4E";
+        let key_file = STANDARD.decode(updater["pubkey"].as_str().unwrap()).unwrap();
+        let key_file = std::str::from_utf8(&key_file).unwrap();
+        let payload = key_file.lines().nth(1).expect("minisign 公钥文件缺少第二行");
+        let packet = STANDARD.decode(payload).unwrap();
+        assert_eq!(packet.len(), 42, "minisign 公钥格式不对");
+        assert_eq!(&packet[..2], b"Ed", "只认 Ed25519 公钥");
+        // minisign 公钥包里的 key id 是小端；界面上、密钥文件注释里写的是反过来的大端十六进制
+        let id: String = packet[2..10].iter().rev().map(|b| format!("{b:02X}")).collect();
+        assert_eq!(id, KEY_ID, "公钥换过时把这条测试和 tauri.conf.json 一起改");
     }
 }

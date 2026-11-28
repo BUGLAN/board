@@ -170,6 +170,37 @@ mod tests {
         d
     }
 
+    fn source_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+            if entry.file_name().to_string_lossy().starts_with('.') || rel == "bin" {
+                continue;
+            }
+            if path.is_dir() {
+                source_files(root, &path, out);
+            } else {
+                out.push(rel);
+            }
+        }
+    }
+
+    // 一键安装的清单是编译时写死的；服务端和 board-skills.zip 都遍历目录，只有桌面端会漏掉新加的分文件。
+    #[test]
+    fn installs_every_file_in_the_skill_directory() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.agents/skills/board-skills");
+        let mut source = Vec::new();
+        source_files(&root, &root, &mut source);
+        let mut shipped: Vec<String> = FILES.iter().map(|(rel, _, _)| rel.to_string()).collect();
+        source.sort();
+        shipped.sort();
+        assert_eq!(
+            source, shipped,
+            "skill 目录新增或删除文件时，要同步更新 skill.rs 的 FILES（bin/ 和以 . 开头的文件除外）"
+        );
+    }
+
     #[test]
     fn dirs_match_builtin_agents() {
         let h = Path::new("/h");
