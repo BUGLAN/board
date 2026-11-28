@@ -258,6 +258,33 @@ fn stops_on_wip_rebase_conflicts() {
     assert_eq!(v["step"], "resolve");
     assert_eq!(v["conflicts"], serde_json::json!(["a.txt"]));
     assert!(v["next"].as_str().unwrap().contains("git rebase --continue"));
+    let wt = PathBuf::from(v["worktree"].as_str().unwrap());
+    let head = git(&wt, &["rev-parse", "HEAD"]);
+
+    // 再跑一次 base：认得出还在 rebase 中途，不切换
+    let (code, v) = base(&s, &r.main);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["step"], "resolve", "{v}");
+    let next = v["next"].as_str().unwrap();
+    assert!(next.contains("rebase") && next.contains("git rebase --continue") && next.contains("git rebase --abort"), "{next}");
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), head, "没有切换");
+    git(&wt, &["rebase", "--abort"]);
+}
+
+/// 评论里是别的卡号的 wip 分支：不切过去
+#[test]
+fn ignores_a_wip_branch_for_another_card() {
+    let s = server();
+    let r = repo();
+    let start = r.tip();
+    r.push("wip", &start, "wip/main/2", "wrong.txt", "别的卡\n", "wip: 未完成的改动");
+    assert_eq!(s.run(ALPHA, &["comment", "1", "未完成的改动：wip/main/2", "--json"]).code, 0);
+    let (code, v) = base(&s, &r.main);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!((v["step"].as_str(), v["from_wip"].as_str()), (Some("code"), None), "{v}");
+    let wt = PathBuf::from(v["worktree"].as_str().unwrap());
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]), r.tip());
+    assert!(!wt.join("wrong.txt").exists(), "没有切到别的卡的分支");
 }
 
 /// 集成分支上已经有这张卡的提交：动态里没有「提交：」行是推过没交审，有就是被打回接着修

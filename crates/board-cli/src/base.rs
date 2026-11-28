@@ -8,7 +8,8 @@
 //! 3. 会话的 worktree（[`code::session_worktree`]）：当前目录就是锁着自己名字的 worktree（board host 备好的）就用它，
 //!    `.wt/` 里有锁着自己名字的就接着用，没有就接手一个别的会话留下的空闲 worktree（#622：依赖、构建产物都在），
 //!    都没有才新建。
-//! 4. 保护现场：worktree 里有没提交的文件、没推到远端的提交时**不切换**，退出码 1，列出来。
+//! 4. 保护现场：worktree 停在 rebase / merge / cherry-pick 中途，或者有没提交的文件、没推到远端的提交时
+//!    **不切换**，退出码 1，列出来。
 //!    改动属于哪张卡要看内容才知道，不替 agent 判断、不自动保存。
 //! 5. 这张卡在集成分支上有没有提交（提交说明里 `卡片：<项目>/<白板>#<ID>`），卡片动态里有没有对应的「提交：」行。
 //! 6. 卡片评论里最后一条 `未完成的改动：wip/…`、远端还有这条分支：切过去，rebase 到最新的集成分支；冲突时停在冲突上，退出码 1。
@@ -80,7 +81,17 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
         "landed": [],
     });
 
-    // 4. 保护现场：有没推的改动就不切换
+    // 4. 保护现场：git 还停在操作中途、有没推的改动就不切换
+    if let Some(ip) = code::in_progress(&wt).map_err(BoardError::usage)? {
+        let next = format!("{wt_s} 还在 {} 中（{}）：先 {}，再 board base {id}。没有切换", ip.what, ip.marker, ip.resolve);
+        v["step"] = json!("resolve");
+        v["next"] = json!(next);
+        v["in_progress"] = json!(ip.marker);
+        if json {
+            return Ok(Output::Exit(1, Box::new(Output::Json(v))));
+        }
+        return Ok(Output::Exit(1, Box::new(Output::Text(format!("{} {next}\n", p.yellow("!"))))));
+    }
     if let Some(what) = unpushed(&wt) {
         let files: Vec<String> = git(&wt, &["status", "--porcelain"], QUICK).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect();
         let commits: Vec<String> =
@@ -135,7 +146,8 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     v["landed"] = Value::Array(landed.iter().map(|(sha, subject, seen)| json!({ "commit": sha, "subject": subject, "reported": seen })).collect());
 
     // 6. 从 wip 分支接着做：切过去，rebase 到最新的集成分支
-    let wip = wip_branch(&card.activity).filter(|w| git(&wt, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{w}")], QUICK).is_ok());
+    let board_key = board.path.rsplit('/').next().unwrap_or(&board.path);
+    let wip = wip_branch(&card.activity, board_key, id).filter(|w| git(&wt, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{w}")], QUICK).is_ok());
     if let Some(w) = &wip {
         v["from_wip"] = json!(w);
         let wip_ref = format!("refs/remotes/origin/{w}");

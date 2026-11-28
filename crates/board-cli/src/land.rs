@@ -3,8 +3,9 @@
 //! skill「代码 → 推送」原来要 agent 一条条照着做：压成一个提交、`board touched`、`board hold`、推集成分支、删 wip 分支。
 //! 顺序错了后果很重（没 hold 就推，集成分支上会有同一张卡的两份改动），这里按顺序做完，有一步不行就停在那一步：
 //!
-//! 1. **前提**（不满足就报错，什么都不改）：工作区没有没提交的改动；`git fetch origin` 之后 HEAD 在最新的
-//!    `origin/<集成分支>` 之上；相对它有改动。rebase 和跑检查不在这里做：冲突要 agent 读懂两边再合，检查是仓库自己规定的。
+//! 1. **前提**（不满足就报错，什么都不改）：没有停在 rebase / merge / cherry-pick 中途；工作区没有没提交的改动；
+//!    `git fetch origin` 之后 HEAD 在最新的 `origin/<集成分支>` 之上；相对它有改动。rebase 和跑检查不在这里做：
+//!    冲突要 agent 读懂两边再合，检查是仓库自己规定的。
 //! 2. **压成一个提交**：`git reset --soft origin/<集成分支>` 后用 `--message-file` 的内容提交，最后一行补上
 //!    `卡片：<项目>/<白板>#<ID>`。已经是压好的那一个（上一次停在了 touched）时不重复压。
 //! 3. **`board touched`**：碰到别的卡时退出码 1、不推；确认是有意的之后加 `--touched-ok` 重来。
@@ -13,12 +14,13 @@
 //! 6. **删 wip 分支**：卡片评论里有 `未完成的改动：wip/…`、远端还有它（这张卡是从它接着做的）时删掉。
 //! 7. 输出交审评论最后的四行。
 //!
-//! `--wip`（做不下去）：只把没提交的改动提交、推到 `wip/<白板标识>/<ID>`（已经有时覆盖），输出 `未完成的改动：<分支>` 一行；
+//! `--wip`（做不下去）：只把没提交的改动提交、推到 `wip/<白板标识>/<ID>`；远端已有这条分支时，只有它的每个提交在 HEAD
+//! 里都有等价改动才覆盖，否则改推 `wip/<白板标识>/<ID>-<HEAD 短号>`，不碰原来的分支。输出 `未完成的改动：<分支>` 一行；
 //! 不查 touched、不 hold、不碰集成分支。
 
 use crate::args::{file_arg, Args};
 use crate::backend::{env, Backend, Want};
-use crate::code::{git, git_output, integration_branch, is_repo, unpushed};
+use crate::code::{git, git_output, in_progress, integration_branch, is_repo, unpushed};
 use crate::output::{Output, Paint};
 use crate::touched;
 use crate::versions::card_refs;
@@ -44,6 +46,12 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     if !is_repo(dir) {
         return Err(BoardError::usage(format!("{} 不是 git 仓库：在自己的 worktree 里运行，或用 --dir <仓库> 指定", dir.display())));
     }
+    if let Some(ip) = in_progress(dir).map_err(BoardError::usage)? {
+        return Err(BoardError::usage(format!(
+            "git 还在 {} 中（{}）：先 {}，再 board land {id}。什么都没改",
+            ip.what, ip.marker, ip.resolve
+        )));
+    }
     if a.flag("--wip") {
         return wip(&raw, id, dir, be, json, p);
     }
@@ -60,6 +68,7 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     let d = be.board(&raw, Want::Brief, false)?;
     let card = format!("{}#{id}", d.path);
     let msg = with_card_line(&message, &d.path, id)?;
+    let board_key = d.path.rsplit('/').next().unwrap_or(&d.path).to_string();
 
     // 1. 前提
     git(dir, &["fetch", "--quiet", "origin"], NET).map_err(|e| BoardError::usage(format!("git fetch origin 失败：{e}。什么都没改")))?;
@@ -167,7 +176,7 @@ pub fn run(a: &Args, name: &str, be: &mut Backend, json: bool, p: &Paint) -> Res
     // 6. 从 wip 分支接着做的：推上去之后删掉它
     let mut deleted: Option<String> = None;
     let mut kept: Option<String> = None;
-    if let Some(w) = wip_branch(&detail.activity) {
+    if let Some(w) = wip_branch(&detail.activity, &board_key, id) {
         let on_remote = git(dir, &["ls-remote", "--heads", "origin", &format!("refs/heads/{w}")], NET).is_ok_and(|s| !s.trim().is_empty());
         if on_remote {
             match git(dir, &["push", "--quiet", "origin", "--delete", &w], NET) {
@@ -210,7 +219,7 @@ fn wip(raw: &str, id: i64, dir: &Path, be: &mut Backend, json: bool, p: &Paint) 
     // 白板写全了（<项目>/<白板>）就不用连服务端：做不下去的原因可能正是连不上
     let path = if raw.trim().contains('/') { raw.trim().to_string() } else { be.board(raw, Want::Brief, false)?.path };
     let board = path.rsplit('/').next().unwrap_or(&path).to_string();
-    let branch = format!("wip/{board}/{id}");
+    let preferred = format!("wip/{board}/{id}");
     git(dir, &["fetch", "--quiet", "origin"], NET).map_err(|e| BoardError::usage(format!("git fetch origin 失败：{e}。什么都没改")))?;
     if unpushed(dir).is_none() {
         return Err(BoardError::usage("没有没推的改动（文件都提交了、提交都在远端）：不用推 wip 分支"));
@@ -222,17 +231,18 @@ fn wip(raw: &str, id: i64, dir: &Path, be: &mut Backend, json: bool, p: &Paint) 
         let msg = format!("wip: 未完成的改动\n\n卡片：{path}#{id}");
         git(dir, &["commit", "--quiet", "--no-verify", "-m", &msg], COMMIT).map_err(|e| BoardError::usage(format!("提交没完成的改动失败：{e}")))?;
     }
-    let exists = git(dir, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")], QUICK).is_ok();
+    let sha = git(dir, &["rev-parse", "--short", "HEAD"], QUICK).map_err(BoardError::usage)?;
+    let (branch, force) = wip_target(dir, &preferred, &sha)?;
     let target = format!("HEAD:refs/heads/{branch}");
     let mut args = vec!["push", "--quiet"];
-    // 已经有这条分支（接着做的卡又做不下去）：覆盖，但只覆盖刚 fetch 到的那一版，别人刚推的不盖掉
-    if exists {
+    // 远端每个提交在 HEAD 里都有等价改动才覆盖；--force-with-lease 只覆盖刚 fetch 到的那一版
+    if force {
         args.push("--force-with-lease");
     }
+    args.push("--no-verify");
     args.extend(["origin", target.as_str()]);
     git(dir, &args, NET).map_err(|e| BoardError::usage(format!("推到 {branch} 失败：{e}。改动还在本地（已经提交）")))?;
     let _ = git(dir, &["fetch", "--quiet", "origin", &format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")], NET);
-    let sha = git(dir, &["rev-parse", "--short", "HEAD"], QUICK).map_err(BoardError::usage)?;
     let line = format!("未完成的改动：{branch}");
     if json {
         return Ok(Output::Json(json!({ "branch": branch, "commit": sha, "line": line })));
@@ -241,6 +251,26 @@ fn wip(raw: &str, id: i64, dir: &Path, be: &mut Backend, json: bool, p: &Paint) 
         "{} 没做完的改动推到了 {branch}（{sha}），集成分支没有变化\n\n{}\n{line}\n",
         p.green("✓"),
         p.dim("board giveup 的评论里带上这一行：")
+    )))
+}
+
+/// 找一个能安全推的 wip 分支：远端没有就用首选名；有的话只有远端每个提交在 HEAD 里都有等价改动才覆盖。
+/// 首选名不安全时改用 `<首选名>-<HEAD 短号>`；它也不安全时报错，两条分支都不碰
+fn wip_target(dir: &Path, preferred: &str, short: &str) -> Result<(String, bool)> {
+    let candidates = [preferred.to_string(), format!("{preferred}-{short}")];
+    for branch in &candidates {
+        let remote = format!("refs/remotes/origin/{branch}");
+        if git(dir, &["rev-parse", "--verify", "--quiet", remote.as_str()], QUICK).is_err() {
+            return Ok((branch.clone(), false));
+        }
+        let out = git_output(dir, &["cherry", "HEAD", remote.as_str()], QUICK).map_err(BoardError::usage)?;
+        let safe = out.status.success() && !String::from_utf8_lossy(&out.stdout).lines().any(|l| l.starts_with('+'));
+        if safe {
+            return Ok((branch.clone(), true));
+        }
+    }
+    Err(BoardError::usage(format!(
+        "{preferred} 和 {preferred}-{short} 的远端都有 HEAD 里没有的提交：没有推送，原来的分支都留着。先确认要从哪条接着做"
     )))
 }
 
@@ -269,15 +299,18 @@ fn with_card_line(message: &str, path: &str, id: i64) -> Result<String> {
     Ok(format!("{body}\n\n{want}\n"))
 }
 
-/// 卡片评论里最后一条 `未完成的改动：wip/…`：这张卡是从这条分支接着做的。只认 `wip/` 开头的分支，别的不删
-pub(crate) fn wip_branch(activity: &[Activity]) -> Option<String> {
+/// 卡片评论里最后一条属于这张卡的 `未完成的改动：wip/…`：只认 `wip/<白板>/<ID>` 或带 `-` 后缀的分支
+pub(crate) fn wip_branch(activity: &[Activity], board: &str, id: i64) -> Option<String> {
+    let want = format!("wip/{board}/{id}");
     let mut found = None;
     for a in activity.iter().filter(|a| a.kind == "comment") {
         for l in a.text.lines() {
             let l = l.trim().trim_start_matches(['-', '*', ' ']);
             let Some(rest) = l.strip_prefix("未完成的改动：").or_else(|| l.strip_prefix("未完成的改动:")) else { continue };
             let b = rest.trim().trim_matches('`').split_whitespace().next().unwrap_or("").trim_matches('`');
-            if b.starts_with("wip/") && !b.contains("..") {
+            let suffix = b.strip_prefix(&want);
+            let mine = suffix.is_some_and(|s| s.is_empty() || s.strip_prefix('-').is_some_and(|s| !s.is_empty() && !s.contains("..")));
+            if b.starts_with("wip/") && !b.contains("..") && mine {
                 found = Some(b.to_string());
             }
         }
@@ -301,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn wip_branch_comes_from_the_last_comment() {
+    fn wip_branch_comes_from_the_last_comment_for_this_card() {
         let c = |kind: &str, text: &str| Activity {
             id: 0,
             at: 0,
@@ -311,14 +344,16 @@ mod tests {
             text: text.into(),
             edited_at: None,
         };
-        assert_eq!(wip_branch(&[]), None);
+        assert_eq!(wip_branch(&[], "main", 21), None);
         let acts = vec![
             c("comment", "做不下去：检查不过\n\n未完成的改动：wip/main/21"),
-            c("system", "未完成的改动：wip/main/99"),
+            c("system", "未完成的改动：wip/main/22"),
             c("comment", "又停了\n- 未完成的改动：`wip/main/21-win`"),
         ];
-        assert_eq!(wip_branch(&acts).as_deref(), Some("wip/main/21-win"));
-        // 不是 wip/ 开头的分支不删
-        assert_eq!(wip_branch(&[c("comment", "未完成的改动：main")]), None);
+        assert_eq!(wip_branch(&acts, "main", 21).as_deref(), Some("wip/main/21-win"));
+        // 别的卡、别的白板、只是前缀相同的卡号都不认
+        for text in ["未完成的改动：main", "未完成的改动：wip/main/22", "未完成的改动：wip/main/211", "未完成的改动：wip/other/21"] {
+            assert_eq!(wip_branch(&[c("comment", text)], "main", 21), None, "{text}");
+        }
     }
 }

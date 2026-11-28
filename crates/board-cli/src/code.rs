@@ -104,6 +104,32 @@ pub fn has_origin(dir: &Path) -> bool {
     git(dir, &["remote", "get-url", "origin"], QUICK).is_ok_and(|u| !u.is_empty())
 }
 
+/// git 正停在一个没做完的操作里。`marker` 是 git 的标记文件，`what` 是操作名，`resolve` 是继续 / 放弃的命令
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InProgress {
+    pub marker: &'static str,
+    pub what: &'static str,
+    pub resolve: &'static str,
+}
+
+/// 检查 rebase、merge、cherry-pick 是不是停在中途。用 `git rev-parse --git-path` 找标记，
+/// worktree（`.git` 是文件）里也能找到正确的位置
+pub fn in_progress(dir: &Path) -> Result<Option<InProgress>, String> {
+    const MARKERS: [(&str, &str, &str); 4] = [
+        ("rebase-merge", "rebase", "git rebase --continue 或 git rebase --abort"),
+        ("rebase-apply", "rebase", "git rebase --continue 或 git rebase --abort"),
+        ("MERGE_HEAD", "merge", "git merge --continue 或 git merge --abort"),
+        ("CHERRY_PICK_HEAD", "cherry-pick", "git cherry-pick --continue 或 git cherry-pick --abort"),
+    ];
+    for (marker, what, resolve) in MARKERS {
+        let path = git(dir, &["rev-parse", "--git-path", marker], QUICK)?;
+        if dir.join(path).exists() {
+            return Ok(Some(InProgress { marker, what, resolve }));
+        }
+    }
+    Ok(None)
+}
+
 /// 把远端的最新提交拉下来（不动工作区）
 pub fn fetch(repo: &Path) -> Result<(), String> {
     git(repo, &["fetch", "--quiet", "--prune", "origin"], FETCH_LIMIT).map(|_| ())
@@ -336,7 +362,7 @@ fn adopt(repo: &Path, wt: &Path, name: &str, online: Option<&[String]>) -> bool 
 /// 会话结束：worktree 里没有没推的改动时解锁，留给下一个会话接手；有的话原样留着（还锁着，不会被接手、清理）。
 /// 返回有没有解锁
 pub fn release(wt: &Path) -> bool {
-    if unpushed(wt).is_some() {
+    if unpushed(wt).is_some() || !matches!(in_progress(wt), Ok(None)) {
         return false;
     }
     touch(wt);
@@ -569,6 +595,9 @@ pub struct Wip {
 /// 推到 `branch`；那条分支已经有别的内容、推不进去时改推 `alt`（带机器名，免得盖掉别人的）。
 /// worktree 是干净的（都推了）时返回 None
 pub fn save_wip(wt: &Path, branch: &str, alt: &str, message: &str) -> Result<Option<Wip>, String> {
+    if let Some(ip) = in_progress(wt)? {
+        return Err(format!("worktree 还在 {} 中（{}）：先 {}，没有提交、没有推送，锁也没有解", ip.what, ip.marker, ip.resolve));
+    }
     if unpushed(wt).is_none() {
         return Ok(None);
     }
@@ -580,9 +609,9 @@ pub fn save_wip(wt: &Path, branch: &str, alt: &str, message: &str) -> Result<Opt
     }
     let ahead = git(wt, &["rev-list", "--count", "HEAD", "--not", "--remotes"], QUICK).ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
     let mut used = branch.to_string();
-    if git(wt, &["push", "--quiet", "origin", &format!("HEAD:refs/heads/{branch}")], FETCH_LIMIT).is_err() {
+    if git(wt, &["push", "--quiet", "--no-verify", "origin", &format!("HEAD:refs/heads/{branch}")], FETCH_LIMIT).is_err() {
         used = alt.to_string();
-        git(wt, &["push", "--quiet", "--force", "origin", &format!("HEAD:refs/heads/{alt}")], FETCH_LIMIT)?;
+        git(wt, &["push", "--quiet", "--no-verify", "--force", "origin", &format!("HEAD:refs/heads/{alt}")], FETCH_LIMIT)?;
     }
     // 让本地认得这条远端分支：之后这个 worktree 就算干净的，下一次派发可以接着用
     let _ = git(wt, &["fetch", "--quiet", "origin", &format!("+refs/heads/{used}:refs/remotes/origin/{used}")], FETCH_LIMIT);
@@ -749,6 +778,35 @@ mod tests {
         worktree_locks(&r.repo).into_iter().find(|(q, _)| same_path(q, wt)).and_then(|(_, l)| l)
     }
 
+    /// rebase、merge、cherry-pick 的标记都能认出来（`--git-path` 在 worktree 里也指向对的地方）
+    #[test]
+    fn in_progress_detects_the_git_markers() {
+        let r = rig();
+        assert_eq!(in_progress(&r.repo).unwrap(), None);
+        let markers = [
+            ("rebase-merge", "rebase", true),
+            ("rebase-apply", "rebase", true),
+            ("MERGE_HEAD", "merge", false),
+            ("CHERRY_PICK_HEAD", "cherry-pick", false),
+        ];
+        for (marker, what, dir) in markers {
+            let path = r.repo.join(git(&r.repo, &["rev-parse", "--git-path", marker], QUICK).unwrap());
+            if dir {
+                std::fs::create_dir_all(&path).unwrap();
+            } else {
+                std::fs::write(&path, "x").unwrap();
+            }
+            let got = in_progress(&r.repo).unwrap().unwrap();
+            assert_eq!((got.marker, got.what), (marker, what), "{marker}");
+            if dir {
+                std::fs::remove_dir_all(&path).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            assert_eq!(in_progress(&r.repo).unwrap(), None);
+        }
+    }
+
     fn push(r: &Rig, text: &str) {
         std::fs::write(r.up.join("AGENTS.md"), text).unwrap();
         run(&r.up, &["commit", "-q", "-am", text.trim()]);
@@ -907,6 +965,26 @@ mod tests {
         let w = save_wip(&other, "wip/main/7", "wip/main/7-win", "wip").unwrap().unwrap();
         assert_eq!(w.branch, "wip/main/7-win");
         assert_eq!(w.changes, "1 个没提交的文件（other.txt）");
+    }
+
+    /// 停在 merge 中途时半成品不能提交、推送，锁也不解；先 --continue / --abort 再来
+    #[test]
+    fn save_wip_refuses_while_git_is_in_progress() {
+        let r = rig();
+        let wt = prep(&r.repo, "a/b", 1, "").unwrap().cwd;
+        std::fs::write(wt.join("half.txt"), "还没提交").unwrap();
+        let marker = wt.join(git(&wt, &["rev-parse", "--git-path", "MERGE_HEAD"], QUICK).unwrap());
+        std::fs::write(&marker, "x").unwrap();
+        let before = git(&wt, &["rev-parse", "HEAD"], QUICK).unwrap();
+        let err = save_wip(&wt, "wip/main/7", "wip/main/7-mbp", "wip").unwrap_err();
+        assert!(err.contains("merge") && err.contains("git merge --continue") && err.contains("git merge --abort"), "{err}");
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"], QUICK).unwrap(), before, "没有提交");
+        assert!(git(&r.up, &["rev-parse", "--verify", "--quiet", "refs/heads/wip/main/7"], QUICK).is_err(), "没有推送");
+        assert!(!release(&wt), "锁留着，不会被接手");
+        assert_eq!(lock_of(&r, &wt).as_deref(), Some("a/b"));
+        std::fs::remove_file(marker).unwrap();
+        let w = save_wip(&wt, "wip/main/7", "wip/main/7-mbp", "wip").unwrap().unwrap();
+        assert_eq!(w.branch, "wip/main/7");
     }
 
     /// 清理：board host 备的、超过时限没用的干净 worktree 删掉；正在用的、有没推改动的、不是 board host 备的都留着
@@ -1167,6 +1245,11 @@ mod tests {
         let got = sweep(&r.repo, &[], NOBODY, WT_UNUSED, WT_IDLE_MAX, SystemTime::now());
         assert!(matches!(got.as_slice(), [(_, Swept::Unpushed(_))]) && a.join("half.txt").exists(), "{got:?}");
         std::fs::remove_file(a.join("half.txt")).unwrap();
+        let marker = a.join(git(&a, &["rev-parse", "--git-path", "MERGE_HEAD"], QUICK).unwrap());
+        std::fs::write(&marker, "x").unwrap();
+        assert!(!release(&a), "操作中途不解锁");
+        assert_eq!(lock_of(&r, &a).as_deref(), Some("a/x"));
+        std::fs::remove_file(marker).unwrap();
         assert!(release(&a));
         assert_eq!(lock_of(&r, &a), None);
     }

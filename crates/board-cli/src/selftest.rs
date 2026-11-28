@@ -3,8 +3,8 @@
 //! - agent：在它设置的启动环境里、进一个临时目录，带上设置好的模型和思考强度，用 docs/agents.md 第 2 步那句
 //!   不改任何文件的提示词跑一次（最长 3 分钟）。agent 说的话（ACP 的消息片段接起来）里答出了 SKILL.md 第一个二级标题，
 //!   或者答出了 `board-skills`（不看大小写、连字符这些写法）又没在说找不到它，算通过；没登录、超时、不认识 skill 分别写明。
-//! - git：每块白板的目录 `git fetch origin`，再 `git push --dry-run origin HEAD:refs/heads/board-selftest`
-//!   （只检查权限，不会真的推上去）；失败时分清没有权限、没有 origin、网络不通。
+//! - git：每块白板的目录 `git fetch origin`，再 `git push --dry-run --no-verify origin HEAD:refs/heads/board-selftest`
+//!   （只检查权限，不会真的推上去，也不跑仓库的 pre-push 钩子）；失败时分清没有权限、没有 origin、网络不通。
 //! - 供应商（整台机器时）：共用配置里的每个供应商，每种接口发一次列模型的请求（`<地址>/models`，Anthropic 是
 //!   `<地址>/v1/models`），带上 key。连不上（解析不了、拒绝连接、超时）、key 被拒（401、403）算没通过；别的回应
 //!   （包括 404：有的中转不给模型列表）都算连得上。服务端据此算用这个供应商的角色在这台机器上能不能跑（#574）。
@@ -431,7 +431,7 @@ pub fn check_git(job: &GitJob, logs: &Path, pids: &Pids) -> SelfTestItem {
     if let Some(bad) = step(o, text, "git fetch origin ") {
         return bad;
     }
-    let (o, text) = git(&job.dir, &["push", "--dry-run", "origin", PROBE_REF], &log, GIT_LIMIT, pids);
+    let (o, text) = git(&job.dir, &["push", "--dry-run", "--no-verify", "origin", PROBE_REF], &log, GIT_LIMIT, pids);
     if let Some(bad) = step(o, text, "git push --dry-run ") {
         return bad;
     }
@@ -667,6 +667,10 @@ mod tests {
         let good = check_git(&GitJob { board: "a/b".into(), dir: root.join("work") }, root, &pids);
         assert!(good.ok, "{good:?}");
         assert!(good.detail.unwrap().contains("origin.git"));
+        // 仓库的 pre-push 钩子总是失败：自检的 dry-run 不跑钩子，仍算连通
+        sh(root, "printf '#!/bin/sh\\necho blocked by test pre-push >&2\\nexit 1\\n' > work/.git/hooks/pre-push && chmod +x work/.git/hooks/pre-push");
+        let hooked = check_git(&GitJob { board: "a/b".into(), dir: root.join("work") }, root, &pids);
+        assert!(hooked.ok, "自检 dry-run 跳过 pre-push 钩子：{hooked:?}");
         let refs = crate::gitcmd::command().args(["-C", root.join("origin.git").to_str().unwrap(), "for-each-ref"]).output().unwrap();
         assert!(!String::from_utf8_lossy(&refs.stdout).contains("board-selftest"), "dry-run 不会真的推上去");
         // origin 改成不存在的地址

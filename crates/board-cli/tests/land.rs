@@ -10,7 +10,7 @@ use std::process::Command;
 const ALPHA: &str = "test/alpha";
 const BETA: &str = "test/beta";
 
-fn git(dir: &Path, args: &[&str]) -> String {
+fn git_try(dir: &Path, args: &[&str]) -> std::process::Output {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -23,6 +23,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env_remove("GIT_DIR")
         .output()
         .unwrap();
+    out
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = git_try(dir, args);
     assert!(out.status.success(), "git {args:?}：{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -293,4 +298,117 @@ fn wip_saves_unfinished_changes() {
     // 都推了：没有要保存的
     let out = s.run(ALPHA, &["land", "1", "--wip", "--dir", r.work.to_str().unwrap(), "--json"]);
     assert_eq!(out.error_code(), "USAGE");
+}
+
+/// 停在冲突中的 rebase 时：正常 land、land --wip 都拒绝，不提交、不推送
+#[test]
+fn refuses_to_land_while_rebase_is_in_progress() {
+    let s = server();
+    let r = repo();
+    r.commit("a.txt", "agent side of the conflict\n", "wip: 改了一半");
+    r.push_other("other", "a.txt", "integration side of the conflict\n", "feat: 别的卡\n\n卡片：default/main#91");
+    git(&r.work, &["fetch", "-q", "origin"]);
+    let rebase = git_try(&r.work, &["rebase", "origin/main"]);
+    assert!(!rebase.status.success(), "应当停在冲突上：{}", String::from_utf8_lossy(&rebase.stderr));
+    assert!(r.work.join(git(&r.work, &["rev-parse", "--git-path", "rebase-merge"])).exists());
+    let head = git(&r.work, &["rev-parse", "HEAD"]);
+    let remote = r.main();
+
+    let out = land(&s, &r, &normal(&r, &[]));
+    assert_eq!(out.code, 1, "{}{}", out.out, out.err);
+    assert_eq!(out.error_code(), "USAGE");
+    let message = out.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(message.contains("rebase") && message.contains("--continue") && message.contains("--abort"), "{message}");
+    assert_eq!(git(&r.work, &["rev-parse", "HEAD"]), head, "正常 land 没有提交");
+    assert_eq!(r.main(), remote, "正常 land 没有推送");
+
+    let out = s.run(ALPHA, &["land", "1", "--wip", "--dir", r.work.to_str().unwrap(), "--json"]);
+    assert_eq!(out.code, 1, "{}{}", out.out, out.err);
+    assert_eq!(out.error_code(), "USAGE");
+    let message = out.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(message.contains("rebase") && message.contains("--continue") && message.contains("--abort"), "{message}");
+    assert_eq!(git(&r.work, &["rev-parse", "HEAD"]), head, "land --wip 没有提交");
+    assert!(
+        !git_try(&r.up, &["rev-parse", "--verify", "--quiet", "refs/heads/wip/main/1"]).status.success(),
+        "land --wip 没有推送"
+    );
+    git(&r.work, &["rebase", "--abort"]);
+}
+
+/// 远端 wip 分支上有 HEAD 里没有的提交：不覆盖，改推带短提交号的分支，原来的分支原样留着
+#[test]
+fn wip_keeps_a_diverged_remote_branch() {
+    let s = server();
+    let r = repo();
+    std::fs::write(r.work.join("a.txt"), "first attempt\n").unwrap();
+    let out = s.run(ALPHA, &["land", "1", "--wip", "--dir", r.work.to_str().unwrap(), "--json"]);
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    assert_eq!(out.json()["branch"], "wip/main/1");
+
+    let other = r.root.join("wip-other");
+    git(&r.root, &["clone", "-q", r.up.to_str().unwrap(), other.to_str().unwrap()]);
+    git(&other, &["checkout", "-q", "--detach", "origin/wip/main/1"]);
+    std::fs::write(other.join("remote-only.txt"), "另一台机器的半成品\n").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "wip: 另一台机器"]);
+    git(&other, &["push", "-q", "origin", "HEAD:refs/heads/wip/main/1"]);
+    let diverged = git(&r.up, &["rev-parse", "refs/heads/wip/main/1"]);
+
+    std::fs::write(r.work.join("a.txt"), "second attempt\n").unwrap();
+    let out = s.run(ALPHA, &["land", "1", "--wip", "--dir", r.work.to_str().unwrap(), "--json"]);
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    let v = out.json();
+    let branch = v["branch"].as_str().unwrap().to_string();
+    assert!(branch.starts_with("wip/main/1-") && branch != "wip/main/1", "{v}");
+    assert_eq!(v["line"], format!("未完成的改动：{branch}"));
+    assert_eq!(git(&r.up, &["rev-parse", "refs/heads/wip/main/1"]), diverged, "原来的分支没有被覆盖");
+    assert_eq!(git(&r.up, &["show", "refs/heads/wip/main/1:remote-only.txt"]), "另一台机器的半成品");
+    assert_eq!(git(&r.up, &["show", &format!("refs/heads/{branch}:a.txt")]), "second attempt");
+    assert!(
+        !git_try(&r.up, &["show", &format!("refs/heads/{branch}:remote-only.txt")]).status.success(),
+        "新分支不带上原来分支独有的提交"
+    );
+}
+
+/// 评论里是别的卡号的 wip 分支：正常 land 不删它
+#[test]
+fn does_not_delete_a_wip_branch_for_another_card() {
+    let s = server();
+    let r = repo();
+    r.commit("b.txt", "half done for another card\n", "wip: 未完成的改动");
+    git(&r.work, &["push", "-q", "origin", "HEAD:refs/heads/wip/main/2"]);
+    assert_eq!(s.run(ALPHA, &["comment", "1", "未完成的改动：wip/main/2", "--json"]).code, 0);
+    r.commit("b.txt", "done now\n", "finish");
+    let tip = git(&r.up, &["rev-parse", "refs/heads/wip/main/2"]);
+
+    let out = land(&s, &r, &normal(&r, &[]));
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    assert!(out.json()["wip_deleted"].is_null(), "{}", out.out);
+    assert_eq!(git(&r.up, &["rev-parse", "refs/heads/wip/main/2"]), tip, "别的卡的分支还在");
+}
+
+/// wip 推送跳过 pre-push 钩子（做不下去时钩子正是拦路的那一步）；正常 land 仍然跑钩子
+#[cfg(unix)]
+#[test]
+fn wip_push_skips_pre_push_hook_but_normal_land_does_not() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = server();
+    let r = repo();
+    let hook = r.work.join(".git/hooks/pre-push");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho blocked by test pre-push >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    std::fs::write(r.work.join("a.txt"), "half way\n").unwrap();
+    let out = s.run(ALPHA, &["land", "1", "--wip", "--dir", r.work.to_str().unwrap(), "--json"]);
+    assert_eq!(out.code, 0, "{}{}", out.out, out.err);
+    assert_eq!(git(&r.up, &["show", "refs/heads/wip/main/1:a.txt"]), "half way");
+
+    r.commit("a.txt", "all done\n", "finish");
+    let remote = r.main();
+    let out = land(&s, &r, &normal(&r, &[]));
+    assert_eq!(out.code, 1, "{}{}", out.out, out.err);
+    assert_eq!(out.error_code(), "USAGE");
+    assert_eq!(r.main(), remote, "正常 land 被 pre-push 钩子拦下");
 }
