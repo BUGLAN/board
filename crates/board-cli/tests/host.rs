@@ -1210,12 +1210,27 @@ fn second_host_keeps_first_hosts_run_files() {
     wait_until("派发的配置和进程文件写好", Duration::from_secs(20), || {
         run.join(format!("{d}.toml")).exists() && run.join(format!("{d}.proc")).exists()
     });
+    let agent = rig.pid("agent.pid");
     let mut second = rig.host_gives_up("mbp");
     let (code, out) = wait_out(&mut second, Duration::from_secs(10));
-    assert_eq!(code, 1);
+    assert_eq!(code, 1, "{out}");
     assert!(out.contains("HOST_NAME_TAKEN"), "{out}");
-    assert!(run.join(format!("{d}.toml")).exists(), "第二个 host 不能删掉正在跑的派发的配置文件");
-    assert!(run.join(format!("{d}.proc")).exists());
+    // 第二个 host 没上线，也没有当成「上一次留下的」去结束第一个 host 的 agent
+    assert!(!out.contains("已上线") && !out.contains("结束上一次留下的 agent"), "{out}");
+    let files = run.join(format!("{d}.toml")).exists() && run.join(format!("{d}.proc")).exists();
+    if !files || !running(agent) {
+        // 偶发过一次、没能复现（default/main#743）：再出现时把两边的输出、卡片、派发日志都带上，看清是谁、为什么结束了这次派发
+        let alive = running(agent);
+        let card = rig.show(1);
+        let (c1, o1) = stop(host);
+        let log = std::fs::read_to_string(log_file(&rig.s.home, d)).unwrap_or_default();
+        panic!(
+            "第二个 host 退出后，正在跑的派发 #{d} 不完整了：配置和进程文件在 {files}，agent 还在跑 {alive}\n\
+             --- 第二个 host ---\n{out}\n--- 第一个 host（退出码 {c1}）---\n{o1}\n--- 卡片 ---\n{card}\n\
+             --- 服务端的派发记录 ---\n{}\n--- agent 日志 ---\n{log}",
+            rig.dispatch_log(d).join("\n")
+        );
+    }
     let (code, out) = stop(host);
     assert_eq!(code, 0, "{out}");
     assert!(ended(&rig.show(1), "已停止"));
