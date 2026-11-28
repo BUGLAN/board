@@ -268,6 +268,32 @@ fn secret_files_are_removed_on_cleanup_and_start_failure() {
     assert!(!provider.exists() && !patch.exists(), "启动中途失败也要删密钥文件");
 }
 
+/// #727：Claude Code 按角色用供应商、填了模型时，给这个进程带上自定义模型选项（网关只列自定义模型时才设得上）；
+/// 没填模型、本机配置、官方订阅、别的 agent 都不带
+#[test]
+fn role_vars_add_claude_custom_model_only_for_provider_roles() {
+    let role = |model: &str, provider: bool, subscription: bool| RoleRun {
+        model: model.into(),
+        effort: "high".into(),
+        provider_file: provider.then(|| PathBuf::from("/tmp/1.provider.json")),
+        dsh_patch: None,
+        dsh_key: None,
+        subscription,
+    };
+    let custom = vec![(CLAUDE_CUSTOM_MODEL_ENV.to_string(), "group/4.1f".to_string())];
+    assert_eq!(role_vars("claude", Some(&role("group/4.1f", true, false))), custom);
+    assert!(role_vars("claude", Some(&role("", true, false))).is_empty(), "没填模型：不切模型，也不带");
+    assert!(role_vars("claude", Some(&role("group/4.1f", false, false))).is_empty(), "本机配置：不换供应商，不带");
+    assert!(role_vars("claude", Some(&role("opus", false, true))).is_empty(), "官方订阅：不带");
+    assert!(role_vars("claude", None).is_empty(), "不按角色派发：不带");
+    assert!(role_vars("codex", Some(&role("group/4.1f", true, false))).is_empty());
+    assert!(role_vars("dsh", Some(&role("group/4.1f", true, false))).is_empty());
+    // WSL 里的 Claude Code 也要收到：经 WSLENV 传进去
+    let out = launch_env(custom, "npx", true, Path::new("/tmp/npm-cache"));
+    let wslenv = out.iter().find(|(k, _)| k == "WSLENV").map(|(_, v)| v.to_string_lossy().to_string()).unwrap_or_default();
+    assert!(wslenv.contains(&format!("{CLAUDE_CUSTOM_MODEL_ENV}/u")), "{wslenv}");
+}
+
 /// 日志文件只有自己能读（0600）
 #[cfg(unix)]
 #[test]

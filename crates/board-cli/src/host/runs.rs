@@ -332,6 +332,21 @@ pub(super) struct RoleRun {
     pub(super) subscription: bool,
 }
 
+/// Claude Code 的自定义模型选项：进 SDK 的模型表（[文档](https://code.claude.com/docs/en/model-config#add-a-custom-model-option)）
+pub(super) const CLAUDE_CUSTOM_MODEL_ENV: &str = "ANTHROPIC_CUSTOM_MODEL_OPTION";
+
+/// 按角色派发时只给这一个 agent 进程加的环境变量（不改 agent 的配置文件）：
+/// - Claude Code 用供应商、填了模型：[`CLAUDE_CUSTOM_MODEL_ENV`] = 角色的模型（#727）。claude-agent-acp 换了供应商后，
+///   模型下拉只留 SDK 自带模型里网关也列了的（`narrowToGatewayModels`）：网关只列 `group/4.1f` 这类自定义模型时一个不剩，
+///   设不上模型；自定义模型选项进了 SDK 的模型表，网关列了它就留下。本机配置、官方订阅不换供应商，不带
+pub(super) fn role_vars(agent: &str, role: Option<&RoleRun>) -> Vec<(String, String)> {
+    let Some(r) = role.filter(|r| r.provider_file.is_some() && !r.model.is_empty()) else { return vec![] };
+    match agent {
+        "claude" => vec![(CLAUDE_CUSTOM_MODEL_ENV.to_string(), r.model.clone())],
+        _ => vec![],
+    }
+}
+
 /// 写只有自己能读的文件（里面有 key）
 fn write_secret(path: &Path, text: &str) -> std::io::Result<()> {
     let _ = std::fs::remove_file(path);
@@ -496,7 +511,10 @@ impl Host<'_> {
         // 机器对话：`--chat <状态文件>`、`--resume <会话>`（chats.rs）
         c.args(more);
         c.arg("--").arg(&prog).args(&args).current_dir(dir);
-        for (k, v) in launch_env(spec.acp_vars(check), &prog, env.wsl().is_some(), &self.host_dir().join("npm-cache")) {
+        // 按角色加的变量和适配器要的一起交给 launch_env：WSL 里的 agent 也经 WSLENV 收到
+        let mut vars = spec.acp_vars(check);
+        vars.extend(role_vars(&spec.id, role));
+        for (k, v) in launch_env(vars, &prog, env.wsl().is_some(), &self.host_dir().join("npm-cache")) {
             c.env(k, v);
         }
         // dsh 用角色的供应商：key 只给这一个进程（补丁里写的是环境变量名）

@@ -120,7 +120,7 @@ board host 每次派发按角色给**这一个 agent 进程**带上供应商、�
 
 | agent | 怎么换供应商 | 模型、强度 |
 |---|---|---|
-| Claude Code（`claude-agent-acp`） | ACP 握手后、开会话前发 `providers/set`：`providerId: "main"`、`apiType: "anthropic"`、`baseUrl`（不带 `/v1`）、`headers: {"Authorization": "Bearer <key>"}`。适配器把它写进会话的程序化 settings，优先级高于 `~/.claude/settings.json` 里的 `env` | ACP 会话配置项：类别 `model`、`thought_level` |
+| Claude Code（`claude-agent-acp`） | ACP 握手后、开会话前发 `providers/set`：`providerId: "main"`、`apiType: "anthropic"`、`baseUrl`（不带 `/v1`）、`headers: {"Authorization": "Bearer <key>"}`。适配器把它写进会话的程序化 settings，优先级高于 `~/.claude/settings.json` 里的 `env` | ACP 会话配置项：类别 `model`、`thought_level`。用供应商时这个进程还带 `ANTHROPIC_CUSTOM_MODEL_OPTION=<角色的模型>`（#727）：适配器换了供应商后，模型下拉只留 SDK 自带模型里网关也列了的，网关只列 `group/4.1f` 这类自定义模型时就设不上；Claude Code 的[自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option)会进 SDK 的模型表，不用写 `settings.json` |
 | Codex（`codex-acp`） | 同样 `providers/set`：`providerId: "openai"`、`apiType: "openai"`（Responses 接口）、`baseUrl`、`headers`。适配器以 `-c model_provider=…` 覆盖启动 codex app-server，不改 `config.toml` | 同上 |
 | dsh | 这次派发的 `--patch` 后面接上 `llm-pi-ai` 里一条 `board-role` 路由和 `acp` 用的提供方、模型、强度；key 放在这个进程的环境变量 `BOARD_ROLE_API_KEY` 里 | 写在补丁里；没有供应商时用会话配置项 `reasoning_effort` 切强度 |
 | 配置文件里新加的 agent | 不能换供应商：角色只能选「本机配置」 | 会话配置项 |
