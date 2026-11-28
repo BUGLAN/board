@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "board-cli"
-version = "0.1.62"
+version = "0.1.63"
 dependencies = [
  "base64 0.23.1",
  "board-core",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "board-core"
-version = "0.1.62"
+version = "0.1.63"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "board-desktop"
-version = "0.1.62"
+version = "0.1.63"
 dependencies = [
  "base64 0.23.1",
  "board-core",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "board-server"
-version = "0.1.62"
+version = "0.1.63"
 dependencies = [
  "axum",
  "board-core",
