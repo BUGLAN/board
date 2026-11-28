@@ -296,7 +296,8 @@ button.hp-cid.link:hover { color: var(--text); background: var(--surface-3); }
 .hp-m-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: 12.5px; color: var(--text-3); }
 .hp-m-sub { margin-top: 14px; }
 .hp-single { grid-template-columns: minmax(0, 1fr) !important; }
-.hp-single .d-main { max-width: 680px; }
+/* 滚动容器 .d-main 占满弹窗宽度，滚动条落在弹窗右边缘、右边空白处也能滚（default/main#736）；限宽放在里面的内容上 */
+.hp-single .d-main > * { max-width: 680px; }
 .hp-hist { display: flex; gap: 10px; width: 100%; padding: 10px 6px; margin: 0 -6px; border-top: 1px solid var(--line); text-align: left; border-radius: var(--r-sm); }
 .hp-hist:first-child { border-top: 0; }
 .hp-hist:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }

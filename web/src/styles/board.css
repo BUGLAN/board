@@ -694,7 +694,8 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 
 /* 项目设置（components/ProjectSettings.tsx）：和白板设置同一种弹窗，单栏 */
 .ps-modal .d-grid.ps-grid { grid-template-columns: minmax(0, 1fr); }
-.ps-modal .d-main.ps-main { width: 100%; max-width: 720px; margin: 0 auto; }
+/* 滚动容器 .d-main 占满弹窗宽度，滚动条落在弹窗右边缘（default/main#736）；居中限宽放在里面的内容上 */
+.ps-modal .d-main.ps-main > * { width: 100%; max-width: 720px; margin-left: auto; margin-right: auto; }
 .ps-sub { margin-left: 10px; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* 「在左侧项目面板显示」：普通设置行的文字量级，标准小号开关放右边 */
 .ps-show { display: flex; align-items: flex-start; gap: 20px; padding: 2px 0; }
