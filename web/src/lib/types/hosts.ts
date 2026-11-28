@@ -242,6 +242,9 @@ export interface HostInfo {
   online: boolean;
   beatAt: number;
   offAt: number | null;
+  /** 这次上线的时间：离线变在线、换了 board host 进程时更新（board host 连上来之前就检查过目录时取那次检查的时间）。
+      只认不早于它的目录检查结果（`dirFresh`）；旧版服务端没有 */
+  onlineAt?: number | null;
   /** 等 board host 处理的远程管理请求（重新检查、重启、升级）；旧版服务端没有 */
   ask?: HostAsk | null;
   /** 正在排空：暂停接单，等在跑的派发结束（都结束了就是「已排空」） */

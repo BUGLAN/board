@@ -44,6 +44,8 @@ pub(crate) struct HostRow {
     pub(crate) first_at: i64,
     pub(crate) beat_at: i64,
     pub(crate) off_at: Option<i64>,
+    /// 这次上线的时间（见 hosts 表的 online_at）
+    pub(crate) online_at: Option<i64>,
     pub(crate) ask: Option<HostAsk>,
     pub(crate) ask_seq: i64,
     pub(crate) drain_at: Option<i64>,
@@ -60,13 +62,12 @@ pub(crate) struct HostRow {
     pub(crate) res: Option<crate::hostres::HostRes>,
     pub(crate) agents_raw: String,
     pub(crate) envs_raw: String,
-    pub(crate) dirs_raw: String,
     /// 项目设置里填了「项目目录」的项目（项目标识 → 目录名，#488）：派生目录用，见 [`HostRow::workspace`]
     pub(crate) proj_dirs: BTreeMap<String, String>,
 }
 
 pub(super) const HOST_COLS: &str =
-    "id, name, instance, os, version, agents, workspace, max, paused, agent, round_at, rr, first_at, beat_at, off_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]') AS rules, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180) AS max_run, COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20) AS idle_run, selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT json_group_array(json_object('id', id, 'name', name, 'agent', agent, 'provider', provider, 'model', model, 'effort', effort, 'note', note, 'only', json(only), 'sort', sort, 'createdAt', created_at)) FROM profiles), '[]') AS profiles_json, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
+    "id, name, instance, os, version, agents, workspace, max, paused, agent, round_at, rr, first_at, beat_at, off_at, online_at, envs, run, per_session, COALESCE((SELECT rules FROM sched WHERE id = 1), '[]') AS rules, dirs_rev, dirs_at, dirs_by, ask, ask_seq, drain_at, up_pause, rechecked_at, token, COALESCE((SELECT max_run FROM sched WHERE id = 1), 180) AS max_run, COALESCE((SELECT idle_run FROM sched WHERE id = 1), 20) AS idle_run, selftest, sync_skills, sync_mcp, config_sync, skill_import, dirs, auto, windows, up_tried, up_tries, up_retry, res, sync_git, agent_auto, COALESCE((SELECT json_group_array(json_object('id', id, 'name', name, 'agent', agent, 'provider', provider, 'model', model, 'effort', effort, 'note', note, 'only', json(only), 'sort', sort, 'createdAt', created_at)) FROM profiles), '[]') AS profiles_json, COALESCE((SELECT json_group_object(key, dir) FROM projects WHERE dir != ''), '{}') AS proj_dirs";
 
 /// 库里存着的目录：origin 去掉 http(s) 地址里的用户信息（#686）。上报时已经去掉了，这里管升级前存下的、
 /// 和离线机器（不再上报、不会被新的检查结果覆盖）的
@@ -123,6 +124,7 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         first_at: r.get("first_at")?,
         beat_at: r.get("beat_at")?,
         off_at: r.get("off_at")?,
+        online_at: r.get("online_at")?,
         ask: r.get::<_, Option<String>>("ask")?.and_then(|j| serde_json::from_str(&j).ok()),
         ask_seq: r.get("ask_seq")?,
         drain_at: r.get("drain_at")?,
@@ -138,7 +140,6 @@ fn host_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         skill_import: r.get::<_, Option<String>>("skill_import")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         agents_raw,
         envs_raw,
-        dirs_raw,
     })
 }
 
@@ -298,6 +299,7 @@ impl HostRow {
             first_at: self.first_at,
             beat_at: self.beat_at,
             off_at: self.off_at,
+            online_at: self.online_at,
             ask: self.ask.clone(),
             drain: self.drain_at.is_some(),
             rechecked_at: self.rechecked_at,

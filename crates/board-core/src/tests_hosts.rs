@@ -1306,6 +1306,67 @@ fn remove_cancels_queue_stops_running_and_comes_back_as_new() {
     assert!(s.read(|r| r.host_recent(da.host_id, 50)).unwrap().iter().any(|x| x.id == da.id));
 }
 
+/// 目录检查（default/main#740）：board host 每 5 分钟重新检查一次，只有检查时间变了时只写库、不推送；结果变了照常推送。
+/// 机器记下这次上线的时间（online_at），界面只认这之后检查的结果
+#[test]
+fn dir_checks_bump_rev_only_when_results_change() {
+    let mut s = store();
+    let rep = |inst: &str, status: &str, branch: &str, at: i64| HostReport {
+        dirs: vec![HostDir {
+            board: B.into(),
+            path: "/tmp/default".into(),
+            status: Some(status.into()),
+            origin: Some("https://github.com/o/board.git".into()),
+            branch: Some(branch.into()),
+            checked_at: Some(at),
+            ..Default::default()
+        }],
+        ..report("mbp", inst, vec![])
+    };
+    let online_at = |s: &Store, at: i64| host(s, at).online_at;
+    let revs = |s: &Store| (s.rev().unwrap(), s.hosts_rev().unwrap());
+    // 连上来之前就检查过目录（按 board host 的时钟记）：这次上线从那次检查算，第一次上报的结果就算数
+    beat(&mut s, T0, &rep("i1", "ok", "main", T0 - 2 * S)).unwrap();
+    assert_eq!(online_at(&s, T0), Some(T0 - 2 * S));
+    // 每 10 秒上报：两次检查之间沿用上次的结果，到点重新检查但结果没变：不推送，检查时间照样写进库
+    let r0 = revs(&s);
+    for i in 1..=30 {
+        let at = T0 + i * 10 * S;
+        let checked = if at >= T0 + 300 * S { at } else { T0 - 2 * S };
+        beat(&mut s, at, &rep("i1", "ok", "main", checked)).unwrap();
+    }
+    assert_eq!(revs(&s), r0, "只有检查时间变了，不算机器有变化");
+    assert_eq!(host(&s, T0 + 300 * S).dirs[0].checked_at, Some(T0 + 300 * S));
+    assert_eq!(online_at(&s, T0 + 300 * S), Some(T0 - 2 * S), "一直在线：上线时间不变");
+    // 结果真变了：分支变了、不再是 git 仓库，照常推送
+    beat(&mut s, T0 + 310 * S, &rep("i1", "ok", "dev", T0 + 310 * S)).unwrap();
+    let r1 = revs(&s);
+    assert!(r1.0 > r0.0 && r1.1 > r0.1, "分支变了要推送");
+    beat(&mut s, T0 + 320 * S, &rep("i1", "not_git", "dev", T0 + 320 * S)).unwrap();
+    let r2 = revs(&s);
+    assert!(r2.0 > r1.0 && r2.1 > r1.1, "变成不是 git 仓库要推送");
+    assert_eq!(host(&s, T0 + 320 * S).dirs[0].status.as_deref(), Some("not_git"));
+
+    // 掉线后回来：上线时间换成重连这次
+    let back = T0 + 320 * S + hosts::HOST_GAP_MS + S;
+    assert!(!host(&s, back).online);
+    beat(&mut s, back, &rep("i1", "not_git", "dev", back - S)).unwrap();
+    assert_eq!(online_at(&s, back), Some(back - S));
+    // 换了 board host 进程（重启接回）：上线时间也换
+    let restart = back + 10 * S;
+    let mut r = rep("i2", "not_git", "dev", restart);
+    r.resume = Some("i1".into());
+    beat(&mut s, restart, &r).unwrap();
+    assert_eq!(online_at(&s, restart), Some(restart));
+    // 升级前的旧数据没记上线时间：下一次上报补上，推送一次
+    s.conn().execute("UPDATE hosts SET online_at = NULL WHERE name = 'mbp'", []).unwrap();
+    assert_eq!(online_at(&s, restart), None);
+    let r3 = revs(&s);
+    beat(&mut s, restart + 10 * S, &rep("i2", "not_git", "dev", restart + 5 * S)).unwrap();
+    assert_eq!(online_at(&s, restart + 10 * S), Some(restart + 5 * S));
+    assert!(revs(&s).0 > r3.0);
+}
+
 /// 资源（PRD §10.12「资源」）：存最近一次和趋势，随机器信息给界面；每次都在变，不算机器有变化；旧版 board host 没有
 #[test]
 fn host_resources_are_stored_without_bumping_rev() {

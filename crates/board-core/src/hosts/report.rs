@@ -133,6 +133,20 @@ pub struct DirList {
     pub error: Option<String>,
 }
 
+/// 机器这次上线的时间：现在，或者这次上报里最早的目录检查时间（board host 连上来之前就检查过目录，
+/// 克隆、检查要花时间，检查时间又按它自己的时钟记）——这次上报带来的结果都算重连之后报的
+fn online_since(now: i64, dirs: &[HostDir]) -> i64 {
+    dirs.iter().filter_map(|d| d.checked_at).fold(now, i64::min)
+}
+
+/// 判断目录有没有变化时比较的内容：检查时间只看「是不是这次上线以来检查的」（界面 `dirFresh` 按它决定显不显示），
+/// 具体时间不算——board host 每 5 分钟重新检查一次，结果没变时不推送
+fn dir_results(dirs: &[HostDir], online_at: Option<i64>) -> Vec<HostDir> {
+    dirs.iter()
+        .map(|d| HostDir { checked_at: d.checked_at.map(|t| i64::from(online_at.is_none_or(|o| t >= o))), ..d.clone() })
+        .collect()
+}
+
 impl<'a> W<'a> {
     /// board host 的上报（每 10 秒；启动时第一次）：建立或更新机器，替在跑的派发发心跳，返回它的任务。
     ///
@@ -261,9 +275,9 @@ impl<'a> W<'a> {
                 self.tx.execute(
                     // sync_git 显式写 0：新机器默认不改。老库的这一列是 #386 迁移时 ALTER 加的，表上的默认值还是 1，
                     // 改 CREATE TABLE 不会改已经存在的表，所以不能靠列默认值
-                    "INSERT INTO hosts (name, token, instance, os, version, agents, workspace, dirs, dirs_rev, dirs_at, dirs_by, envs, first_at, beat_at, sync_git)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULLIF(?7, ''), ?8, 1, ?9, '本机', ?10, ?9, ?9, 0)",
-                    params![rep.name, token, rep.instance, rep.os, rep.version, agents, workspace, dirs, now, envs],
+                    "INSERT INTO hosts (name, token, instance, os, version, agents, workspace, dirs, dirs_rev, dirs_at, dirs_by, envs, first_at, beat_at, sync_git, online_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULLIF(?7, ''), ?8, 1, ?9, '本机', ?10, ?9, ?9, 0, ?11)",
+                    params![rep.name, token, rep.instance, rep.os, rep.version, agents, workspace, dirs, now, envs, online_since(now, &rep.dirs)],
                 )?;
                 if rep.selftest {
                     let st = SelfTest { able: true, ..Default::default() };
@@ -378,20 +392,24 @@ impl<'a> W<'a> {
                     dirs_at = Some(now);
                     dirs_by = Some("本机".into());
                 }
-                let dirs = serde_json::to_string(&dirs).unwrap_or_else(|_| "[]".into());
+                // 离线变在线、换了 board host 进程（升级前的旧数据没记过）：这次上线从现在算
+                let online_at = if !online || h.instance != rep.instance || h.online_at.is_none() { Some(online_since(now, &rep.dirs)) } else { h.online_at };
                 let workspace = workspace.as_ref().map(|w| serde_json::to_string(w).unwrap_or_default()).unwrap_or_default();
+                // 目录只看检查结果变没变：board host 每 5 分钟重新检查一次，检查时间每次都变，只写库、不算机器有变化
                 let differs = !online
                     || h.instance != rep.instance
+                    || h.online_at != online_at
                     || h.os != rep.os
                     || h.version != rep.version
                     || h.agents_raw != agents
                     || h.envs_raw != envs
-                    || h.dirs_raw != dirs
+                    || dir_results(&h.dirs, online_at) != dir_results(&dirs, online_at)
                     || h.workspace_raw.clone().unwrap_or_default() != workspace;
+                let dirs = serde_json::to_string(&dirs).unwrap_or_else(|_| "[]".into());
                 self.tx.execute(
                     "UPDATE hosts SET token = ?2, instance = ?3, os = ?4, version = ?5, agents = ?6, dirs = ?7, beat_at = ?8, off_at = NULL, envs = ?9,
-                                      dirs_rev = ?10, dirs_at = ?11, dirs_by = ?12, workspace = NULLIF(?13, '') WHERE id = ?1",
-                    params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs, dirs_rev, dirs_at, dirs_by, workspace],
+                                      dirs_rev = ?10, dirs_at = ?11, dirs_by = ?12, workspace = NULLIF(?13, ''), online_at = ?14 WHERE id = ?1",
+                    params![h.id, token, rep.instance, rep.os, rep.version, agents, dirs, now, envs, dirs_rev, dirs_at, dirs_by, workspace, online_at],
                 )?;
                 // 资源：每次都在变，只写库、不算机器有变化（不推送）；界面开着机器详情时每 10 秒取一次机器列表。
                 // 这次没带（旧版 board host、后台采样卡住太久）：清掉，界面写「不上报」，不留着越来越旧的数据

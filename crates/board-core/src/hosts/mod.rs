@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   first_at INTEGER NOT NULL,
   beat_at  INTEGER NOT NULL,
   off_at   INTEGER,                   -- 离线的时间；在线时为空
+  online_at INTEGER,                  -- 这次上线的时间（离线变在线、换了 board host 进程时更新，取当时和那次上报里最早的目录检查时间中较早的）：界面据此认目录结果是不是重连之后报的
   ask      TEXT,                      -- 等 board host 处理的请求（JSON：重新检查 / 重启 / 升级，见 HostAsk）；没有时为空
   ask_seq  INTEGER NOT NULL DEFAULT 0,-- 请求的序号（board host 处理完带着它回报）
   drain_at INTEGER,                   -- 排空开始的时间（暂停接单，等在跑的派发结束）；不在排空时为空
@@ -259,6 +260,7 @@ pub(crate) fn migrate(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         ("hosts", "drain_at", "INTEGER"),
         ("hosts", "up_pause", "INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "rechecked_at", "INTEGER"),
+        ("hosts", "online_at", "INTEGER"),
         ("dispatches", "model", "TEXT"),
         ("dispatches", "any_host", "INTEGER NOT NULL DEFAULT 0"),
         ("dispatches", "any_agent", "INTEGER NOT NULL DEFAULT 0"),

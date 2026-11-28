@@ -128,15 +128,17 @@ describe('目录（boardHosts、dirFresh、hostDirFor）', () => {
     ]);
   });
 
-  it('dirFresh：刚重连上来、还没重新看过的目录不算数（board host 每 10 秒上报，最少每 30 秒看一次目录）', () => {
-    const h = { ...host([]), beatAt: 1_000_000 };
-    // 上报在心跳前后 30 秒内：算新的
-    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'ok', checkedAt: 990_000 })).toBe(true);
-    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'ok', checkedAt: 1_010_000 })).toBe(true);
-    // 掉线之前的结果：不算（等它重新检查）
-    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'missing', checkedAt: 500_000 })).toBe(false);
-    // 旧版 board host 没报检查时间：照旧算
+  it('dirFresh：按这次上线的时间判断，上线之前检查的不算数，两次检查之间一直算（board host 每 5 分钟检查一次目录）', () => {
+    // 上线以后 4 分半没再检查（心跳一直在）：上一次的结果照样算，不再半分钟一过就不显示
+    const h = { ...host([]), onlineAt: 1_000_000, beatAt: 1_270_000 };
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'not_git', checkedAt: 1_000_000 })).toBe(true);
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'not_git', checkedAt: 1_010_000 })).toBe(true);
+    // 这次上线之前（掉线、重启之前）的结果：不算（等它重新上报）
+    expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'missing', checkedAt: 999_999 })).toBe(false);
+    // 旧版 board host 没报检查时间、旧版服务端没给上线时间：照旧算
     expect(dirFresh(h, { board: 'p/a', path: '~/a', status: 'missing' })).toBe(true);
+    expect(dirFresh({ ...h, onlineAt: undefined }, { board: 'p/a', path: '~/a', status: 'missing', checkedAt: 500_000 })).toBe(true);
+    expect(dirFresh({ ...h, onlineAt: null }, { board: 'p/a', path: '~/a', status: 'missing', checkedAt: 500_000 })).toBe(true);
   });
 
   it('hostDirFor：机器报过的用报的，没报过的按工作空间派生（分隔符跟着系统走）', () => {

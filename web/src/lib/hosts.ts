@@ -125,9 +125,9 @@ export const osKind = (os: string): OsKind => (/mac|darwin|os x/i.test(os) ? 'ma
 export const boardOf = (ws: Workspace | null, path: string): BoardInfo | undefined =>
   ws?.projects.flatMap(p => p.boards).find(b => b.path === path);
 
-/** 机器上报的目录状态是不是新的：服务端的机器数据里带着心跳时间，board host 每 10 秒上报一次（最少每 30 秒看一次
-    目录）：上报在心跳之前的不算数，重连上来要先检查一遍，不拿掉线之前的旧结果说事 */
-export const dirFresh = (h: HostInfo, d: HostDir) => d.checkedAt == null || !h.beatAt || d.checkedAt >= h.beatAt - 30_000;
+/** 机器上报的目录状态是不是新的：board host 每 5 分钟重新检查一次目录，两次检查之间沿用上次的结果。这次上线（重连、
+    重启）之前检查的不算数，不拿掉线之前的旧结果说事；没报检查时间（旧版 board host）、服务端没给上线时间（旧版服务端）时照旧算 */
+export const dirFresh = (h: HostInfo, d: HostDir) => d.checkedAt == null || !h.onlineAt || d.checkedAt >= h.onlineAt;
 
 /** 一块白板在一台机器上的目录：所在项目的 `<工作空间>/<项目>`（`--dir` 单独指定的用指定的路径，机器报过就用它报的） */
 export function hostDirFor(h: HostInfo, path: string): HostDir | undefined {

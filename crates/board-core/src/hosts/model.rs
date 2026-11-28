@@ -832,6 +832,11 @@ pub struct HostInfo {
     pub first_at: i64,
     pub beat_at: i64,
     pub off_at: Option<i64>,
+    /// 这次上线的时间：离线变在线、换了 board host 进程时更新，取当时和那次上报里最早的目录检查时间中较早的
+    /// （board host 上线前就检查过目录，检查时间按它的时钟记）。
+    /// 界面只认不早于它的目录检查结果（`dirFresh`），不拿重连之前的旧结果说事；旧版服务端没有这一项
+    #[serde(default)]
+    pub online_at: Option<i64>,
     /// 等 board host 处理的请求（重新检查、重启、升级）；旧版服务端没有这一项
     #[serde(default)]
     pub ask: Option<HostAsk>,
