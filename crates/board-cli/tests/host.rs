@@ -2480,3 +2480,209 @@ fn host_saves_unpushed_work_as_a_wip_branch_and_comments() {
     let (code, _) = stop(host);
     assert_eq!(code, 0);
 }
+
+/// 假 git：`clone`、`fetch`、`push` 之前先睡 `$FAKE_DIR/slow-<子命令>` 里写的秒数（没有这个文件就不睡），再交给真的 git。
+/// 返回把它放在最前面的 PATH：board host 和它起的 agent 跑的 git 都经过它
+fn slow_git(rig: &Rig) -> String {
+    let out = Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+    let real = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(!real.is_empty(), "找不到 git");
+    let dir = rig.fake.with_file_name("slow-git");
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in\n    clone|fetch|push) [ -f \"$FAKE_DIR/slow-$a\" ] && sleep \"$(cat \"$FAKE_DIR/slow-$a\")\"; break ;;\n  esac\ndone\nexec \"{real}\" \"$@\"\n"
+    );
+    let git = dir.join("git");
+    std::fs::write(&git, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default())
+}
+
+/// 让 `clone` / `fetch` / `push` 每次都先睡 `secs` 秒（`None`：不睡）
+fn slow(rig: &Rig, cmd: &str, secs: Option<u64>) {
+    let f = rig.fake.with_file_name(format!("slow-{cmd}"));
+    match secs {
+        Some(s) => std::fs::write(f, s.to_string()).unwrap(),
+        None => {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+}
+
+/// 卡住的 git 要睡多久：默认 5 秒（上报间隔 0.5 秒，主循环等它时上报会停 5 秒）；`HOST_SLOW_GIT_SECS` 可以改长，
+/// 例如照卡片 #680 的验收标准手动跑一次 70 秒的克隆（push、fetch 超过 30 秒会被 `FETCH_LIMIT` 停掉，推 wip 的用例只能跑 30 秒以内）
+fn slow_secs() -> u64 {
+    std::env::var("HOST_SLOW_GIT_SECS").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(5)
+}
+
+/// 在后台每 100 毫秒看一次服务端记的这台机器最近一次上报的时间（`hosts.beat_at`）。`max_gap` 结束观察，
+/// 返回看到的相邻两次上报的最长间隔（毫秒），算到结束那一刻为止：主循环卡住时最后这一段也算进去
+struct Beats {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    job: std::thread::JoinHandle<i64>,
+}
+
+impl Beats {
+    fn watch(rig: &Rig, host: &str) -> Beats {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (db, host, quit) = (rig.s.db.clone(), host.to_string(), stop.clone());
+        let job = std::thread::spawn(move || {
+            let store = board_core::Store::open(&db).unwrap();
+            let at = || store.conn().query_row("SELECT beat_at FROM hosts WHERE name = ?1", [&host], |r| r.get::<_, i64>(0)).ok();
+            let mut last = at();
+            let mut max = 0;
+            while !quit.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+                if let Some(now) = at() {
+                    if let Some(prev) = last.filter(|p| *p != now) {
+                        max = max.max(now - prev);
+                    }
+                    last = Some(now);
+                }
+            }
+            last.map_or(max, |l| max.max(board_core::now_ms() - l))
+        });
+        Beats { stop, job }
+    }
+
+    fn max_gap(self) -> i64 {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.job.join().unwrap()
+    }
+}
+
+/// 起 mbp，PATH 换成 `path`（前面放着假 git）
+fn host_path(rig: &Rig, path: &str) -> HostChild {
+    rig.ws_ready();
+    let ws = format!("--workspace={}", rig.ws().display());
+    rig.spawn_host_env(&["host", "--name", "mbp", &ws], false, &[("PATH", path)])
+}
+
+/// 一个有一个提交（README.md）的「远端」裸仓库 `<临时目录>/<name>.git`，返回它的路径
+fn bare_origin(rig: &Rig, name: &str) -> PathBuf {
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    let origin = root.join(format!("{name}.git"));
+    std::fs::create_dir(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    let up = root.join(format!("{name}-up"));
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), up.to_str().unwrap()]);
+    std::fs::write(up.join("README.md"), "v1\n").unwrap();
+    git_in(&up, &["add", "."]);
+    git_in(&up, &["commit", "-q", "-m", "v1"]);
+    git_in(&up, &["push", "-q", "origin", "HEAD:main"]);
+    origin
+}
+
+/// 服务端上 mbp 报上来的 `board` 那块白板的目录
+fn host_dir_of(rig: &Rig, board: &str) -> Value {
+    let ws = rig.workspace();
+    let hosts = ws["hosts"].as_array().cloned().unwrap_or_default();
+    let h = hosts.iter().find(|h| h["name"] == "mbp").cloned().unwrap_or(Value::Null);
+    h["dirs"].as_array().and_then(|d| d.iter().find(|d| d["board"] == board).cloned()).unwrap_or(Value::Null)
+}
+
+/// 卡片 #680：派发在跑时服务端上新建了带仓库地址的项目，board host 在后台克隆，不在主循环里等：克隆卡住期间照常上报
+/// （服务端不判这台机器掉线、不结束在跑的派发），目录报成「正在克隆」；克隆完目录摆好、报上去
+#[test]
+fn host_keeps_reporting_while_a_new_project_clones() {
+    let rig = Rig::new();
+    assert_eq!(rig.board(&["new", "一"]).code, 0);
+    let path = slow_git(&rig);
+    let origin = bare_origin(&rig, "big");
+    let host = host_path(&rig, &path);
+    rig.online("mbp");
+    // agent 一直睡着（120 秒，比卡住的克隆长）：派发在跑
+    rig.mode("quiet");
+    rig.dispatch_running(1);
+    let secs = slow_secs();
+    slow(&rig, "clone", Some(secs));
+    let beats = Beats::watch(&rig, "mbp");
+    let url = origin.to_str().unwrap().to_string();
+    board_core::Store::open(&rig.s.db)
+        .unwrap()
+        .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
+            let first = board_core::NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None };
+            w.create_project("大仓库", "big", "", None, None, first)?;
+            w.set_repo_branch("big", Some(&url), None)
+        })
+        .unwrap();
+    wait_until("服务端看到 big 正在克隆", Duration::from_secs(20), || {
+        let d = host_dir_of(&rig, "big/main");
+        d["status"] == "missing" && d["clone"]["state"] == "running"
+    });
+    let dir = rig.ws().join("big");
+    wait_until("克隆完", Duration::from_secs(secs + 30), || dir.join("README.md").exists());
+    wait_until("服务端看到 big 的目录摆好了", Duration::from_secs(20), || {
+        let d = host_dir_of(&rig, "big/main");
+        d["status"] == "ok" && d["clone"]["state"] == "done"
+    });
+    let gap = beats.max_gap();
+    assert!(gap < 3000, "克隆期间上报停了 {gap} 毫秒");
+    let c = rig.show(1);
+    assert_eq!(c["holder"], "mbp/opus-5.5", "派发还在跑：{:?}", activity(&c));
+    assert!(!activity(&c).iter().any(|t| t.starts_with("派发结束")), "{:?}", activity(&c));
+    let (code, _) = stop(host);
+    assert_eq!(code, 0);
+}
+
+/// 卡片 #680：远端卡住时（push、fetch 一次要等好几秒），派发结束的收尾（推 wip 分支、评论、解锁 worktree）和拉取失败后的重试
+/// 都在后台做：期间照常上报。结果和以前一样：wip 分支推上去、卡片上有评论，而且评论在派发结束之前；拉成了恢复接这个项目的卡
+#[test]
+fn host_keeps_reporting_while_push_and_fetch_hang() {
+    let rig = Rig::new();
+    for t in ["一", "二"] {
+        assert_eq!(rig.board(&["new", t]).code, 0);
+    }
+    let path = slow_git(&rig);
+    let origin = bare_origin(&rig, "origin");
+    let root = rig.repo.parent().unwrap().to_path_buf();
+    git_in(&root, &["clone", "-q", origin.to_str().unwrap(), rig.repo.to_str().unwrap()]);
+    // 项目设了仓库地址，服务端才按拉取失败拦这台机器
+    let url = origin.to_str().unwrap().to_string();
+    board_core::Store::open(&rig.s.db).unwrap().write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.set_repo_branch("default", Some(&url), None)).unwrap();
+    let host = host_path(&rig, &path);
+    rig.online("mbp");
+    let secs = slow_secs();
+    // 1. agent 留下没提交的文件后异常退出：收尾推 wip 分支，push 要等好几秒
+    std::fs::write(rig.fake.with_file_name("leave"), "做到一半的内容\n").unwrap();
+    rig.mode("crash");
+    slow(&rig, "push", Some(secs));
+    let beats = Beats::watch(&rig, "mbp");
+    let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("#1 异常退出", Duration::from_secs(secs + 30), || ended(&rig.show(1), "异常退出"));
+    let gap = beats.max_gap();
+    assert!(gap < 3000, "推 wip 分支期间上报停了 {gap} 毫秒");
+    let acts = activity(&rig.show(1));
+    let wip = acts.iter().position(|t| t.contains("已经保存到分支") && t.trim_end().ends_with("未完成的改动：wip/main/1"));
+    let end = acts.iter().position(|t| t.starts_with("派发结束"));
+    assert!(wip.is_some() && wip < end, "wip 评论在派发结束之前：{acts:?}");
+    let out = Command::new("git").arg("-C").arg(&root.join("origin-up")).args(["fetch", "-q", "origin"]).status().unwrap();
+    assert!(out.success());
+    let show = Command::new("git").arg("-C").arg(&root.join("origin-up")).args(["show", "origin/wip/main/1:half.txt"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&show.stdout), "做到一半的内容\n");
+    slow(&rig, "push", None);
+    // 2. 拉不到最新代码：派发前的拉取失败，记下来报给服务端
+    let proj = rig.ws().join("default");
+    git_in(&proj, &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
+    rig.mode("review");
+    let r = rig.board(&["dispatch", "2", "--host", "mbp", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let blocked = |rig: &Rig| {
+        rig.workspace()["blocks"].as_array().is_some_and(|b| b.iter().any(|x| x["host"] == "mbp" && x["why"].as_str().is_some_and(|w| w.contains("拉不到最新代码"))))
+    };
+    wait_until("机器报上来拉取失败", Duration::from_secs(20), || blocked(&rig));
+    // 3. 远端修好了，界面上点「重新检查」：马上在后台重试拉取，fetch 要等好几秒，期间照常上报；拉成了恢复接这个项目的卡
+    git_in(&proj, &["remote", "set-url", "origin", origin.to_str().unwrap()]);
+    slow(&rig, "fetch", Some(secs));
+    let beats = Beats::watch(&rig, "mbp");
+    board_core::Store::open(&rig.s.db).unwrap().write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_ask("mbp", "recheck", false, "octocat")).unwrap();
+    wait_until("拉取恢复", Duration::from_secs(secs + 30), || !blocked(&rig));
+    let gap = beats.max_gap();
+    assert!(gap < 3000, "重试拉取期间上报停了 {gap} 毫秒");
+    let (code, out) = stop(host);
+    assert_eq!(code, 0);
+    assert!(out.contains("又能拉到最新代码了") && out.contains("已经保存到分支 wip/main/1"), "{out}");
+}

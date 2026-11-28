@@ -713,7 +713,7 @@ impl Host<'_> {
             };
             let r = self.runs.remove(i);
             let code = exit_code(status);
-            let ended = self.finish_run(r, code, "exit");
+            let (ended, end) = self.finish_run(r, code, "exit");
             let what = match &ended.why {
                 Some(why) => why.clone(),
                 None => format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())),
@@ -725,7 +725,6 @@ impl Host<'_> {
                 ended.name.as_deref().unwrap_or_default(),
                 self.p.dim(&what)
             ));
-            self.handoff(&ended, code);
             // 派发已经被服务端结束（机器掉线、卡片可能已被别人接走）：agent 的改动没推上去的话，写明在哪里，方便人捞回来
             if ended.lost && !ended.managed {
                 if let Some(repo) = ws_dir(&self.ws, &ended.board, &self.os) {
@@ -740,6 +739,7 @@ impl Host<'_> {
                     }
                 }
             }
+            self.handoff(ended, end, code);
             done = true;
         }
         if done {
@@ -755,11 +755,11 @@ impl Host<'_> {
     /// 3. 上传剩下的日志和事件（`last = true`，最后不完整的一行也读）
     /// 4. 取最后几行做错误摘录，再截断过大的日志。截断要在 agent 确实不在了之后：它还活着时换掉文件内容，
     ///    下次写入会从旧位置接着写、中间留一段空洞
-    /// 5. 记一笔 `Ended`，等 `report_ended()` 上报给服务端
+    /// 5. 返回要上报给服务端的 `Ended`：交给 [`Self::handoff`]，收尾完（不用收尾的马上）由 `report_ended()` 上报
     ///
     /// `how` 是给服务端的结果：`exit`（agent 退出）、`host_exit`（board host 退出时停的）；
     /// 兜底停止过（`Run.timeout` 有值）的无论哪种都报 `timeout`，原因照原样带上。
-    pub(super) fn finish_run(&mut self, mut r: Run, code: Option<i64>, how: &'static str) -> RunSummary {
+    pub(super) fn finish_run(&mut self, mut r: Run, code: Option<i64>, how: &'static str) -> (RunSummary, Ended) {
         r.kill_rest();
         let quota = r.quota();
         r.cleanup();
@@ -769,8 +769,7 @@ impl Host<'_> {
         let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
         let ended = ended_of(&r, code, how, &secrets, quota);
         let tail = if ended.events.is_empty() { ended.tail.iter().rev().take(10).rev().cloned().collect() } else { ended.events.clone() };
-        self.ended.push(ended);
-        RunSummary {
+        let summary = RunSummary {
             board: r.d.board.clone(),
             card: r.d.card,
             name: r.d.name.clone(),
@@ -781,13 +780,23 @@ impl Host<'_> {
             managed: r.managed,
             stopped: r.term_at.is_some(),
             tail,
-        }
+        };
+        (summary, ended)
     }
 
-    /// 派发结束时 agent 的 worktree 里还有没推的改动（没提交的文件、不在远端的提交）：提交、推成 `wip/<白板标识>/<ID>`，
-    /// 再让服务端在卡片上评论（怎么结束的、留下了什么、agent 最后做了什么）。agent 自己交审了、或者自己推了 wip 分支时
-    /// worktree 是干净的，什么也不做。推不上去时在本机输出里写明，改动留在 worktree 里（下一次派发不会动它）
-    pub(super) fn save_wip(&mut self, ended: &RunSummary, code: Option<i64>) {
+    /// 半成品交接：board host 备的 worktree 里还有没推到远端的改动（没提交的文件、不在远端的提交）时，提交、推成
+    /// `wip/<白板标识>/<ID>`，再让服务端在卡片上评论（怎么结束的、留下了什么、agent 最后做了什么），接手的不用从头来；
+    /// 最后解锁 worktree，用完留着、不删（#622）。agent 自己交审了、或者自己推了 wip 分支时 worktree 是干净的，只解锁。
+    /// 推不上去时在本机输出里写明，改动留在 worktree 里（下一次派发不会动它）。
+    ///
+    /// `reap`（agent 自己退出）和 `shutdown`（升级 / 重启 / 退出桌面端）都走这里。收尾在后台线程里做（#680）：两次 push、
+    /// 一次 fetch 各要等到 30 秒，放在主循环里会让上报停下、服务端判这台机器掉线。`end` 收尾完才上报（[`Self::poll_handoffs`]）：
+    /// wip 评论要在结束之前——结束时服务端可能马上把卡片放回去，别的机器接手时要看得到它。不是 board host 备的目录不用收尾，马上上报
+    pub(super) fn handoff(&mut self, ended: RunSummary, end: Ended, code: Option<i64>) {
+        if !ended.managed {
+            self.ended.push(end);
+            return;
+        }
         let how = if ended.lost {
             "机器和服务端断开超过 50 秒，派发被服务端结束，卡片可能已经被别的机器接走".to_string()
         } else if let Some(why) = &ended.why {
@@ -797,38 +806,35 @@ impl Host<'_> {
         } else {
             format!("agent 退出，退出码 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into()))
         };
-        match save_run_wip(ended, &self.name) {
-            Ok(None) => {}
-            Ok(Some(w)) => {
-                self.say(format!(
-                    "{} {} 没推的改动（{}）已经保存到分支 {}",
-                    self.p.green("✓"),
-                    self.p.cyan(&format!("{}#{}", ended.board, ended.card)),
-                    w.changes,
-                    w.branch
-                ));
-                let secrets = self.secrets();
-                let tail: Vec<String> = ended.tail.iter().map(|l| crate::redact::redact(l, &secrets.iter().map(String::as_str).collect::<Vec<_>>())).collect();
-                let body = json!({ "branch": w.branch, "how": how, "changes": w.changes, "tail": tail });
-                if let Err(e) = self.rm().post::<Value>(&format!("/api/dispatches/{}/wip", ended.id), body) {
-                    self.say(format!("{} 没能在卡片上评论 wip 分支 {}：{}", self.p.yellow("!"), w.branch, e.message));
-                }
-            }
-            Err(e) => self.say(format!(
-                "{} {} 里有没推到远端的改动，没能保存成 wip 分支（{e}）：留在那里，需要的话去捞回来",
-                self.p.yellow("!"),
-                ended.cwd.display()
-            )),
-        }
+        let (rm, name, secrets) = (self.rm().clone(), self.name.clone(), self.secrets());
+        let (id, cwd) = (end.id, ended.cwd.clone());
+        let job = std::thread::spawn(move || handoff_job(&ended, &how, &name, &rm, &secrets));
+        self.handoffs.push(Handoff { id, cwd, end, job });
     }
 
-    /// 半成品交接：board host 备的 worktree 里还有没推到远端的改动，保存成 wip 分支并在卡片上评论，接手的不用从头来。
-    /// `reap`（agent 自己退出）和 `shutdown`（升级 / 重启 / 退出桌面端）都走这里；用完留着 worktree，只解锁不删除（#622）。
-    pub(super) fn handoff(&mut self, ended: &RunSummary, code: Option<i64>) {
-        if ended.managed {
-            self.save_wip(ended, code);
-            crate::code::release(&ended.cwd);
+    /// 后台收尾做完的：打印结果，结束交给 `report_ended` 上报。`wait` 时等所有的都做完（board host 退出前）。
+    /// 返回有没有做完的
+    pub(super) fn poll_handoffs(&mut self, wait: bool) -> bool {
+        let (done, busy): (Vec<Handoff>, Vec<Handoff>) = std::mem::take(&mut self.handoffs).into_iter().partition(|h| wait || h.job.is_finished());
+        self.handoffs = busy;
+        let any = !done.is_empty();
+        for h in done {
+            let notes = h.job.join().unwrap_or_else(|_| vec![HandoffNote::NotSaved { cwd: h.cwd.clone(), why: "收尾的线程出错".into() }]);
+            for n in notes {
+                let line = match n {
+                    HandoffNote::Saved { card, wip } => {
+                        format!("{} {} 没推的改动（{}）已经保存到分支 {}", self.p.green("✓"), self.p.cyan(&card), wip.changes, wip.branch)
+                    }
+                    HandoffNote::NoComment { branch, why } => format!("{} 没能在卡片上评论 wip 分支 {branch}：{why}", self.p.yellow("!")),
+                    HandoffNote::NotSaved { cwd, why } => {
+                        format!("{} {} 里有没推到远端的改动，没能保存成 wip 分支（{why}）：留在那里，需要的话去捞回来", self.p.yellow("!"), cwd.display())
+                    }
+                };
+                self.say(line);
+            }
+            self.ended.push(h.end);
         }
+        any
     }
 
     /// 上报结束；连不上时留到下一轮
@@ -887,13 +893,23 @@ impl Host<'_> {
         if self.hold || w.host.paused || restarting {
             return Ok(false);
         }
+        // 上一次派发还在后台收尾（保存 wip、解锁 worktree）：等它做完再开始新的。同名的会话会接着用那个 worktree，
+        // 收尾到一半时切换、解锁会把新会话的 worktree 弄乱。收尾通常几秒；以前收尾时整个主循环都停着，也不会开始新的
+        if !self.handoffs.is_empty() {
+            return Ok(false);
+        }
         let max = w.host.max.max(1) as usize;
         let mut changed = false;
+        let cloning = self.cloning();
         for q in &w.queued {
             if self.live() >= max {
                 return Ok(changed);
             }
             if self.runs.iter().any(|r| r.d.id == q.id) {
+                continue;
+            }
+            // 项目目录还在后台克隆：留在队列里，克隆完再开始（服务端看到「正在克隆」就不往这里派了，这里接住报上去之前派来的）
+            if dispatch_dir(q, &self.ws, &self.os).is_some_and(|d| cloning.contains(&d)) {
                 continue;
             }
             let body = json!({ "instance": self.instance, "id": q.id });
@@ -956,7 +972,7 @@ impl Host<'_> {
         // 缓存里的命令路径不在了（升级失败被 npm 挪走、被人删了）：先重新找一遍，不拿失效的路径去启动（#536）
         self.recheck_if_gone(&d.agent);
         // 派发前更新代码：拉最新、备好这个会话的 worktree（PRD §9.1「派发前更新代码」）；没成就不启动 agent
-        let started = self.prepare(&d).and_then(|code| self.spawn(&d, code.as_ref()));
+        let started = self.not_cloning(&d).and_then(|()| self.prepare(&d)).and_then(|code| self.spawn(&d, code.as_ref()));
         match started {
             Ok(r) => {
                 // 先记进 runs 再打印：之后无论发生什么，退出流程都会结束它
@@ -979,6 +995,14 @@ impl Host<'_> {
                 self.ended.push(Ended { id: d.id, code: None, tail: vec![msg], events: vec![], how: "exit", why: None, quota: None });
                 self.report_ended();
             }
+        }
+    }
+
+    /// 项目目录还在后台克隆时不启动 agent：克隆到一半的仓库里拉不了代码、建不了 worktree
+    fn not_cloning(&self, d: &Dispatch) -> std::result::Result<(), String> {
+        match dispatch_dir(d, &self.ws, &self.os).filter(|p| self.cloning().contains(p)) {
+            Some(dir) => Err(format!("{} 还在克隆，没有启动 agent：克隆完再派", dir.display())),
+            None => Ok(()),
         }
     }
 
@@ -1204,7 +1228,8 @@ impl Host<'_> {
         let mut repos: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
         repos.sort();
         repos.dedup();
-        let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).collect();
+        // 在跑的、还在后台收尾的会话用着的都不碰
+        let in_use: Vec<PathBuf> = self.runs.iter().map(|r| r.cwd.clone()).chain(self.handoffs.iter().map(|h| h.cwd.clone())).collect();
         let online = self.online_names();
         for repo in repos {
             if !crate::code::is_repo(&repo) {
@@ -1223,6 +1248,50 @@ impl Host<'_> {
             }
         }
     }
+}
+
+/// 派发结束后在后台做的收尾（见 `Host::handoff`）
+pub(super) struct Handoff {
+    /// 派发 ID：收尾完之前上报里照样算它在跑，服务端不会先按「本机没有这个进程」结束它
+    pub(super) id: i64,
+    /// 收尾的 worktree：收尾完之前不开始新的派发（同名会话会接着用它），清理时也不碰它
+    pub(super) cwd: PathBuf,
+    /// 收尾完再上报的结束
+    pub(super) end: Ended,
+    pub(super) job: std::thread::JoinHandle<Vec<HandoffNote>>,
+}
+
+/// 收尾的结果：回到主循环里打印
+pub(super) enum HandoffNote {
+    /// 没推的改动保存到了 wip 分支（`card` 是 `<白板>#<卡片>`）
+    Saved { card: String, wip: crate::code::Wip },
+    /// 保存了，但没能在卡片上评论
+    NoComment { branch: String, why: String },
+    /// 有没推的改动，没能保存
+    NotSaved { cwd: PathBuf, why: String },
+}
+
+/// 收尾：保存 wip、在卡片上评论、解锁 worktree（在后台线程里跑，见 `Host::handoff`）。`how` 是怎么结束的，
+/// `name` 是机器名（wip 分支已经有别的内容时改推带机器名的那条），`secrets` 上传前脱敏用
+fn handoff_job(ended: &RunSummary, how: &str, name: &str, rm: &crate::backend::Remote, secrets: &[String]) -> Vec<HandoffNote> {
+    let mut notes = vec![];
+    match save_run_wip(ended, name) {
+        Ok(None) => {}
+        Ok(Some(w)) => {
+            let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
+            let tail: Vec<String> = ended.tail.iter().map(|l| crate::redact::redact(l, &secrets)).collect();
+            let body = json!({ "branch": w.branch, "how": how, "changes": w.changes, "tail": tail });
+            let commented = rm.post::<Value>(&format!("/api/dispatches/{}/wip", ended.id), body);
+            let branch = w.branch.clone();
+            notes.push(HandoffNote::Saved { card: format!("{}#{}", ended.board, ended.card), wip: w });
+            if let Err(e) = commented {
+                notes.push(HandoffNote::NoComment { branch, why: e.message });
+            }
+        }
+        Err(why) => notes.push(HandoffNote::NotSaved { cwd: ended.cwd.clone(), why }),
+    }
+    crate::code::release(&ended.cwd);
+    notes
 }
 
 /// 把一次结束的派发留下的改动保存到 `wip/<白板>/<ID>`；不是 board host 备的 worktree、或者已经干净时返回 None。

@@ -383,6 +383,10 @@ struct Host<'a> {
     /// 最近一次 `git fetch` 没成的项目目录：目录、原因、什么时候试的。随上报带给服务端（这台机器先不接这个项目的卡），
     /// 每 5 分钟重试一次，拉成了就去掉
     fetch_errs: Vec<(PathBuf, String, Instant)>,
+    /// 正在后台重试拉取的项目目录（`poll_fetches`）：主循环里不跑网络 git（#680）
+    fetch_jobs: Vec<(PathBuf, std::thread::JoinHandle<std::result::Result<(), String>>)>,
+    /// 派发结束后在后台做的收尾（保存 wip、在卡片上评论、解锁 worktree，`runs.rs` 的 `handoff`）
+    handoffs: Vec<Handoff>,
     /// 下一次清理没用的 worktree 的时间
     next_wt_sweep: Instant,
     /// 资源（CPU、内存、GPU、磁盘）：后台每 10 秒采一次，上报时带上最近一次
@@ -523,6 +527,8 @@ pub fn run(opts: Opts, p: &Paint) -> Result<()> {
         import_seen: None,
         beat_soon: false,
         fetch_errs: vec![],
+        fetch_jobs: vec![],
+        handoffs: vec![],
         next_wt_sweep: Instant::now(),
         res,
     };
@@ -635,8 +641,9 @@ impl Host<'_> {
             workspace: Some(self.ws.clone()),
             dirs: self.dir_reports(),
             dirs_rev: self.dirs_rev,
-            // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志
-            running: self.runs.iter().map(|r| r.d.id).chain(self.ended.iter().map(|e| e.id)).collect(),
+            // 已经退出、但结束还没上报成功的派发也算在跑：否则服务端会先按「本机没有这个进程」结束它，丢掉退出码和日志。
+            // 还在后台收尾（保存 wip）的也算：收尾完才上报结束
+            running: self.runs.iter().map(|r| r.d.id).chain(self.handoffs.iter().map(|h| h.id)).chain(self.ended.iter().map(|e| e.id)).collect(),
             chats: Some(self.chat_ids()),
             done,
             asked: self.asked,
@@ -847,6 +854,15 @@ impl Host<'_> {
             }
             if self.reap() {
                 fetch = true;
+            }
+            // 派发结束的收尾（保存 wip、评论、解锁 worktree）在后台做完了：上报结束
+            if self.poll_handoffs(false) {
+                self.report_ended();
+                fetch = true;
+            }
+            // 拉不到最新代码的项目目录：到时间在后台再拉一次
+            if self.poll_fetches() {
+                next_beat = Instant::now();
             }
             // 自检：界面上点了就在后台做，做完回报
             self.poll_selftest();
@@ -1076,10 +1092,12 @@ impl Host<'_> {
             // 先回收主进程，`finish_run` 里的 `kill_rest` 才是对已经退出的进程号下手
             let code = r.child.wait().ok().and_then(exit_code);
             // board host 退出时已经在按兜底停止的，照样报「超时」：原因写清楚
-            let ended = self.finish_run(r, code, "host_exit");
+            let (ended, end) = self.finish_run(r, code, "host_exit");
             // 升级 / 重启 / 退出桌面端也会结束正在跑的派发：和 agent 自己退出一样保存没推的改动
-            self.handoff(&ended, code);
+            self.handoff(ended, end, code);
         }
+        // 收尾在后台一起做：等它们（连同之前退出、还没收尾完的）都做完，再上报结束
+        self.poll_handoffs(true);
         // 派发的临时文件由 `finish_run` 逐个删掉；WSL 的进程号文件要等 `kill_rest` 读完再删整个目录
         let _ = std::fs::remove_dir_all(&self.run);
         self.report_ended();

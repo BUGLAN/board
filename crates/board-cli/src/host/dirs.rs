@@ -32,6 +32,8 @@ pub(super) struct CloneRun {
     pub(super) updated_at: i64,
     pub(super) child: Option<Child>,
     pub(super) log: PathBuf,
+    /// 工作空间自动摆目录时起的（服务端上新建了项目、改了项目目录），不是界面上点的「克隆」：失败时在本机输出里说一声
+    pub(super) auto: bool,
 }
 
 /// `--workspace` 的值：去掉首尾空白，空的当作没给
@@ -127,7 +129,9 @@ pub(super) fn project_dirs(w: &Workspace) -> std::collections::BTreeMap<String, 
 
 /// 把服务端上摆着的项目在盘上摆好：每个项目的目录是 `<工作空间>/<项目>`，项目下的几块白板共用它。已经有的不动；
 /// 项目设了仓库地址时在那里 `git clone`（进度和失败原因照常上报，记在先轮到的那块白板上），没设时建一个空目录。
-/// 一个项目失败不影响其他项目，返回失败的那几块白板
+/// 一个项目失败不影响其他项目，返回失败的那几块白板。
+///
+/// 克隆是同步的，只在启动时、第一次上报之前用；之后服务端上新摆的项目由 `Host::place_dirs` 在后台克隆（#680）
 pub(super) fn bootstrap_dirs(
     ws: &HostWorkspace,
     boards: &[(String, Option<String>)],
@@ -186,7 +190,7 @@ pub(super) fn bootstrap_dirs(
                     Ok(s) => {
                         let why = clone_tail(&log).unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", s.code()));
                         fail(format!("{url} 克隆到 {} 失败：{why}", dir.display()));
-                        clones.push(CloneRun { board: board.clone(), url: url.to_string(), state: "failed".into(), message: why, updated_at: now_ms(), child: None, log });
+                        clones.push(CloneRun { board: board.clone(), url: url.to_string(), state: "failed".into(), message: why, updated_at: now_ms(), child: None, log, auto: true });
                     }
                     Err(e) => fail(format!("没法运行 git clone：{e}")),
                 }
@@ -241,28 +245,57 @@ impl Host<'_> {
         }
     }
 
-    /// 每块白板目录的 git 状态：到时间的重新看一遍，其余沿用上一次的结果（心跳不跑 git 子进程）
-    pub(super) fn refresh_dir_checks(&mut self) {
-        // 上次拉不到最新代码的项目目录：隔 5 分钟再试一次，拉成了就恢复接这个项目的卡
-        let due: Vec<PathBuf> = self.fetch_errs.iter().filter(|(_, _, at)| at.elapsed() >= DIR_CHECK_EVERY).map(|(p, ..)| p.clone()).collect();
-        for dir in due {
-            match crate::code::fetch(&dir) {
+    /// 上次拉不到最新代码的项目目录：隔 5 分钟在后台再拉一次，拉成了就恢复接这个项目的卡。
+    /// 不在主循环里拉（#680）：远端卡住时一次要等 30 秒，几个目录加起来会把心跳拖到服务端判这台机器掉线。
+    /// 返回有没有变化（变了马上上报）
+    pub(super) fn poll_fetches(&mut self) -> bool {
+        let mut changed = false;
+        let (done, busy): (Vec<_>, Vec<_>) = std::mem::take(&mut self.fetch_jobs).into_iter().partition(|(_, job)| job.is_finished());
+        self.fetch_jobs = busy;
+        for (dir, job) in done {
+            let out = job.join().unwrap_or_else(|_| Err("拉取的线程出错".into()));
+            // 拉的这段时间里派发前的拉取已经拉成了（记录去掉了）：不用再说
+            let Some(i) = self.fetch_errs.iter().position(|(p, ..)| *p == dir) else { continue };
+            match out {
                 Ok(()) => {
-                    self.fetch_errs.retain(|(p, ..)| *p != dir);
+                    self.fetch_errs.remove(i);
                     self.say(format!("{} {} 又能拉到最新代码了", self.p.green("✓"), dir.display()));
+                    changed = true;
                 }
                 Err(e) => {
-                    if let Some(x) = self.fetch_errs.iter_mut().find(|(p, ..)| *p == dir) {
-                        x.1 = e;
-                        x.2 = Instant::now();
-                    }
+                    let x = &mut self.fetch_errs[i];
+                    changed |= x.1 != e;
+                    x.1 = e;
+                    x.2 = Instant::now();
                 }
             }
         }
+        let due: Vec<PathBuf> = self
+            .fetch_errs
+            .iter()
+            .filter(|(p, _, at)| at.elapsed() >= DIR_CHECK_EVERY && !self.fetch_jobs.iter().any(|(q, _)| q == p))
+            .map(|(p, ..)| p.clone())
+            .collect();
+        for dir in due {
+            let d = dir.clone();
+            self.fetch_jobs.push((dir, std::thread::spawn(move || crate::code::fetch(&d))));
+        }
+        changed
+    }
+
+    /// 正在后台克隆的目录：克隆完之前不看它的 git 状态、上报成「不存在」（服务端不往这里派卡），也不在里面启动 agent
+    pub(super) fn cloning(&self) -> Vec<PathBuf> {
+        self.clones.iter().filter(|c| c.state == "running").filter_map(|c| ws_dir(&self.ws, &c.board, &self.os)).collect()
+    }
+
+    /// 每块白板目录的 git 状态：到时间的重新看一遍，其余沿用上一次的结果（心跳不跑 git 子进程）
+    pub(super) fn refresh_dir_checks(&mut self) {
         let dirs: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().map(|(_, p)| p).collect();
-        self.dir_checks.retain(|c| dirs.contains(&c.path));
+        let cloning = self.cloning();
+        // 克隆到一半的仓库可能已经像个 git 仓库了：不看，克隆完马上重新看（poll_clones 清掉旧结果）
+        self.dir_checks.retain(|c| dirs.contains(&c.path) && !cloning.contains(&c.path));
         for dir in dirs {
-            if !Self::dir_check_due(&self.dir_checks, &dir) {
+            if cloning.contains(&dir) || !Self::dir_check_due(&self.dir_checks, &dir) {
                 continue;
             }
             let (status, origin, branch) = check_git_dir(&dir);
@@ -279,6 +312,7 @@ impl Host<'_> {
         self.refresh_dir_checks();
         let ws = self.ws.clone();
         let boards = self.boards.clone();
+        let cloning = self.cloning();
         boards
             .iter()
             .filter_map(|board| board_core::hosts::derive_dir(&ws, board, &self.os))
@@ -292,7 +326,11 @@ impl Host<'_> {
                     None => ("missing", None, None),
                 };
                 let checked_at = c.map_or_else(now_ms, |c| c.checked_at);
-                let clone = self.clones.iter().rev().find(|c| c.board == *board).map(|c| HostClone {
+                // 克隆记在先轮到的那块白板上；同一个项目的其他白板共用这个目录，正在克隆时也带上它
+                let clone = self.clones.iter().rev().find(|c| c.board == *board).or_else(|| {
+                    self.clones.iter().rev().find(|c| c.state == "running" && cloning.contains(&path) && ws_dir(&self.ws, &c.board, &self.os).as_ref() == Some(&path))
+                });
+                let clone = clone.map(|c| HostClone {
                     state: c.state.clone(),
                     url: c.url.clone(),
                     message: c.message.clone(),
@@ -329,11 +367,7 @@ impl Host<'_> {
                     .collect(),
                 Err(_) => vec![],
             };
-            let ws = self.ws.clone();
-            let failed = bootstrap_dirs(&ws, &server, &mut self.dir_checks, &mut self.clones, &self.os, &self.logs);
-            for (board, why) in &failed {
-                self.say(format!("{} 工作空间里 {}：{why}", self.p.yellow("!"), if board.is_empty() { "（工作空间）".to_string() } else { board.clone() }));
-            }
+            self.place_dirs(&server);
             for b in new {
                 self.boards.push(b);
             }
@@ -456,11 +490,7 @@ impl Host<'_> {
                 .collect(),
             Err(_) => moved.iter().map(|b| (b.clone(), None)).collect(),
         };
-        let ws = self.ws.clone();
-        let failed = bootstrap_dirs(&ws, &server, &mut self.dir_checks, &mut self.clones, &self.os, &self.logs);
-        for (board, why) in &failed {
-            self.say(format!("{} 工作空间里 {}：{why}", self.p.yellow("!"), if board.is_empty() { "（工作空间）".to_string() } else { board.clone() }));
-        }
+        self.place_dirs(&server);
         for a in &mut self.agents {
             a.check_skills(&self.envs, &ws_pairs(&self.ws, &self.boards, &self.os));
         }
@@ -476,6 +506,55 @@ impl Host<'_> {
         }
     }
 
+    /// 工作空间里出问题的一行：`board` 为空时是工作空间本身
+    fn say_ws(&self, board: &str, why: &str) {
+        self.say(format!("{} 工作空间里 {}：{why}", self.p.yellow("!"), if board.is_empty() { "（工作空间）" } else { board }));
+    }
+
+    /// 服务端上新摆的白板（新建了白板、项目，改了项目目录）在盘上摆好，和启动时的 [`bootstrap_dirs`] 一样：已经有目录的不动，
+    /// 没设仓库地址的建一个空目录，设了的 `git clone`。克隆在后台跑（[`Self::start_clone`]，由 [`Self::poll_clones`] 收尾），
+    /// 不在主循环里等（#680）：大仓库、网络慢时 clone 可能几分钟不返回，主循环停住就发不出上报，50 秒后服务端判这台机器掉线，
+    /// 在跑的派发全被结束。克隆完之前这个目录上报成「不存在、正在克隆」，服务端不往这里派卡
+    pub(super) fn place_dirs(&mut self, boards: &[(String, Option<String>)]) {
+        if self.ws.path.trim().is_empty() {
+            return;
+        }
+        if let Err(e) = std::fs::create_dir_all(expand(&self.ws.path)) {
+            self.say_ws("", &format!("无法创建工作空间 {}：{e}", self.ws.path));
+            return;
+        }
+        let mut started = false;
+        for (board, repo) in boards {
+            let Some(d) = board_core::hosts::derive_dir(&self.ws, board, &self.os) else { continue };
+            let dir = expand(&d.path);
+            // `--dir` 覆盖的、已经有目录的、正在克隆的（同一个项目里前一块白板刚开始克隆的也算）：不动
+            if d.fixed || dir.is_dir() || self.cloning().contains(&dir) {
+                continue;
+            }
+            match repo.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+                None => {
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        self.say_ws(board, &format!("无法创建 {}：{e}", dir.display()));
+                    }
+                }
+                Some(url) => {
+                    self.start_clone(board, url, true);
+                    match self.clones.last() {
+                        Some(c) if c.board == *board && c.state == "failed" => {
+                            let why = c.message.clone();
+                            self.say_ws(board, &why);
+                        }
+                        _ => started = true,
+                    }
+                }
+            }
+        }
+        // 马上上报：服务端早点知道这个目录正在克隆，不往这里派卡
+        if started {
+            self.beat_soon = true;
+        }
+    }
+
     /// 服务端请求了克隆，就在本机执行 `git clone`；一块白板失败不影响其他白板
     pub(super) fn start_clones(&mut self) {
         let Some(w) = &self.work else { return };
@@ -488,11 +567,12 @@ impl Host<'_> {
             .filter_map(|d| d.clone.as_ref().map(|c| (d.board.clone(), c.url.clone())))
             .collect();
         for (board, url) in jobs {
-            self.start_clone(&board, &url);
+            self.start_clone(&board, &url, false);
         }
     }
 
-    pub(super) fn start_clone(&mut self, board: &str, url: &str) {
+    /// 在后台开始 `git clone`（`auto`：工作空间自动摆目录时起的，见 [`CloneRun::auto`]）；开始不了时记一条失败的
+    pub(super) fn start_clone(&mut self, board: &str, url: &str, auto: bool) {
         let Some(dir) = ws_dir(&self.ws, board, &self.os) else { return };
         let _ = std::fs::create_dir_all(&self.logs);
         let safe: String = board
@@ -511,6 +591,7 @@ impl Host<'_> {
                     updated_at: now_ms(),
                     child: None,
                     log,
+                    auto,
                 });
                 return;
             }
@@ -525,6 +606,7 @@ impl Host<'_> {
                     updated_at: now_ms(),
                     child: None,
                     log,
+                    auto,
                 });
                 return;
             }
@@ -546,6 +628,7 @@ impl Host<'_> {
                 updated_at: now_ms(),
                 child: Some(child),
                 log,
+                auto,
             }),
             Err(e) => self.clones.push(CloneRun {
                 board: board.into(),
@@ -555,12 +638,15 @@ impl Host<'_> {
                 updated_at: now_ms(),
                 child: None,
                 log,
+                auto,
             }),
         }
     }
 
     pub(super) fn poll_clones(&mut self) {
         let mut done: Vec<String> = vec![];
+        let mut failed: Vec<(String, String)> = vec![];
+        let mut ended = false;
         for c in &mut self.clones {
             if c.state != "running" {
                 continue;
@@ -576,18 +662,37 @@ impl Host<'_> {
                 } else {
                     c.state = "failed".into();
                     c.message = tail.unwrap_or_else(|| format!("git clone 失败（退出码 {:?}）", status.code()));
+                    if c.auto {
+                        failed.push((c.board.clone(), c.url.clone()));
+                    }
                 }
                 c.updated_at = now_ms();
                 c.child = None;
+                ended = true;
             } else if let Some(line) = clone_tail(&c.log) {
                 c.message = line;
             }
+        }
+        // 工作空间自动摆目录时起的克隆失败了：和启动时同步克隆失败一样说一声
+        for (board, url) in failed {
+            let dir = ws_dir(&self.ws, &board, &self.os).map(|d| d.display().to_string()).unwrap_or_default();
+            let why = self.clones.iter().rev().find(|c| c.board == board).map(|c| c.message.clone()).unwrap_or_default();
+            self.say_ws(&board, &format!("{url} 克隆到 {dir} 失败：{why}"));
         }
         // 刚克隆完的白板：删掉旧的目录状态，下一次上报马上重新看
         let paths: Vec<PathBuf> = ws_pairs(&self.ws, &self.boards, &self.os).into_iter().filter(|(b, _)| done.contains(b)).map(|(_, p)| p).collect();
         if !paths.is_empty() {
             let _ = gitsync::ensure(&self.host_dir());
+            // 仓库里自带的 board-skills 现在才看得到
+            let pairs = ws_pairs(&self.ws, &self.boards, &self.os);
+            for a in &mut self.agents {
+                a.check_skills(&self.envs, &pairs);
+            }
         }
         self.dir_checks.retain(|c| !paths.contains(&c.path));
+        // 克隆结束（成了、没成）：马上上报，服务端据此决定能不能往这里派卡
+        if ended {
+            self.beat_soon = true;
+        }
     }
 }
