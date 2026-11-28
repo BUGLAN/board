@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { fitOf, profilesOf, short } from '../../lib/profiles';
 import type { HostInfo } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { toastError } from '../../store/ui';
 import { Select } from '../bits';
@@ -169,6 +169,7 @@ export function NewChatForm({ h, onStarted }: { h: HostInfo; onStarted: (id: num
             disabled={busy || !h.online}
             onChange={e => setText(e.target.value)}
             onKeyDown={e => {
+              if (isImeKey(e)) return;
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 void start();

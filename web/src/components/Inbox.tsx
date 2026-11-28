@@ -23,7 +23,7 @@ import { canUndoSplit, kidsOf, hiddenEntries, omittedKids, laterEntries, laterGr
 import { swipeCommits, swipeOffset, type SwipeDir } from '../lib/swipe';
 import { deleteCards, undoDelete } from '../lib/trash';
 import type { Actor, Card, Label } from '../lib/types';
-import { actorName, ago, autosize, copyText, cx, pref, reduceMotion, replay } from '../lib/util';
+import { actorName, ago, autosize, copyText, cx, isImeKey, pref, reduceMotion, replay } from '../lib/util';
 import { addLabel, cardBusy, cardKey, entryIsNew, exec, isDraft, markAllSeen, markSeen, mergePatch, newEntryCount, removeLabel, renderKey, serverNow, setLater, useCardBusy, useCurrent, useData, type BatchResult } from '../store/data';
 import { confirm, openCreator, openCtx, closeCtx, openDispatch, openPicker, openSession, overlayOpen, reveal, setFilter, toast, toastError, useUI, type Flash } from '../store/ui';
 import { ActorAvatar, DescTabs, LabelChip, LabelChips, Markdown, Tip, Title, useNow } from './bits';
@@ -1106,7 +1106,7 @@ function MergePick({ anchor, self, all, onPick, onClose }: { anchor: DOMRect; se
     const f = requestAnimationFrame(() => setOn(true));
     const down = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && onClose();
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       e.stopPropagation();
       onClose();
     };
@@ -1298,7 +1298,7 @@ function MergeSheet({ req }: { req: MergeReq }) {
   useEffect(() => {
     const f = requestAnimationFrame(() => setOn(true));
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || useUI.getState().picker) return;
+      if (e.key !== 'Escape' || isImeKey(e) || useUI.getState().picker) return;
       e.stopPropagation();
       close();
     };
@@ -1349,7 +1349,7 @@ function MergeSheet({ req }: { req: MergeReq }) {
                 maxLength={200}
                 onChange={e => setDraft({ ...v, title: e.target.value })}
                 onKeyDown={e => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
+                  if (!isImeKey(e) && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
                 }}
               />
               {labels.length > 0 && (
@@ -1389,7 +1389,7 @@ function MergeSheet({ req }: { req: MergeReq }) {
                   value={v.body}
                   onChange={e => setDraft({ ...v, body: e.target.value })}
                   onKeyDown={e => {
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
+                    if (!isImeKey(e) && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
                   }}
                 />
               ) : (

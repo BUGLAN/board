@@ -13,7 +13,7 @@ import { useMemo, useState } from 'react';
 import { api } from '../../lib/api';
 import { ALL_EFFORTS, maskKey, PROVIDER_INTERFACES, PROVIDER_PRESETS, providerError, providerPreset } from '../../lib/providers';
 import type { AgentMeta, Provider } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { Tip } from '../bits';
 import { Icon } from '../Icon';
 import { FormField, FormFoot, FormModal, FormSec, FormSwitch, FormTile } from './FormModal';
@@ -246,6 +246,7 @@ function Models({ p, editing, onChange }: { p: Provider; editing: boolean; onCha
           aria-label="手动加模型"
           onChange={e => setManual(e.target.value)}
           onKeyDown={e => {
+            if (isImeKey(e)) return;
             if (e.key === 'Enter') {
               e.preventDefault();
               add();

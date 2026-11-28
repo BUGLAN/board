@@ -1,7 +1,7 @@
 /* 胶囊输入框：一个值一个胶囊（MCP 的参数、供应商的模型）。
    回车、逗号加一个（allowSpace 为假时空格也算），粘贴多行拆开，退格删最后一个，× 删掉；离开输入框时没回车的也加上 */
 import { useRef, useState } from 'react';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { Icon } from '../Icon';
 
 /** 把输入拆成几个值：换行、逗号（allowSpace 为假时空白也算）分开，去掉空的 */
@@ -45,6 +45,7 @@ export function ChipInput({ value, onChange, placeholder, allowSpace, label, uni
           }
         }}
         onKeyDown={e => {
+          if (isImeKey(e)) return;
           if (e.key === 'Enter' || e.key === ',' || (!allowSpace && e.key === ' ')) {
             e.preventDefault();
             add(text);

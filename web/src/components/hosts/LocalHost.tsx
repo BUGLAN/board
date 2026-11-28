@@ -14,7 +14,7 @@ import { hostNameError, hostsOf } from '../../lib/hosts';
 import { hostConfirmText } from '../../lib/localHost';
 import { canHost, enableLocalHost, isWindows, localHost, pickFolder, saveLocalHost, setAutostart, setBoardEnv, type LocalHost } from '../../lib/platform';
 import type { HostInfo } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { confirm, openHost, toast } from '../../store/ui';
 import { Icon } from '../Icon';
@@ -298,7 +298,7 @@ export function LocalHostPanel({ h }: { h: HostInfo }) {
               spellCheck={false}
               aria-label="机器名"
               onChange={e => setName(e.target.value.toLowerCase().trim())}
-              onKeyDown={e => e.key === 'Enter' && void rename()}
+              onKeyDown={e => !isImeKey(e) && e.key === 'Enter' && void rename()}
             />
             <button className={cx('btn sm', busy === 'name' && 'is-busy')} type="button" disabled={!!busy || n.trim() === h.name} onClick={() => void rename()}>
               改名

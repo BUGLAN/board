@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
 import { PROJECT_COLORS } from '../lib/schema';
 import type { ProjectInfo } from '../lib/types';
-import { cx } from '../lib/util';
+import { cx, isImeKey } from '../lib/util';
 import { patchProject, repoPatch, saveSetting, useData } from '../store/data';
 import { projectDirError } from '../lib/projectDir';
 import { manageLabels, openProjectSettings, useUI } from '../store/ui';
@@ -35,7 +35,7 @@ export function ProjectSettings() {
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       // 叠在上面的（管理标签、确认框、选择框、标签选择器、命令面板）先关自己
       const ui = useUI.getState();
       if (ui.ctx || ui.confirm || ui.palette.open || ui.labelsOf || ui.picker) return;
@@ -119,7 +119,7 @@ function Field({
           onChange={e => setDraft(e.target.value)}
           onBlur={() => !readOnly && commit()}
           onKeyDown={e => {
-            if (readOnly) return;
+            if (readOnly || isImeKey(e)) return;
             if (e.key === 'Enter') e.currentTarget.blur();
             if (e.key === 'Escape' && editing) {
               // 只取消这一次输入，不关弹窗

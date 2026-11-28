@@ -8,7 +8,7 @@ import { openLink } from '../lib/actions';
 import { carryLabels, filesToCopy, pastOf, withNotes } from '../lib/copy';
 import { boardFlow } from '../lib/schema';
 import type { CardDetail } from '../lib/types';
-import { cx } from '../lib/util';
+import { cx, isImeKey } from '../lib/util';
 import { draftCard, exec, joinPatch, movePatch, removeCard, useCurrent, useData } from '../store/data';
 import { openCopy, openPicker, toast, toastError, useUI } from '../store/ui';
 import { LabelChip } from './bits';
@@ -55,7 +55,7 @@ function CopyBody({ src, on }: { src: CardDetail; on: boolean }) {
   // esc 关掉；标签选择器、管理标签开着时先关它们
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       const ui = useUI.getState();
       if (ui.picker || ui.labelsOf) return;
       e.preventDefault();

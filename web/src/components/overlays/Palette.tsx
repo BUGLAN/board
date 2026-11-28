@@ -9,7 +9,7 @@ import { boardFlow, INBOX } from '../../lib/schema';
 import { highlightQuery, otherHits, searchBoardCards } from '../../lib/search';
 import { promptLabels } from '../../lib/sidebarLabels';
 import type { Card, SearchHit } from '../../lib/types';
-import { accel, cx } from '../../lib/util';
+import { accel, cx, isImeKey } from '../../lib/util';
 import { allBoards, loadFull, useData } from '../../store/data';
 import { closePalette, manageLabels, openCreator, openHost, setSide, setTab, TAB_ORDER, toast, useUI, type Tab } from '../../store/ui';
 import { Icon, type IconName } from '../Icon';
@@ -220,13 +220,14 @@ export function Palette() {
               setActive(0);
             }}
             onKeyDown={e => {
+              if (isImeKey(e)) return;
               if (e.key === 'ArrowDown') {
                 e.preventDefault();
                 setActive((act + 1) % Math.max(1, items.length));
               } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
                 setActive((act - 1 + items.length) % Math.max(1, items.length));
-              } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              } else if (e.key === 'Enter') {
                 e.preventDefault();
                 run(act);
               } else if (e.key === 'Escape') {

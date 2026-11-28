@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { LABEL_COLORS } from '../../lib/schema';
 import { hiddenBy, hiddenRules, ruleError, visibleLabels } from '../../lib/sidebarLabels';
-import { cx, replay } from '../../lib/util';
+import { cx, isImeKey, replay } from '../../lib/util';
 import { deleteLabelPatch, editLabelPatch, hiddenLabelsKey, hiddenLabelsPatch, labelKey, optimistic, reorderLabels, useBusy, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
 import { ColorPick, InfoTip, LabelChip, Tip } from '../bits';
@@ -98,13 +98,14 @@ export function LabelPicker() {
             setActive(0);
           }}
           onKeyDown={e => {
+            if (isImeKey(e)) return;
             if (e.key === 'ArrowDown') {
               e.preventDefault();
               setActive(Math.min(total - 1, active + 1));
             } else if (e.key === 'ArrowUp') {
               e.preventDefault();
               setActive(Math.max(0, active - 1));
-            } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            } else if (e.key === 'Enter') {
               e.preventDefault();
               if (active < list.length) toggle(list[active].id);
               else if (canCreate) create();
@@ -191,7 +192,8 @@ function LabelName({ pk, label: l, value, onChange, onCommit }: { pk: string; la
       aria-label="标签名称"
       onChange={e => onChange(e.target.value)}
       onKeyDown={e => {
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+        if (isImeKey(e)) return;
+        if (e.key === 'Enter') {
           e.preventDefault();
           (e.target as HTMLInputElement).blur();
         }
@@ -426,6 +428,7 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
         else if (!(e.target as HTMLElement).closest('.lbm-swatches, .lbm-color')) setSwatch(null);
       }}
       onKeyDown={e => {
+        if (isImeKey(e)) return;
         if (e.key === 'Escape') {
           e.preventDefault();
           e.stopPropagation();

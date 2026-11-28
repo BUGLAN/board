@@ -19,7 +19,7 @@ import { api } from '../../lib/api';
 import { hostsOf, since } from '../../lib/hosts';
 import { mergeEvents, groupEvents, runningTool } from '../../lib/runEvents';
 import type { Chat, ChatView, HostInfo, Workspace } from '../../lib/types';
-import { cx, hhmm, pref } from '../../lib/util';
+import { cx, hhmm, isImeKey, pref } from '../../lib/util';
 import { chatPromptPatch, onChatRuns, optimistic, useData } from '../../store/data';
 import { toastError, useUI } from '../../store/ui';
 import { Tip } from '../bits';
@@ -104,7 +104,7 @@ function ChatFull({ mobile, label, restore, children }: { mobile: boolean; label
   // Esc 先退整屏（机器详情的 Esc 看到 .hc-full 时不处理）
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (e.key !== 'Escape' || isImeKey(e) || e.defaultPrevented) return;
       if (useUI.getState().ctx || useUI.getState().confirm) return;
       e.preventDefault();
       restore();
@@ -447,7 +447,8 @@ function Composer({ c, prompts, sent, setSent, kick }: { c: Chat; prompts: numbe
         aria-label="消息"
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          if (isImeKey(e)) return;
+          if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             void send();
           }

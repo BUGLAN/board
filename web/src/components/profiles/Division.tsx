@@ -16,7 +16,7 @@ import { hostsOf } from '../../lib/hosts';
 import { forecast, hostsFor, profilesOf, recipe, runningOf, short, slotOf, type Fc } from '../../lib/profiles';
 import { claimable, serverMinute } from '../../lib/sched';
 import type { ClaimRule, Profile, StatsProfile, Workspace } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { boardAutoPatch, saveSetting, useData } from '../../store/data';
 import { setTab } from '../../store/ui';
 import { Segmented, Select, Sync, Tip, useNow, useSync } from '../bits';
@@ -425,7 +425,7 @@ function RuleDialog({ r, no, profiles, onSave, onCancel, onDelete }: { r: Rule; 
   const [d, setD] = useState(r);
   const none = d.op === 'none';
   useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented && onCancel();
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented && !isImeKey(e) && onCancel();
     document.addEventListener('keydown', key);
     return () => document.removeEventListener('keydown', key);
   }, [onCancel]);

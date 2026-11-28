@@ -14,7 +14,7 @@ import { dismissScrollbars, scrollSilently } from '../lib/scrollbars';
 import { deleteCards } from '../lib/trash';
 import { backTo, BEAT_MISSES, BEAT_MS, boardFlow, timing } from '../lib/schema';
 import type { Activity, Attachment, Card, CardDetail as Detail } from '../lib/types';
-import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, commentPlaceholder, copyText, cx, dateTime, FWD_KEY, hhmm, isMobile, replay, since } from '../lib/util';
+import { accel, BACK_KEY, actorName, agentColor, agentInk, ago, autosize, clock, commentPlaceholder, copyText, cx, dateTime, FWD_KEY, hhmm, isImeKey, isMac, isMobile, replay, since } from '../lib/util';
 import { addLabel, canCardBack, canCardFwd, closeDetail, editCard, exec, isSettled, movePatch, omittedIn, openDetail, removeComment, removeLabel, sendComment, serverNow, useCardBusy, useCurrent, useData, useOnline, useSending } from '../store/data';
 import { closeCtx, confirm, openCopy, openCtx, openDispatch, openImage, openPicker, openTextFile, overlayOpen, toast, toastError, useUI } from '../store/ui';
 import { isTextFile } from '../lib/textFile';
@@ -170,16 +170,23 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
         copyLink();
         return;
       }
-      // 返回 / 前进：和浏览器一样的 ⌘[ ⌘] ，Windows 上是 Alt+← / Alt+→（浏览器也用这两个）
-      if ((e.altKey && !mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) || (mod && !e.shiftKey && !e.altKey && (e.key === '[' || e.key === ']'))) {
+      if (isImeKey(e)) return;
+      const t = e.target as HTMLElement;
+      const typing = !!t.closest?.('input, textarea, [contenteditable]');
+      // 返回 / 前进：和浏览器一样，macOS 上是 ⌘[ ⌘]，Windows / Linux 上是 Alt+← / Alt+→（#684）。macOS 的 Option+← / → 是
+      // 按词移动光标（加 Shift 是选词），不当成返回 / 前进
+      const altNav = !isMac && e.altKey && !mod && !e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight');
+      const modNav = mod && !e.shiftKey && !e.altKey && (e.key === '[' || e.key === ']');
+      if (altNav || modNav) {
         e.preventDefault();
+        // 在输入框里不换卡（写到一半的内容会丢），只挡住浏览器自己的后退 / 前进
+        if (typing) return;
         if (e.key === 'ArrowLeft' || e.key === '[') cardBack();
         else cardFwd();
         return;
       }
       if (mod || e.altKey) return;
-      const t = e.target as HTMLElement;
-      if (t.closest?.('input, textarea, [contenteditable]')) return;
+      if (typing) return;
       // 菜单（「移动到」、右键菜单）、弹窗打开时只作用于它们：名单和全局快捷键共用 overlayOpen
       if (overlayOpen()) return;
       const k = e.key.toLowerCase();
@@ -621,7 +628,9 @@ export function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boo
       onChange={e => setV(e.target.value)}
       onBlur={commit}
       onKeyDown={e => {
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+        // 输入法回车上屏、Esc 取消组字：不提交、不还原（#684）
+        if (isImeKey(e)) return;
+        if (e.key === 'Enter') {
           e.preventDefault();
           ref.current?.blur();
         }
@@ -779,6 +788,8 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
                 autosize(e.target);
               }}
               onKeyDown={e => {
+                // Esc 取消拼错的拼音时不能把整段没保存的描述丢掉（#684）
+                if (isImeKey(e)) return;
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
                   save();
@@ -1189,6 +1200,7 @@ function ActivityPart({ card: c, on, loading, error }: { card: Detail; on: boole
             value={text}
             onChange={e => setText(e.target.value)}
             onKeyDown={e => {
+              if (isImeKey(e)) return;
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 submit();
@@ -1336,6 +1348,7 @@ function CommentEditor({ a, card, initial, onDone, onFail }: { a: Activity; card
         aria-label="修改评论"
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => {
+          if (isImeKey(e)) return;
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             save();

@@ -4,7 +4,7 @@
    esc、点遮罩关闭；打开时焦点给第一个能填的框 */
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { useUI } from '../../store/ui';
 import { Tip } from '../bits';
 import { Icon } from '../Icon';
@@ -16,7 +16,7 @@ export function FormModal({ title, onCancel, children, foot }: { title: string; 
   cancel.current = onCancel;
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       // 选择框的列表、确认框开着时先关它们
       const ui = useUI.getState();
       if (ui.ctx || ui.confirm) return;

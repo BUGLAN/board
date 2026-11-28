@@ -12,6 +12,13 @@ export function accel(key: string, shift = false): string {
 export const BACK_KEY = isMac ? '⌘[' : 'Alt+←';
 export const FWD_KEY = isMac ? '⌘]' : 'Alt+→';
 export const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
+/** 输入法（拼音等）组字时的按键：回车上屏、Esc 取消组字、方向键选候选词，不能当成提交、取消编辑、关弹窗或快捷键（#684）。
+ *  WebKit（macOS 桌面端的 WKWebView、iOS）结束组字时先发 compositionend、再发这个 keydown，那时 isComposing 已经是 false，
+ *  只能靠 keyCode 229 认出来。React 的事件和原生事件都能传 */
+export function isImeKey(e: { isComposing?: boolean; keyCode?: number; nativeEvent?: { isComposing?: boolean; keyCode?: number } }): boolean {
+  const n = e.nativeEvent ?? e;
+  return !!n.isComposing || n.keyCode === 229;
+}
 /** 主要靠触屏用的设备：手机宽度，或者主指针是手指（pointer: coarse）。这类设备通常没有实体键盘，不提示快捷键 */
 export const touchFirst = () => isMobile() || !!window.matchMedia?.('(pointer: coarse)').matches;
 /** 评论框的占位文字（#520）：触屏设备只写「写评论…」，桌面写当前平台的发送快捷键 */

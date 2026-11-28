@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { stillUploading, useAttach } from '../../lib/attach';
 import type { ProjectInfo } from '../../lib/types';
-import { autosize, cx, replay } from '../../lib/util';
+import { autosize, cx, isImeKey, replay } from '../../lib/util';
 import { useData } from '../../store/data';
 import { closeForm, settleConfirm, useUI, type ConfirmReq, type FormCfg, type FormField } from '../../store/ui';
 import { ColorRow, Markdown, ProjectAvatar, Select } from '../bits';
@@ -60,6 +60,7 @@ export function ConfirmDialog() {
     const prev = document.activeElement as HTMLElement | null;
     const t = setTimeout(() => cancel.current?.focus(), 40);
     const key = (e: KeyboardEvent) => {
+      if (isImeKey(e)) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         e.preventDefault();
@@ -227,6 +228,8 @@ function FormBody({ cfg, on }: { cfg: FormCfg; on: boolean }) {
         noValidate
         onSubmit={submit}
         onKeyDown={e => {
+          // 输入框里用输入法时 Esc 是取消组字，不关表单（#684）
+          if (isImeKey(e)) return;
           if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
@@ -335,6 +338,7 @@ function MdField({ f, value, setValue, onBusy }: { f: FormField; value: string; 
         spellCheck={false}
         onChange={e => setValue(e.target.value)}
         onKeyDown={e => {
+          if (isImeKey(e)) return;
           // 回车换行，不提交表单；⌘/Ctrl + 回车保存
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();

@@ -19,7 +19,7 @@ import { dispatchesOf, hostsOf, resultOf, sessionSlots, sourceOf } from '../../l
 import { dismissScrollbars, scrollSilently } from '../../lib/scrollbars';
 import { groupEvents, groupKind, groupWords, mergeSession, resultText, runningTool, toolKind, totals, usageWords, type Row, type ToolKind } from '../../lib/runEvents';
 import type { Dispatch, RunEvent, SessionView } from '../../lib/types';
-import { cx, durWords, hhmm, isMobile, reduceMotion } from '../../lib/util';
+import { cx, durWords, hhmm, isImeKey, isMobile, reduceMotion } from '../../lib/util';
 import { onRuns, useData } from '../../store/data';
 import { openHost, openSession, useUI, type SessionReq } from '../../store/ui';
 import { Markdown, Tip, useNow } from '../bits';
@@ -65,7 +65,7 @@ function SessionShell({ req, on }: { req: SessionReq; on: boolean }) {
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       const ui = useUI.getState();
       if (ui.confirm || ui.ctx) return;
       e.preventDefault();

@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../lib/api';
 import type { DirList, HostInfo } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { Icon } from '../Icon';
 
 const isWin = (h: HostInfo) => /windows/i.test(h.os);
@@ -76,7 +76,7 @@ export function FolderPick({ h, current, onPick, onClose }: { h: HostInfo; curre
   // esc 只关这一层
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       e.preventDefault();
       e.stopPropagation();
       onClose();

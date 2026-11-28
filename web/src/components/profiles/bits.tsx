@@ -13,7 +13,7 @@ import { api } from '../../lib/api';
 import { builtinName, metaColor, setAgentMeta, useAgentMeta } from '../../lib/agentMeta';
 import { localChoices, OP_WORDS, SUBSCRIPTION, subscribable } from '../../lib/profiles';
 import type { ClaimRule, HostInfo, Label, Profile, Provider, Workspace } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { deleteProfilePatch, editProfilePatch, optimistic, useBusy, profileKey, useData } from '../../store/data';
 import { toast, toastError } from '../../store/ui';
 import { LabelChip, Select, Tip } from '../bits';
@@ -135,7 +135,7 @@ export function ProfileForm() {
   const close = () => useProfileForm.setState({ edit: null });
   useEffect(() => {
     if (!edit) return;
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented && close();
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented && !isImeKey(e) && close();
     document.addEventListener('keydown', key);
     return () => document.removeEventListener('keydown', key);
   }, [edit]);

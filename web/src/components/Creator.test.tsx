@@ -405,3 +405,26 @@ describe('「等价的 CLI」复制按钮（#522）', () => {
     expect(creatorCli({ ...o, ps: true })).toBe("board new 'it''s `x`' --label 'bug' --label 'a''b' --board p/b");
   });
 });
+
+describe('输入法组字（default/main#684）', () => {
+  /** WebKit 结束组字时先发 compositionend 再发 keydown，那时 isComposing 是 false、keyCode 是 229 */
+  const ime = (el: Element, key: string) => {
+    const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'keyCode', { value: 229 });
+    act(() => {
+      el.dispatchEvent(e);
+    });
+  };
+
+  it('标题里回车上屏不把半截标题建出去，Esc 取消组字不关弹窗', () => {
+    act(() => root.render(<Creator />));
+    const title = host.querySelector<HTMLInputElement | HTMLTextAreaElement>('.creator [aria-label="标题"]')!;
+    act(() => title.focus());
+    type(title, '修复 api');
+    ime(title, 'Enter');
+    expect(exec).not.toHaveBeenCalled();
+    ime(title, 'Escape');
+    expect(host.querySelector('.creator')!.classList.contains('on')).toBe(true);
+    expect(title.value).toBe('修复 api');
+  });
+});

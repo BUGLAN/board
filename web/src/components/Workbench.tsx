@@ -11,7 +11,7 @@ import { labelDragJustEnded, labelPointerDown } from '../lib/labelDrag';
 import { hiddenRules, sidebarLabels } from '../lib/sidebarLabels';
 import type { BoardEvent, Card, Label } from '../lib/types';
 import { boardFlow, flowOf, LABEL_COLORS, timing } from '../lib/schema';
-import { clock, cx, ago, agentInk, pref, reduceMotion, replay } from '../lib/util';
+import { clock, cx, ago, agentInk, isImeKey, pref, reduceMotion, replay } from '../lib/util';
 import { deleteLabelPatch, newEntryCount, optimistic, useCurrent, useData, useOnline } from '../store/data';
 import { confirm, openCreator, openCtx, setBoardSheet, setFilter, setSide, setTab, TAB_ORDER, toastError, toggleLabelSel, useUI, type Tab } from '../store/ui';
 import { ActorAvatar, AgentAvatar, LabelLock, LabelPriority, ProjectAvatar, SYSTEM_NAME, Tip, Title, useMeName, useMobile, useNow } from './bits';
@@ -169,6 +169,7 @@ function SideFilter({ value, onChange, placeholder }: { value: string; onChange:
         autoComplete="off"
         onChange={e => onChange(e.target.value)}
         onKeyDown={e => {
+          if (isImeKey(e)) return;
           if (e.key === 'Escape') {
             e.stopPropagation();
             if (value) onChange('');
@@ -367,7 +368,8 @@ export function LabelBlock({ project, all, rules, used }: { project: string; all
           onBlur={() => setEditing(false)}
           onChange={e => setName(e.target.value)}
           onKeyDown={e => {
-            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            if (isImeKey(e)) return;
+            if (e.key === 'Enter') {
               e.preventDefault();
               create();
             }
@@ -534,7 +536,7 @@ export function BoardSheet() {
       return;
     }
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       e.stopPropagation();
       close();
     };

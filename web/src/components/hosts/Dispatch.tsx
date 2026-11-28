@@ -8,7 +8,7 @@ import { api } from '../../lib/api';
 import { bulkDispatchToast, dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
 import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, dispatchRoute, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
-import { cx, durWords, hhmm } from '../../lib/util';
+import { cx, durWords, hhmm, isImeKey } from '../../lib/util';
 import { joinPatch, optimistic, unqueueCard, useData, type Patch } from '../../store/data';
 import { confirm, openDispatch, openHost, openSession, toast, toastError, useUI } from '../../store/ui';
 import { Tip, useNow } from '../bits';
@@ -242,6 +242,7 @@ function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on:
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (isImeKey(e)) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         e.preventDefault();

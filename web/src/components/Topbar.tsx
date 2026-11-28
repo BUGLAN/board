@@ -8,7 +8,7 @@ import { startWindowDrag, toggleMaximize } from '../lib/platform';
 import { cardTotal, flowOf, timing } from '../lib/schema';
 import { agentIdFor, agentMarkOf } from '../lib/hosts';
 import type { Workspace } from '../lib/types';
-import { clock, cx, MOD, reduceMotion, touchFirst } from '../lib/util';
+import { clock, cx, isImeKey, MOD, reduceMotion, touchFirst } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
 import { AgentAvatar, BrandMark, ProjectAvatar, Tip, useMobile, useNow } from './bits';
@@ -228,13 +228,14 @@ function ProjectMenu({ anchor }: { anchor: HTMLElement | null }) {
             setActive(0);
           }}
           onKeyDown={e => {
+            if (isImeKey(e)) return;
             if (e.key === 'ArrowDown') {
               e.preventDefault();
               setActive((act + 1) % Math.max(1, items.length));
             } else if (e.key === 'ArrowUp') {
               e.preventDefault();
               setActive((act - 1 + items.length) % Math.max(1, items.length));
-            } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            } else if (e.key === 'Enter') {
               e.preventDefault();
               if (items[act]) openBoard(items[act].path);
             } else if (e.key === 'Escape') {

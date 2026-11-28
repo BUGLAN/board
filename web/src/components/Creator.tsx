@@ -10,7 +10,7 @@ import { stillUploading, useAttach } from '../lib/attach';
 import { insertPromptText, makePrompt, type Prompt } from '../lib/prompts';
 import { boardFlow } from '../lib/schema';
 import { isWindows } from '../lib/platform';
-import { accel, autosize, copyText, cx, pref, replay } from '../lib/util';
+import { accel, autosize, copyText, cx, isImeKey, pref, replay } from '../lib/util';
 import { addPromptPatch, closeDetail, draftCard, editPromptPatch, exec, loadPrompts, PROMPTS_BUSY, removePromptPatch, savePrompts, useBusy, useCurrent, useData } from '../store/data';
 import { closeCreator, openCreator, openPicker, reveal, setTab, toast, toastError, useUI } from '../store/ui';
 import { DescTabs, LabelChip, Markdown, Tip, Title } from './bits';
@@ -336,6 +336,8 @@ export function Creator() {
   useEffect(() => {
     if (!open) return;
     const key = (e: KeyboardEvent) => {
+      // 标题、描述里用输入法：Esc 是取消组字（不关弹窗、不丢内容），回车是上屏（#684）
+      if (isImeKey(e)) return;
       if (useUI.getState().picker || useUI.getState().labelsOf) return;
       // 提示词浮层开着时，Esc 只关它，Ctrl/⌘ ↵ 也不在背后把卡片建出去
       if (promptsOpen) {
@@ -467,7 +469,8 @@ export function Creator() {
                 if (e.target.value.trim()) setError('');
               }}
               onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
+                if (isImeKey(e)) return;
+                if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                   e.preventDefault();
                   submit();
                 }
@@ -531,6 +534,7 @@ export function Creator() {
                         <div
                           className="cr-prompt-form"
                           onKeyDown={e => {
+                            if (isImeKey(e)) return;
                             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                               e.preventDefault();
                               savePrompt();

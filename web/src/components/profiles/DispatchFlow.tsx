@@ -15,7 +15,7 @@ import { blockOf, dirFresh, hostsOf } from '../../lib/hosts';
 import { groupPick, hostsFor, OP_WORDS, pickHost, profilesOf, ruleGroups, short, soonest, type HostWhy, type RuleGroup } from '../../lib/profiles';
 import { serverMinute } from '../../lib/sched';
 import type { Dispatch, HostInfo } from '../../lib/types';
-import { cx } from '../../lib/util';
+import { cx, isImeKey } from '../../lib/util';
 import { optimistic, useData } from '../../store/data';
 import { openDispatch, toast, toastError } from '../../store/ui';
 import { useNow } from '../bits';
@@ -108,7 +108,7 @@ export function DispatchFlow({ cards, move, on }: { cards: number[]; move?: numb
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       e.stopPropagation();
       e.preventDefault();
       close();

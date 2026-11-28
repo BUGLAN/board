@@ -24,15 +24,16 @@ import { BrandMark, FloatTips, StaleBanner, SYSTEM_NAME, TipHost } from './compo
 import { TitleStrip } from './components/WindowControls';
 import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
+import { globalKey } from './lib/globalKeys';
 import { installCardInteractions } from './lib/drag';
 import { installBoardSelect } from './lib/boardSelect';
 import { observeAppInert } from './lib/modal';
 import { parseRoute } from './lib/route';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
 import { checkAuth, useAuth } from './store/auth';
-import { applyRoute, boardMeta, boot, closeDetail, onEvents, useCurrent, useData } from './store/data';
+import { applyRoute, boardMeta, boot, onEvents, useCurrent, useData } from './store/data';
 import {
-  closePalette, flash, openCreator, openPalette, openSwitcher, overlayOpen, setSide, setTab, TAB_ORDER, toast, useUI, type Tab,
+  flash, toast, useUI, type Tab,
 } from './store/ui';
 
 /* 项目画布、Agent、设置页按需加载（机器页在 components/Hosts，大盘在 components/StatsTab）：第一次切过去才下载，入口包小一些；
@@ -237,53 +238,8 @@ function BoardApp() {
 
   // 全局快捷键（PRD §10.10）
   useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      const typing = !!t.closest?.('input, textarea, select, [contenteditable]');
-      const mod = e.metaKey || e.ctrlKey;
-      const k = e.key.toLowerCase();
-      if (mod && k === 'k') {
-        e.preventDefault();
-        if (useUI.getState().palette.open) closePalette();
-        else openPalette();
-        return;
-      }
-      if (mod && k === 'b') {
-        e.preventDefault();
-        setSide(!useUI.getState().side);
-        return;
-      }
-      if (mod && ['1', '2', '3', '4', '5', '6', '7', '8'].includes(e.key)) {
-        e.preventDefault();
-        setTab(TAB_ORDER[Number(e.key) - 1]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        if (overlayOpen()) return;
-        if (useData.getState().detailId != null) {
-          e.preventDefault();
-          closeDetail();
-        }
-        return;
-      }
-      if (typing || mod || e.altKey || overlayOpen()) return;
-      if (useData.getState().detailId != null && 'ckjl'.includes(k)) return; // 详情里的快捷键
-      if (k === 'n') {
-        e.preventDefault();
-        openCreator('todo');
-      } else if (k === 'i') {
-        e.preventDefault();
-        openCreator('inbox');
-      } else if (k === 'p') {
-        e.preventDefault();
-        openSwitcher();
-      } else if (e.key === '/') {
-        e.preventDefault();
-        openPalette();
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => document.removeEventListener('keydown', key);
+    document.addEventListener('keydown', globalKey);
+    return () => document.removeEventListener('keydown', globalKey);
   }, []);
 
   useEffect(() => {

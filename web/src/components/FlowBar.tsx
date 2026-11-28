@@ -13,7 +13,7 @@ import { api } from '../lib/api';
 import { CH, edgeId, layoutFlow, midOf, pathD, type Pt } from '../lib/flowGraph';
 import { patchStatus, statusColor, STATUS_COLORS, viewOf, VIEWS, type FlowQ } from '../lib/schema';
 import type { Status } from '../lib/types';
-import { cx, replay } from '../lib/util';
+import { cx, isImeKey, replay } from '../lib/util';
 import { flowKey, optimistic, useBusy, useData } from '../store/data';
 import { manageLabels, openBoardSettings, openCardCrons, toastError, useUI } from '../store/ui';
 import { Icon } from './Icon';
@@ -376,8 +376,9 @@ export function FlowBar({ counts, path, f, readOnly = false }: { counts: Record<
                     maxLength={12}
                     onBlur={() => setAdding(false)}
                     onKeyDown={e => {
+                      if (isImeKey(e)) return;
                       const t = e.target as HTMLInputElement;
-                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      if (e.key === 'Enter') {
                         const v = t.value.trim();
                         // 新状态的标识由服务端生成，拿到之前画不出来：输入框进入进行中（只读 + 转圈），不会重复添加
                         if (!v || t.readOnly) return;
@@ -506,6 +507,7 @@ function StatusMenu({
       if (!(e.target as HTMLElement).closest('.wf-menu, .wf-node')) close.current();
     };
     const key = (e: KeyboardEvent) => {
+      if (isImeKey(e)) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         close.current();
@@ -555,7 +557,8 @@ function StatusMenu({
         onFocus={e => e.target.select()}
         onBlur={e => rename(e.target.value)}
         onKeyDown={e => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          if (isImeKey(e)) return;
+          if (e.key === 'Enter') {
             rename((e.target as HTMLInputElement).value);
             onClose();
           }

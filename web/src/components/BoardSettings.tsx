@@ -15,7 +15,7 @@ import { playDemo, scenesOf, stepsOf, type DemoInput, type Scene } from '../lib/
 import { statusColor, viewOf } from '../lib/schema';
 import { ORDERS, orderDir, orderName, orderOf, orderOption } from '../lib/sort';
 import type { BoardSnapshot, Label, Order, Status, Tile } from '../lib/types';
-import { cx, reduceMotion } from '../lib/util';
+import { cx, isImeKey, reduceMotion } from '../lib/util';
 import { boardAutoPatch, colCount, flowKey, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { closePicker, openBoardSettings, openProjectSettings, toast, useUI } from '../store/ui';
 import { Select, Sync, useSync } from './bits';
@@ -45,7 +45,7 @@ export function BoardSettings({ path }: { path: string }) {
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       // 选择框的列表、确认框先关自己；定时建卡里打开的标签选择器先关它，不连白板设置一起关
       const ui = useUI.getState();
       if (ui.ctx || ui.confirm || ui.palette.open) return;

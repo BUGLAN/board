@@ -21,7 +21,7 @@ import { boardOf, boardTakers, hostDirFor, hostLoad, hostsOf } from '../lib/host
 import { fitOf, profilesOf, short } from '../lib/profiles';
 import { boardFlow, flowOf } from '../lib/schema';
 import type { CardCron, CardCronInput, HostInfo, Label, Profile, Workspace } from '../lib/types';
-import { cx } from '../lib/util';
+import { cx, isImeKey } from '../lib/util';
 import { cardCronKey, cardCronPatch, optimistic, saveSetting, useBusy, useCurrent, useData } from '../store/data';
 import { closePicker, confirm, openCardCrons, openPicker, setTab, toast, toastError, useUI } from '../store/ui';
 import { DescTabs, InfoTip, LabelChip, Markdown, Segmented, Sync, Tip, useNow, useSync } from './bits';
@@ -617,7 +617,7 @@ export function CardCronDialog({ path }: { path: string }) {
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       // 选择框的列表、确认框、机器详情先关自己；表单里打开的标签选择器先关它，不连弹窗一起关
       const ui = useUI.getState();
       if (ui.ctx || ui.confirm || ui.palette.open || ui.host) return;

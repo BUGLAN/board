@@ -13,7 +13,7 @@ import { api } from '../../lib/api';
 import { statusRoles } from '../../lib/review';
 import { cardTotal, statusColor } from '../../lib/schema';
 import type { BoardInfo, ProjectInfo, Stats, StatsBrief, StatsProfile, StatsScope } from '../../lib/types';
-import { agentColor, cx } from '../../lib/util';
+import { agentColor, cx, isImeKey } from '../../lib/util';
 import { useCurrent, useData } from '../../store/data';
 import { openReview } from '../../store/ui';
 import { ProjectAvatar } from '../bits';
@@ -218,7 +218,7 @@ export function RangeBar({ loading }: { loading: boolean }) {
       if (!t?.closest('.sp-pop, .sp-seg')) close(false);
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       e.stopPropagation();
       close(true);
     };

@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fileSize } from '../../lib/attach';
 import { readHead, TEXT_LIMIT, type TextHead } from '../../lib/textFile';
-import { copyText, cx } from '../../lib/util';
+import { copyText, cx, isImeKey } from '../../lib/util';
 import { closeTextFile, toast, useUI } from '../../store/ui';
 import { Tip } from '../bits';
 import { Icon } from '../Icon';
@@ -41,7 +41,7 @@ export function TextViewer() {
     pre.current?.focus({ preventScroll: true });
     // 捕获阶段处理：Esc 只关查看器，不关下面的卡片详情
     const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || isImeKey(e)) return;
       e.preventDefault();
       e.stopPropagation();
       closeTextFile();

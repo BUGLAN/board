@@ -363,12 +363,13 @@ export const openCardCrons = (path: string | null) => set({ cardCrons: path });
 /** 打开 / 关掉（null）「复制为新卡片」面板 */
 export const openCopy = (card: number | null) => set({ copyOf: card });
 
-/** 有弹窗或浮层打开时，全局快捷键不生效 */
+/** 有弹窗或浮层打开时，全局快捷键不生效。复盘台、手机上的白板抽屉也算（#684）：复盘台盖在新建弹窗上面，
+ *  按 N 打开的新建弹窗看不见，焦点却进了它的标题框，之后按的 A / J / K 都打进这个看不见的框 */
 export function overlayOpen() {
   const s = get();
   return !!(
     s.confirm || s.form || s.labelsOf || s.picker || s.ctx || s.palette.open || s.switcher || s.creator.open || s.image || s.textFile || s.host ||
-    s.dispatchOf != null || s.copyOf != null || s.boardSettings || s.projectSettings || s.cardCrons || s.session
+    s.dispatchOf != null || s.copyOf != null || s.boardSettings || s.projectSettings || s.cardCrons || s.session || s.review != null || s.boardSheet
   );
 }
 

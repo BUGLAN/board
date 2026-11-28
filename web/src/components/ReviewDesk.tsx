@@ -17,7 +17,7 @@ import { stillUploading, useAttach } from '../lib/attach';
 import { repoWeb } from '../lib/repo';
 import { approveTargets, deskQueue, homeOf, latestAgentComment, rejectTargets, splitFacts, taskCount } from '../lib/review';
 import type { CardDetail, Status } from '../lib/types';
-import { cx, isMobile } from '../lib/util';
+import { cx, isImeKey, isMobile } from '../lib/util';
 import { exec, movePatch, useCardBusy, useCurrent, useData } from '../store/data';
 import { openReview, toastError, useUI } from '../store/ui';
 import { ActorAvatar, LabelChips, Markdown, Select, Tip, useNow } from './bits';
@@ -164,6 +164,8 @@ function DeskBody({ req, on, close }: { req: Req; on: boolean; close: () => void
   useEffect(() => {
     if (!on) return;
     const down = (e: KeyboardEvent) => {
+      // 在意见框里用输入法：回车上屏、Esc 取消组字、方向键选词都归输入法（#684）
+      if (isImeKey(e)) return;
       const ui = useUI.getState();
       if (ui.confirm || ui.ctx || ui.session) return;
       const k = keys.current;
@@ -373,6 +375,7 @@ function DeskBox({
           onEdit();
         }}
         onKeyDown={e => {
+          if (isImeKey(e)) return;
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             onSubmit();
