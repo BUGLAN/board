@@ -26,6 +26,7 @@ import { ActivityBar, BoardSheet, SidePanel } from './components/Workbench';
 import { openBoard } from './lib/actions';
 import { installCardInteractions } from './lib/drag';
 import { installBoardSelect } from './lib/boardSelect';
+import { observeAppInert } from './lib/modal';
 import { parseRoute } from './lib/route';
 import { agentColor, agentGlyph, isMobile, reduceMotion } from './lib/util';
 import { checkAuth, useAuth } from './store/auth';
@@ -150,9 +151,37 @@ function Atmosphere() {
 function BoardApp() {
   const tab = useUI(s => s.tab);
   const side = useUI(s => s.side);
+  const modal = useUI(s =>
+    !!(
+      s.creator.open ||
+      s.confirm ||
+      s.form ||
+      s.labelsOf ||
+      s.image ||
+      s.textFile ||
+      s.boardSettings ||
+      s.projectSettings ||
+      s.cardCrons ||
+      s.host ||
+      s.dispatchOf ||
+      s.copyOf != null ||
+      s.session ||
+      s.review ||
+      s.boardSheet
+    ),
+  );
+  const detail = useData(s => s.detailId != null);
   const cur = useCurrent();
   const error = useData(s => s.error);
   const ws = useData(s => s.ws);
+  const app = useRef<HTMLDivElement>(null);
+
+  // 组件状态已经知道弹窗打开时，立即 inert（关闭时也要在同一次提交之后解除，不能等淡出完）；
+  // 页面里局部状态打开的模态由 observeAppInert 观察 DOM 补上。
+  useLayoutEffect(() => {
+    const el = app.current;
+    return el ? observeAppInert(el, modal || detail) : undefined;
+  }, [modal, detail]);
 
   useEffect(() => boot(), []);
   // 地址栏：打开、关闭卡片和切换白板时写进去（lib/route 的 syncUrl）；后退、前进按地址改回来
@@ -271,7 +300,7 @@ function BoardApp() {
     <>
       <SkipLink />
       <Atmosphere />
-      <div className="app" data-tab={tab} data-side={side ? 'open' : 'closed'}>
+      <div ref={app} className="app" data-tab={tab} data-side={side ? 'open' : 'closed'}>
         <Topbar />
         {/* 服务端升级之后开着旧页面：门面上一条，点一下刷新（default/main#368） */}
         <StaleBanner />

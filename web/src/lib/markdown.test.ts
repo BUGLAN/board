@@ -111,9 +111,14 @@ describe('markdown 装饰', () => {
   it('任务列表换成自绘勾选框', () => {
     const d = dom(markdown('- [ ] 待做\n- [x] 做完'));
     const lis = d.querySelectorAll('li.task');
+    const boxes = d.querySelectorAll<HTMLElement>('li.task > i');
     expect(lis.length).toBe(2);
     expect(lis[1].classList.contains('checked')).toBe(true);
     expect(d.querySelector('input')).toBeNull();
+    expect([...boxes].map(b => [b.getAttribute('role'), b.getAttribute('tabindex'), b.getAttribute('aria-checked')])).toEqual([
+      ['checkbox', '0', 'false'],
+      ['checkbox', '0', 'true'],
+    ]);
   });
 
   it('gh#123 高亮，代码里的不动', () => {

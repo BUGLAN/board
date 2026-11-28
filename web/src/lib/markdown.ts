@@ -117,7 +117,11 @@ function decorate(html: string, refs?: Refs, repo: RepoWeb | null = null): strin
     if (checked) li.classList.add('checked');
     const span = document.createElement('span');
     while (li.firstChild) span.appendChild(li.firstChild);
-    li.append(document.createElement('i'), span);
+    const check = document.createElement('i');
+    check.setAttribute('role', 'checkbox');
+    check.setAttribute('tabindex', '0');
+    check.setAttribute('aria-checked', String(checked));
+    li.append(check, span);
     const ul = li.parentElement;
     if (ul) ul.classList.add('tasks');
   });
