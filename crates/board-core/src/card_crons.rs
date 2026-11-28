@@ -1116,7 +1116,7 @@ mod tests {
         let n: i64 = s.conn().query_row("SELECT COUNT(*) FROM attachments WHERE id = 77", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
         // 删除白板时一起删除（整个工作区至少留一块白板：先建一块别的）
-        s.write(T0, Origin::ui(None), |w| w.create_board("default", "另一块", "other", "", None).map(|_| ())).unwrap();
+        s.write(T0, Origin::ui(None), |w| w.create_board("default", "另一块", "other", "").map(|_| ())).unwrap();
         s.write(T0, Origin::ui(None), |w| w.delete_board(B)).unwrap();
         let n: i64 = s.conn().query_row("SELECT COUNT(*) FROM card_crons", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0, "白板删掉了，定时建卡也没了");

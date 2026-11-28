@@ -141,7 +141,6 @@ fn unauthenticated_requests_are_rejected() {
         ("POST", "/api/labels"),
         ("PATCH", "/api/labels/1"),
         ("DELETE", "/api/labels/default/1"),
-        ("PUT", "/api/layout"),
         ("POST", "/api/flow/default/main"),
         ("PUT", "/api/flow/default/main"),
         ("PUT", "/api/flow/default/main/layout"),
@@ -423,7 +422,6 @@ fn tokens_are_for_cli_only() {
         ("POST", "/api/providers", Some(json!({ "name": "x" }))),
         ("DELETE", "/api/providers/x", None),
         ("POST", "/api/providers/models", Some(json!({ "endpoints": [] }))),
-        ("PUT", "/api/layout", Some(json!({ "kind": "project", "id": "x", "x": 1, "y": 2 }))),
         ("POST", "/api/labels", Some(json!({ "project": "default", "name": "x" }))),
         ("PUT", "/api/labels/order", Some(json!({ "project": "default", "ids": [] }))),
     ] {

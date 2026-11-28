@@ -192,7 +192,7 @@ fn stream_sends_every_event_when_one_write_makes_more_than_a_page() {
     assert_eq!(got, want, "按顺序、不重不漏");
 }
 
-/// 推送带上改到的白板（default/main#739）：卡片命令带上它所在的白板；只改工作区的写（画布上挪节点）`boards` 为空，
+/// 推送带上改到的白板（default/main#739）：卡片命令带上它所在的白板；只改工作区的写（项目改名）`boards` 为空，
 /// 界面据此不重取白板快照
 #[test]
 fn stream_names_the_boards_whose_snapshot_changed() {
@@ -232,8 +232,8 @@ fn stream_names_the_boards_whose_snapshot_changed() {
     assert_eq!(m["boards"], json!(["default/main"]), "{m}");
     let rev = m["rev"].as_i64().unwrap();
 
-    let r = send("PUT", &format!("{}/api/layout", s.url), &[UI], Some(json!({ "kind": "board", "id": "default/main", "x": 480.0, "y": 0.0 })));
+    let r = send("PATCH", &format!("{}/api/projects/default", s.url), &[UI], Some(json!({ "name": "改名" })));
     assert_eq!(r.status, 200, "{}", r.text);
     let m = next(rev);
-    assert_eq!(m["boards"], json!([]), "画布上挪节点只改工作区：{m}");
+    assert_eq!(m["boards"], json!([]), "项目改名只改工作区：{m}");
 }

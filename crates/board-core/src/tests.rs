@@ -557,17 +557,15 @@ fn oss(s: &mut Store) {
             "oss",
             "",
             None,
-            None,
-            NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None },
+            NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new() },
         )?;
-        w.create_board("oss", "发布", "release", "", None)?;
+        w.create_board("oss", "发布", "release", "")?;
         w.create_project(
             "官网",
             "site",
             "",
             None,
-            None,
-            NewBoard { name: "上线".into(), key: "launch".into(), desc: String::new(), pos: None },
+            NewBoard { name: "上线".into(), key: "launch".into(), desc: String::new() },
         )?;
         Ok(())
     })
@@ -1266,7 +1264,7 @@ fn old_database_keep_order_off_becomes_keep_sorted_and_moved_at_backfilled() {
     {
         let mut s = Store::open(&path).unwrap();
         s.ensure_default(T0).unwrap();
-        ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
+        ui(&mut s, |w| w.create_board("default", "第二块", "second", "")).unwrap();
         exec(&mut s, B, &human(), T0, new("a")).unwrap();
         exec(&mut s, B, &human(), T0, new("b")).unwrap();
         exec(&mut s, B, &human(), T0 + 5 * MIN, mv(1, "待审核")).unwrap();
@@ -1379,14 +1377,14 @@ fn final_status_is_human_only_and_layout_saved() {
     assert_eq!(flow(&s).get("todo").unwrap().order, Order { by: OrderBy::Labels, desc: false });
     assert_eq!(flow(&s).get("review").unwrap().order, Order::default(), "别的状态不变");
     // 新建白板自带默认工作流
-    ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
+    ui(&mut s, |w| w.create_board("default", "第二块", "second", "")).unwrap();
     let second = s.read(|r| r.resolve("default/second").and_then(|b| r.flow(&b))).unwrap();
     assert_eq!(second.0.len(), 6);
 }
 
-/// 状态块布局、画布节点位置没变化时不涨 rev（default/main#741）：每涨一次，打开的界面都要重取工作区和白板快照
+/// 状态块布局没变化时不涨 rev（default/main#741）：每涨一次，打开的界面都要重取工作区和白板快照
 #[test]
-fn layout_and_pos_bump_rev_only_when_changed() {
+fn layout_bumps_rev_only_when_changed() {
     let mut s = store();
     // 本来就是默认布局：复原不算变化
     let r0 = s.rev().unwrap();
@@ -1417,23 +1415,6 @@ fn layout_and_pos_bump_rev_only_when_changed() {
     assert!(flow(&s).0.iter().all(|x| x.layout.is_none()));
     ui(&mut s, |w| w.set_flow_layout(B, &Default::default())).unwrap();
     assert_eq!(s.rev().unwrap(), r1 + 2);
-
-    // 画布节点：移到新位置涨，拖回同一位置（取整后相同）不涨
-    for (kind, id) in [("project", "default"), ("board", B)] {
-        let r = s.rev().unwrap();
-        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 120.0, y: 40.0 })).unwrap();
-        assert_eq!(s.rev().unwrap(), r + 1, "{kind}：移到新位置要涨");
-        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 120.0, y: 40.0 })).unwrap();
-        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 120.4, y: 39.6 })).unwrap();
-        assert_eq!(s.rev().unwrap(), r + 1, "{kind}：取整后和库里相同不涨");
-        ui(&mut s, |w| w.set_pos(kind, id, Pos { x: 121.0, y: 40.0 })).unwrap();
-        assert_eq!(s.rev().unwrap(), r + 2, "{kind}：真的挪了要涨");
-    }
-    let r2 = s.rev().unwrap();
-    assert_eq!(ui(&mut s, |w| w.set_pos("project", "nope", Pos { x: 0.0, y: 0.0 })).unwrap_err().code, ErrorCode::BoardNotFound);
-    assert_eq!(ui(&mut s, |w| w.set_pos("board", "default/nope", Pos { x: 0.0, y: 0.0 })).unwrap_err().code, ErrorCode::BoardNotFound);
-    assert_eq!(ui(&mut s, |w| w.set_pos("card", "1", Pos { x: 0.0, y: 0.0 })).unwrap_err().code, ErrorCode::Usage);
-    assert_eq!(s.rev().unwrap(), r2);
 }
 
 /// 推送带上改到的白板（default/main#739）：每一类写操作提交后，boards.data_rev 变了的白板正确。
@@ -1441,9 +1422,9 @@ fn layout_and_pos_bump_rev_only_when_changed() {
 #[test]
 fn writes_record_which_boards_changed() {
     let mut s = store();
-    ui(&mut s, |w| w.create_board("default", "第二块", "second", "", None)).unwrap();
+    ui(&mut s, |w| w.create_board("default", "第二块", "second", "")).unwrap();
     ui(&mut s, |w| {
-        w.create_project("站点", "site", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None }).map(|_| ())
+        w.create_project("站点", "site", "", None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new() }).map(|_| ())
     })
     .unwrap();
     let main = || Some(vec![B.to_string()]);
@@ -1484,7 +1465,7 @@ fn writes_record_which_boards_changed() {
         changed(&mut s, |s| ui(s, |w| w.set_repo_branch("default", Some("https://github.com/o/r.git"), None)).unwrap()),
         Some(vec![B.to_string(), "default/second".to_string()])
     );
-    // 只改工作区的：名字上线、下线，项目改名，画布上挪节点，机器上报
+    // 只改工作区的：名字上线、下线，项目改名，机器上报
     assert_eq!(changed(&mut s, |s| drop(s.write(T0, Origin::cli(), |w| w.agent_check("claude/x", None)).unwrap())), Some(vec![]));
     assert_eq!(
         changed(&mut s, |s| drop(s.write(T0 + 1, Origin::cli(), |w| w.agent_beat_by("claude/x", true, crate::agents::BeatBy::Cli(None))).unwrap())),
@@ -1494,7 +1475,6 @@ fn writes_record_which_boards_changed() {
         changed(&mut s, |s| ui(s, |w| w.update_project("default", Some("改名"), None, None)).unwrap()),
         Some(vec![])
     );
-    assert_eq!(changed(&mut s, |s| ui(s, |w| w.set_pos("board", B, Pos { x: 300.0, y: 0.0 })).unwrap()), Some(vec![]));
     let rep = crate::hosts::HostReport { name: "mbp".into(), instance: "i1".into(), ..Default::default() };
     assert_eq!(changed(&mut s, |s| drop(s.write(T0, Origin::cli(), |w| w.host_beat(&rep, None)).unwrap())), Some(vec![]));
     // 别的白板上的卡片命令：只带那一块
@@ -1792,12 +1772,12 @@ fn in_memory_store_has_no_attachments() {
 #[test]
 fn project_color_palette_or_any_hex() {
     let mut s = store();
-    let nb = || NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None };
-    s.write(T0, Origin::ui(None), |w| w.create_project("甲", "a", "", Some("#4db5ff"), None, nb())).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.create_project("乙", "b", "", Some("#12ab9f"), None, nb())).unwrap();
-    let r = s.write(T0, Origin::ui(None), |w| w.create_project("丙", "c", "", Some("teal"), None, nb()));
+    let nb = || NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new() };
+    s.write(T0, Origin::ui(None), |w| w.create_project("甲", "a", "", Some("#4db5ff"), nb())).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_project("乙", "b", "", Some("#12ab9f"), nb())).unwrap();
+    let r = s.write(T0, Origin::ui(None), |w| w.create_project("丙", "c", "", Some("teal"), nb()));
     assert_eq!(r.expect_err("不是颜色").code, ErrorCode::Usage);
-    let r = s.write(T0, Origin::ui(None), |w| w.create_project("丙", "c", "", Some("#12ab9"), None, nb()));
+    let r = s.write(T0, Origin::ui(None), |w| w.create_project("丙", "c", "", Some("#12ab9"), nb()));
     assert_eq!(r.expect_err("位数不对").code, ErrorCode::Usage);
     s.write(T0, Origin::ui(None), |w| w.update_project("a", None, None, Some("#00ff7f"))).unwrap();
     let ws = s.read(|r| r.workspace(T0)).unwrap();
@@ -1970,8 +1950,7 @@ fn labels_reorder_rejects_illegal_ids_without_changing_order() {
             "b",
             "",
             None,
-            None,
-            NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None },
+            NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new() },
         )?;
         w.create_label("b", "别处", None, false)
     })
@@ -3050,6 +3029,22 @@ fn project_info_without_hidden_labels_uses_default() {
     .unwrap();
     assert_eq!(p.hidden_labels, vec![r"^v\d".to_string()]);
     assert!(!p.hidden, "旧服务端没有 hidden：按显示");
+}
+
+/// 旧版 CLI 反序列化工作区时项目、白板上必须有 pos（原来无限画布上节点的位置，已不再保存）：固定给 {x: 0, y: 0}；
+/// 新版读工作区不要这一项
+#[test]
+fn workspace_keeps_zero_pos_for_old_cli() {
+    let s = store();
+    let ws = serde_json::to_value(s.read(|r| r.workspace(T0)).unwrap()).unwrap();
+    let zero = serde_json::json!({ "x": 0.0, "y": 0.0 });
+    assert_eq!(ws["projects"][0]["pos"], zero);
+    assert_eq!(ws["projects"][0]["boards"][0]["pos"], zero);
+    let mut p = ws["projects"][0].clone();
+    p.as_object_mut().unwrap().remove("pos");
+    p["boards"][0].as_object_mut().unwrap().remove("pos");
+    let p: ProjectInfo = serde_json::from_value(p).unwrap();
+    assert_eq!(p.boards[0].path, B);
 }
 
 /// 项目默认显示；可以隐藏，刷新、重开数据库后仍然隐藏，只改别的字段不动它

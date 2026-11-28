@@ -34,7 +34,7 @@ fn search(s: &Store, q: &str) -> Vec<SearchHit> {
 
 /// 多一块白板：default/other
 fn other_board(s: &mut Store) {
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
 }
 
 #[test]

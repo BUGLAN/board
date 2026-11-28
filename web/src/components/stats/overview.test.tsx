@@ -22,7 +22,6 @@ const project: ProjectInfo = {
   name: '默认项目',
   desc: '一块给人看、也给 agent 干活的看板',
   color: '#FF6A33',
-  pos: { x: 0, y: 0 },
   createdAt: now - 30 * DAY,
   labels: [{ id: 1, name: 'UI', color: '#4DB5FF', uses: 9 }],
   boards: [
@@ -32,7 +31,6 @@ const project: ProjectInfo = {
       name: '主白板',
       desc: '一块给人看、也给 agent 干活的看板',
       readme: '# 说明\n\n这段说明文字不该出现在大盘里。',
-      pos: { x: 0, y: 0 },
       createdAt: now - 10 * DAY,
       updatedAt: now,
       counts: { todo: 2 },

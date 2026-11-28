@@ -17,7 +17,7 @@
 //! - `/api/providers`：模型供应商共用配置（打码列表和增删改只给界面；`/api/hosts/{名字}/providers` 给 board host 原文，只给这台机器上报时用的令牌；`providers`）
 //! - `/api/prompts`：新建卡片的快捷提示词，整个服务器一份（读整列、整列保存，只给界面；`prompts`）
 //! - `/api/git`：Git 凭据共用配置（同上：令牌打码的列表和修改只给界面；`/api/hosts/{名字}/git` 给 board host 原文；`gitcred`）
-//! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`、批量打标签 `POST /api/labels/batch`）/ 画布位置的增删改
+//! - 项目 / 白板 / 标签（增删改、拖拽排序 `PUT /api/labels/order`、批量打标签 `POST /api/labels/batch`）
 //! - 工作流：`/api/flow/{项目}/{白板}`（新增状态、调整顺序）、`…/layout`（状态块布局）、`…/layout/saved`、`…/layout/apply`（白板设置：保存、应用布局）、`…/order`（白板设置：保存顺序）、`…/{状态}`（修改、删除）
 //! - 任务下发（`hosts`）：board host 上报、开始 / 结束派发、上传日志；机器列表与设置；创建、取消派发
 //! - `GET /api/stream`：SSE。任何一处（其他窗口、CLI、超时释放）写入后 ≤ 300ms 推送 `{rev, hosts, events}`；
@@ -357,7 +357,6 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/labels/batch", post(label_batch))
         .route("/labels/{id}", patch(update_label))
         .route("/labels/{project}/{id}", delete(delete_label))
-        .route("/layout", put(layout))
         .route("/card-crons/{project}/{board}", post(create_card_cron))
         .route("/card-crons/{project}/{board}/{id}", patch(update_card_cron).delete(delete_card_cron))
         .route("/card-crons/{project}/{board}/{id}/run", post(run_card_cron))
@@ -1003,8 +1002,6 @@ struct NewBoardBody {
     key: String,
     #[serde(default)]
     desc: String,
-    #[serde(default)]
-    pos: Option<Pos>,
 }
 
 #[derive(Deserialize)]
@@ -1015,8 +1012,6 @@ struct NewProjectBody {
     desc: String,
     #[serde(default)]
     color: Option<String>,
-    #[serde(default)]
-    pos: Option<Pos>,
     /// 项目目录（#488）：每台机器上是 `<工作空间>/<项目目录>`；不给、空的用项目标识
     #[serde(default)]
     dir: String,
@@ -1031,8 +1026,7 @@ async fn create_project(State(s): State<AppState>, h: HeaderMap, Json(v): Json<V
             &b.key,
             &b.desc,
             b.color.as_deref(),
-            b.pos,
-            NewBoard { name: b.board.name, key: b.board.key, desc: b.board.desc, pos: b.board.pos },
+            NewBoard { name: b.board.name, key: b.board.key, desc: b.board.desc },
         )?;
         // 不填也查一遍：项目标识不能和别的项目填的目录重名
         w.set_project_dir(&key, &b.dir)?;
@@ -1129,7 +1123,7 @@ struct CreateBoardBody {
 
 async fn create_board(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Value> {
     let b: CreateBoardBody = parse(v)?;
-    let path = write(&s, &h, move |w| w.create_board(&b.project, &b.board.name, &b.board.key, &b.board.desc, b.board.pos)).await?;
+    let path = write(&s, &h, move |w| w.create_board(&b.project, &b.board.name, &b.board.key, &b.board.desc)).await?;
     Ok(Json(json!({ "path": path })))
 }
 
@@ -1332,20 +1326,6 @@ struct LabelOrderBody {
 async fn reorder_labels(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Value> {
     let b: LabelOrderBody = parse(v)?;
     write(&s, &h, move |w| w.reorder_labels(&b.project, &b.ids)).await?;
-    Ok(Json(json!({ "ok": true })))
-}
-
-#[derive(Deserialize)]
-struct LayoutBody {
-    kind: String,
-    id: String,
-    x: f64,
-    y: f64,
-}
-
-async fn layout(State(s): State<AppState>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<Value> {
-    let b: LayoutBody = parse(v)?;
-    write(&s, &h, move |w| w.set_pos(&b.kind, &b.id, Pos { x: b.x, y: b.y })).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

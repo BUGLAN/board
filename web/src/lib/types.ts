@@ -58,11 +58,6 @@ export interface Actor {
   agent?: string;
 }
 
-export interface Pos {
-  x: number;
-  y: number;
-}
-
 /** 各状态的卡片数；`inbox` 是不含「稍后再做」的未整理条目，`later` 是收起的（两者相加才是未整理总数） */
 export type Counts = Record<string, number>;
 
@@ -88,7 +83,6 @@ export interface BoardInfo {
   repo?: string;
   /** 所在项目的集成分支；空表示按仓库的 AGENTS.md / CLAUDE.md，没写就用远端默认分支。旧服务端没有这一项 */
   branch?: string;
-  pos: Pos;
   createdAt: number;
   updatedAt: number;
   counts: Counts;
@@ -143,7 +137,6 @@ export interface ProjectInfo {
   name: string;
   desc: string;
   color: string;
-  pos: Pos;
   createdAt: number;
   labels: Label[];
   /** 隐藏的标签：名称匹配任一条正则的不出现在侧栏、提示词菜单、标签选择器（lib/sidebarLabels，default/main#324）；旧服务端没有，按默认 `^v\d` */

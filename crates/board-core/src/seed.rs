@@ -45,37 +45,29 @@ pub fn seed_demo(store: &mut Store, now: i64) -> Result<bool> {
         let a = |n: &str| Actor::agent(n);
 
         // ---------------- 项目与白板 ----------------
-        let nb = |name: &str, key: &str, desc: &str, x: f64, y: f64| NewBoard {
-            name: name.into(),
-            key: key.into(),
-            desc: desc.into(),
-            pos: Some(Pos { x, y }),
-        };
+        let nb = |name: &str, key: &str, desc: &str| NewBoard { name: name.into(), key: key.into(), desc: desc.into() };
         w.at(now - 30 * D).create_project(
             "Board 开源仓库",
             "oss",
             "自动维护 board 的 GitHub 仓库",
             Some("#FF6A33"),
-            Some(Pos { x: 0.0, y: 40.0 }),
-            nb("维护主线", "main", "issue、社区反馈与定期清理", 420.0, -60.0),
+            nb("维护主线", "main", "issue、社区反馈与定期清理"),
         )?;
-        w.at(now - 6 * D).create_board("oss", "v1.0 发布", "release", "发布前必须完成的事项", Some(Pos { x: 420.0, y: 160.0 }))?;
+        w.at(now - 6 * D).create_board("oss", "v1.0 发布", "release", "发布前必须完成的事项")?;
         w.at(now - 12 * D).create_project(
             "文档站",
             "docs",
             "board 的使用文档与示例",
             Some("#4DB5FF"),
-            Some(Pos { x: 0.0, y: 470.0 }),
-            nb("内容", "content", "命令参考、快速开始、错误码", 420.0, 380.0),
+            nb("内容", "content", "命令参考、快速开始、错误码"),
         )?;
-        w.at(now - 4 * D).create_board("docs", "英文翻译", "i18n", "", Some(Pos { x: 420.0, y: 590.0 }))?;
+        w.at(now - 4 * D).create_board("docs", "英文翻译", "i18n", "")?;
         w.at(now - 3 * D).create_project(
             "官网改版",
             "site",
             "新版首页与定价页，下周上线",
             Some("#3DDC97"),
-            Some(Pos { x: 0.0, y: 820.0 }),
-            nb("上线清单", "launch", "", 420.0, 800.0),
+            nb("上线清单", "launch", ""),
         )?;
 
         // ---------------- 标签 ----------------

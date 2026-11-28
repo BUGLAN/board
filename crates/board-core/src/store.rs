@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   color       TEXT NOT NULL,
+  -- 不再读写（原来无限画布上节点的位置，项目页已换成提交时间轴）；保留这两列，免得给旧库做删列迁移
   pos_x       REAL NOT NULL DEFAULT 0,
   pos_y       REAL NOT NULL DEFAULT 0,
   sort        INTEGER NOT NULL DEFAULT 0,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS boards (
   key         TEXT NOT NULL,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  -- 不再读写（原来无限画布上节点的位置，项目页已换成提交时间轴）；保留这两列，免得给旧库做删列迁移
   pos_x       REAL NOT NULL DEFAULT 0,
   pos_y       REAL NOT NULL DEFAULT 0,
   sort        INTEGER NOT NULL DEFAULT 0,
@@ -294,7 +296,6 @@ pub struct NewBoard {
     pub name: String,
     pub key: String,
     pub desc: String,
-    pub pos: Option<Pos>,
 }
 
 impl Store {
@@ -598,8 +599,7 @@ impl Store {
                 "default",
                 "",
                 Some(PROJECT_COLORS[0]),
-                None,
-                NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None },
+                NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new() },
             )
         })?;
         Ok(())
@@ -801,26 +801,26 @@ impl<'a> R<'a> {
         let mut projects: Vec<ProjectInfo> = Vec::new();
         {
             let mut st = conn.prepare(
-                "SELECT key, name, description, color, pos_x, pos_y, created_at, hidden_labels, repo, branch, dir, hidden
+                "SELECT key, name, description, color, created_at, hidden_labels, repo, branch, dir, hidden
                  FROM projects ORDER BY sort, created_at, key",
             )?;
             let rows = st.query_map([], |r| {
-                let hidden_labels: Option<String> = r.get(7)?;
+                let hidden_labels: Option<String> = r.get(5)?;
                 Ok(ProjectInfo {
                     key: r.get(0)?,
                     name: r.get(1)?,
                     desc: r.get(2)?,
                     color: r.get(3)?,
-                    pos: Pos { x: r.get(4)?, y: r.get(5)? },
-                    created_at: r.get(6)?,
+                    pos: OldPos::default(),
+                    created_at: r.get(4)?,
                     labels: vec![],
                     hidden_labels: hidden_labels
                         .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
                         .unwrap_or_else(crate::model::default_hidden_labels),
-                    repo: r.get(8)?,
-                    branch: r.get(9)?,
-                    dir: r.get(10)?,
-                    hidden: r.get(11)?,
+                    repo: r.get(6)?,
+                    branch: r.get(7)?,
+                    dir: r.get(8)?,
+                    hidden: r.get(9)?,
                     boards: vec![],
                 })
             })?;
@@ -831,7 +831,7 @@ impl<'a> R<'a> {
         for p in projects.iter_mut() {
             p.labels = labels_of(conn, &p.key)?;
             let mut st = conn.prepare(
-                "SELECT b.id, b.key, b.name, b.description, b.pos_x, b.pos_y, b.created_at,
+                "SELECT b.id, b.key, b.name, b.description, b.created_at,
                         COALESCE((SELECT MAX(at) FROM events e WHERE e.board = b.id), b.created_at), b.readme, b.auto
                  FROM boards b WHERE b.project = ?1 ORDER BY b.sort, b.created_at, b.key",
             )?;
@@ -843,14 +843,14 @@ impl<'a> R<'a> {
                         path: String::new(),
                         name: r.get(2)?,
                         desc: r.get(3)?,
-                        readme: r.get(8)?,
-                        auto: r.get::<_, i64>(9)? != 0,
+                        readme: r.get(6)?,
+                        auto: r.get::<_, i64>(7)? != 0,
                         // 仓库是项目的：白板上带一份给只看白板的地方用
                         repo: p.repo.clone(),
                         branch: p.branch.clone(),
-                        pos: Pos { x: r.get(4)?, y: r.get(5)? },
-                        created_at: r.get(6)?,
-                        updated_at: r.get(7)?,
+                        pos: OldPos::default(),
+                        created_at: r.get(4)?,
+                        updated_at: r.get(5)?,
                         counts: Counts::new(),
                         statuses: vec![],
                         holders: vec![],
@@ -1483,11 +1483,6 @@ pub struct W<'a> {
     pub(crate) boards_gone: bool,
 }
 
-/// 新节点在画布上的默认位置：项目在左列，白板在项目右侧依次往下排
-const LAYOUT_PROJECT_GAP: f64 = 320.0;
-const LAYOUT_BOARD_X: f64 = 420.0;
-const LAYOUT_BOARD_GAP: f64 = 200.0;
-
 impl<'a> W<'a> {
     pub fn now(&self) -> i64 {
         self.now
@@ -1556,7 +1551,6 @@ impl<'a> W<'a> {
         key: &str,
         desc: &str,
         color: Option<&str>,
-        pos: Option<Pos>,
         first: NewBoard,
     ) -> Result<String> {
         let name = Self::need_name(name, "项目")?;
@@ -1569,21 +1563,15 @@ impl<'a> W<'a> {
         if taken.is_some() {
             return Err(BoardError::usage(format!("项目标识「{key}」已被占用")));
         }
-        let (n, max_y, max_sort): (i64, Option<f64>, Option<i64>) = self.tx.query_row(
-            "SELECT COUNT(*), MAX(pos_y), MAX(sort) FROM projects",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
+        let (n, max_sort): (i64, Option<i64>) =
+            self.tx.query_row("SELECT COUNT(*), MAX(sort) FROM projects", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let color = Self::check_project_color(color, n as usize)?;
-        let pos = pos.unwrap_or(Pos { x: 0.0, y: max_y.map(|y| y + LAYOUT_PROJECT_GAP).unwrap_or(0.0) });
         self.tx.execute(
-            "INSERT INTO projects (key, name, description, color, pos_x, pos_y, sort, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![key, name, desc.trim(), color, pos.x, pos.y, max_sort.unwrap_or(-1) + 1, self.now],
+            "INSERT INTO projects (key, name, description, color, sort, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![key, name, desc.trim(), color, max_sort.unwrap_or(-1) + 1, self.now],
         )?;
         self.changed = true;
-        let first_pos = first.pos.or(Some(Pos { x: pos.x + LAYOUT_BOARD_X, y: pos.y - 10.0 }));
-        self.create_board(key, &first.name, &first.key, &first.desc, first_pos)?;
+        self.create_board(key, &first.name, &first.key, &first.desc)?;
         Ok(key.to_string())
     }
 
@@ -1641,7 +1629,7 @@ impl<'a> W<'a> {
 
     /* ---------------- 白板 ---------------- */
 
-    pub fn create_board(&mut self, project: &str, name: &str, key: &str, desc: &str, pos: Option<Pos>) -> Result<String> {
+    pub fn create_board(&mut self, project: &str, name: &str, key: &str, desc: &str) -> Result<String> {
         self.project_exists(project)?;
         let name = Self::need_name(name, "白板")?;
         let key = key.trim();
@@ -1655,21 +1643,11 @@ impl<'a> W<'a> {
         if taken.is_some() {
             return Err(BoardError::usage(format!("「{project}」里已经有标识为「{key}」的白板")));
         }
-        let (px, py): (f64, f64) =
-            self.tx.query_row("SELECT pos_x, pos_y FROM projects WHERE key = ?1", [project], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        let (max_y, max_sort): (Option<f64>, Option<i64>) = self.tx.query_row(
-            "SELECT MAX(pos_y), MAX(sort) FROM boards WHERE project = ?1",
-            [project],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let pos = pos.unwrap_or(Pos {
-            x: px + LAYOUT_BOARD_X,
-            y: max_y.map(|y| y + LAYOUT_BOARD_GAP).unwrap_or(py - 10.0),
-        });
+        let max_sort: Option<i64> =
+            self.tx.query_row("SELECT MAX(sort) FROM boards WHERE project = ?1", [project], |r| r.get(0))?;
         self.tx.execute(
-            "INSERT INTO boards (project, key, name, description, pos_x, pos_y, sort, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![project, key, name, desc.trim(), pos.x, pos.y, max_sort.unwrap_or(-1) + 1, self.now],
+            "INSERT INTO boards (project, key, name, description, sort, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![project, key, name, desc.trim(), max_sort.unwrap_or(-1) + 1, self.now],
         )?;
         insert_default_flow(self.tx, self.tx.last_insert_rowid())?;
         self.changed = true;
@@ -1780,29 +1758,6 @@ impl<'a> W<'a> {
             return Err(BoardError::new(ErrorCode::BoardNotFound, format!("白板「{path}」不存在")));
         }
         self.resolve(path)
-    }
-
-    /// 画布上拖动节点：只保存位置。拖回原位（取整后和库里的相同）不算变化，不涨 rev
-    pub fn set_pos(&mut self, kind: &str, id: &str, pos: Pos) -> Result<()> {
-        let (x, y) = (pos.x.round(), pos.y.round());
-        let (table, col, key): (&str, &str, rusqlite::types::Value) = match kind {
-            "project" => ("projects", "key", id.to_string().into()),
-            "board" => ("boards", "id", self.resolve_exact(id)?.id.into()),
-            _ => return Err(BoardError::usage(format!("未知的节点类型「{kind}」"))),
-        };
-        let old: Option<(f64, f64)> = self
-            .tx
-            .query_row(&format!("SELECT pos_x, pos_y FROM {table} WHERE {col} = ?1"), [&key], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?;
-        match old {
-            None => Err(BoardError::new(ErrorCode::BoardNotFound, format!("「{id}」不存在"))),
-            Some(old) if old == (x, y) => Ok(()),
-            Some(_) => {
-                self.tx.execute(&format!("UPDATE {table} SET pos_x = ?1, pos_y = ?2 WHERE {col} = ?3"), params![x, y, key])?;
-                self.changed = true;
-                Ok(())
-            }
-        }
     }
 
     /* ---------------- 标签（属于项目，项目下所有白板共用） ---------------- */

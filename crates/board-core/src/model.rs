@@ -465,10 +465,12 @@ impl Origin {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Pos {
-    pub x: f64,
-    pub y: f64,
+/// 工作区里项目、白板上的 `pos`：原来是无限画布上节点的位置，项目页换成提交时间轴后不再保存，固定是 `{x: 0, y: 0}`。
+/// 只为旧版 CLI 留着：它反序列化工作区时这一项必须有（没有就整个 `/api/workspace` 读不出来）；新版不读，旧版都升级后再删
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct OldPos {
+    x: f64,
+    y: f64,
 }
 
 /// 已定位的白板
@@ -523,7 +525,9 @@ pub struct BoardInfo {
     /// 所在项目的集成分支；空表示按原来的规则（AGENTS.md / CLAUDE.md，没写就用远端默认分支）。旧服务端没有这一项
     #[serde(default)]
     pub branch: String,
-    pub pos: Pos,
+    /// 见 [`OldPos`]
+    #[serde(skip_deserializing)]
+    pub pos: OldPos,
     pub created_at: i64,
     pub updated_at: i64,
     pub counts: Counts,
@@ -555,7 +559,9 @@ pub struct ProjectInfo {
     pub name: String,
     pub desc: String,
     pub color: String,
-    pub pos: Pos,
+    /// 见 [`OldPos`]
+    #[serde(skip_deserializing)]
+    pub pos: OldPos,
     pub created_at: i64,
     pub labels: Vec<Label>,
     /// 隐藏的标签：名称匹配任一条正则（不区分大小写）的标签不出现在侧栏、提示词菜单、标签选择器里（default/main#324）。

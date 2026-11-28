@@ -50,7 +50,7 @@ export function detail(c: Card): CardDetail {
 }
 
 export function workspace(over: Partial<Workspace> = {}): Workspace {
-  const board = (key: string) => ({ key, path: `p/${key}`, name: key, desc: '', pos: { x: 0, y: 0 }, createdAt: 0 });
+  const board = (key: string) => ({ key, path: `p/${key}`, name: key, desc: '', createdAt: 0 });
   return {
     rev: 1,
     now: 0,
@@ -60,7 +60,6 @@ export function workspace(over: Partial<Workspace> = {}): Workspace {
         name: 'P',
         desc: '',
         color: '#000000',
-        pos: { x: 0, y: 0 },
         createdAt: 0,
         labels: [
           { id: 1, name: 'bug', color: '#f00', uses: 1 },
@@ -68,7 +67,7 @@ export function workspace(over: Partial<Workspace> = {}): Workspace {
         ],
         boards: [board('a'), board('b')],
       },
-      { key: 'q', name: 'Q', desc: '', color: '#000000', pos: { x: 0, y: 0 }, createdAt: 0, labels: [{ id: 1, name: 'bug', color: '#f00', uses: 0 }], boards: [] },
+      { key: 'q', name: 'Q', desc: '', color: '#000000', createdAt: 0, labels: [{ id: 1, name: 'bug', color: '#f00', uses: 0 }], boards: [] },
     ],
     agents: [],
     hosts: [],

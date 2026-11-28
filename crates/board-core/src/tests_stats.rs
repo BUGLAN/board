@@ -367,8 +367,8 @@ fn idle_counts_gaps_of_fifteen_minutes_or_more() {
 fn project_and_all_add_up() {
     let mut s = store();
     s.write(BASE, Origin::ui(None), |w| {
-        w.create_board("default", "第二块", "second", "", None)?;
-        w.create_project("别的项目", "other", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None })
+        w.create_board("default", "第二块", "second", "")?;
+        w.create_project("别的项目", "other", "", None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new() })
     })
     .unwrap();
     let h = Actor::human();

@@ -18,7 +18,7 @@ fn search_crosses_boards_without_board_env() {
     // 再加一块白板：default/other（项目里有两块白板了，BOARD 要写全路径）
     board_core::Store::open(&s.db)
         .unwrap()
-        .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None))
+        .write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.create_board("default", "其他", "other", ""))
         .unwrap();
     // search 需要名字（--as / BOARD_AS），但不需要白板
     let mut me = s.env();

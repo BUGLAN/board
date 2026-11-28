@@ -2631,8 +2631,8 @@ fn host_keeps_reporting_while_a_new_project_clones() {
     board_core::Store::open(&rig.s.db)
         .unwrap()
         .write(board_core::now_ms(), board_core::Origin::ui(None), |w| {
-            let first = board_core::NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None };
-            w.create_project("大仓库", "big", "", None, None, first)?;
+            let first = board_core::NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new() };
+            w.create_project("大仓库", "big", "", None, first)?;
             w.set_repo_branch("big", Some(&url), None)
         })
         .unwrap();

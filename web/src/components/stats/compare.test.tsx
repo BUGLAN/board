@@ -22,7 +22,6 @@ const project = (key: string, name: string, color: string): ProjectInfo => ({
   name,
   desc: `${name}说明`,
   color,
-  pos: { x: 0, y: 0 },
   createdAt: now - 30 * 24 * 3600_000,
   labels: [],
   boards: [
@@ -32,7 +31,6 @@ const project = (key: string, name: string, color: string): ProjectInfo => ({
       name: '主白板',
       desc: '',
       readme: '',
-      pos: { x: 0, y: 0 },
       createdAt: now - 10 * 24 * 3600_000,
       updatedAt: now,
       counts: {},

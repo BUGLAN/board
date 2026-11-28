@@ -219,7 +219,7 @@ fn legacy_report(name: &str, instance: &str) -> HostReport {
 #[test]
 fn legacy_host_dirs_still_work_and_upgrade_to_a_workspace() {
     let mut s = store();
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
     // 旧版 board host 上报白板标识、不报工作空间：导出不了工作空间，但存着的目录照样让它派卡
     let w = beat(&mut s, T0, &legacy_report("mbp", "i1")).unwrap();
     assert!(w.host.workspace.as_ref().is_none_or(|x| x.path.is_empty()), "白板标识不是路径，导出不了工作空间");
@@ -228,7 +228,7 @@ fn legacy_host_dirs_still_work_and_upgrade_to_a_workspace() {
 
     // 老数据（升级前逐块配的 `[host] dirs`）：重新连上时导出成工作空间，几块白板取共同的上两级
     let mut s2 = store();
-    s2.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s2.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
     let mut rep = report("old", "i1", vec![]);
     rep.workspace = None;
     rep.dirs = vec![
@@ -259,7 +259,7 @@ fn legacy_host_dirs_still_work_and_upgrade_to_a_workspace() {
 #[test]
 fn workspace_keeps_dir_overrides_and_rejects_their_removal() {
     let mut s = store();
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
     let mut rep = report("mbp", "i1", vec![]);
     rep.workspace = Some(HostWorkspace {
         path: "/tmp".into(),
@@ -332,8 +332,7 @@ fn workspace_update_drops_deleted_boards_and_stale_overrides() {
             "oss",
             "",
             None,
-            None,
-            NewBoard { name: "主".into(), key: "x".into(), desc: String::new(), pos: None },
+            NewBoard { name: "主".into(), key: "x".into(), desc: String::new() },
         )
         .map(|_| ())
     })
@@ -482,12 +481,12 @@ fn project_dir_moves_the_machines_directory() {
     assert_eq!(s.read(|r| r.resolve(B)).unwrap().path(), B);
 
     // 不同项目不能用同一个目录；项目标识也不能和别的项目填的目录重名
-    ui(&mut s, &|w| w.create_project("站点", "site", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None }).map(|_| ())).unwrap();
+    ui(&mut s, &|w| w.create_project("站点", "site", "", None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new() }).map(|_| ())).unwrap();
     let e = ui(&mut s, &|w| w.set_project_dir("site", "Board")).unwrap_err();
     assert!(e.message.contains("default"), "{}", e.message);
     let e = ui(&mut s, &|w| w.set_project_dir("default", "site")).unwrap_err();
     assert!(e.message.contains("site"), "{}", e.message);
-    ui(&mut s, &|w| w.create_project("板", "board", "", None, None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new(), pos: None }).map(|_| ())).unwrap();
+    ui(&mut s, &|w| w.create_project("板", "board", "", None, NewBoard { name: "主".into(), key: "main".into(), desc: String::new() }).map(|_| ())).unwrap();
     let e = ui(&mut s, &|w| w.set_project_dir("board", "")).unwrap_err();
     assert!(e.message.contains("default"), "{}", e.message);
     // 非法的不改
@@ -502,8 +501,8 @@ fn project_dir_moves_the_machines_directory() {
 #[test]
 fn fixed_dirs_are_read_only_and_missing_dir_can_be_cloned() {
     let mut s = store();
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "第三块", "third", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "第三块", "third", "")).unwrap();
     // `--dir default/main=<路径>` 单独覆盖一块白板，其他白板由工作空间派生
     let mut rep = report("mbp", "i1", vec![]);
     rep.workspace = Some(HostWorkspace {
@@ -625,7 +624,7 @@ fn dispatch_validation_follows_the_table() {
     assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("mycli")).unwrap_err().code, ErrorCode::AgentNotOnHost);
     assert_eq!(dispatch(&mut s, T0, a, "mbp", Some("codex")).unwrap_err().code, ErrorCode::AgentNotOnHost);
     // 有工作空间的机器就视为有这块白板的目录：没在它上面见到的白板也派得出去
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
     let c = s
         .write(T0, Origin::ui(None), |w| {
             let b = w.resolve("default/other")?;
@@ -1242,7 +1241,7 @@ fn restarted_host_without_process_reports_crash() {
 #[test]
 fn cron_round_fills_slots_rotates_boards_and_ends() {
     let mut s = store();
-    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "", None)).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_board("default", "其他", "other", "")).unwrap();
     let mut rep = report("mbp", "i1", vec![]);
     rep.dirs.push(HostDir { board: "default/other".into(), path: "/tmp/other".into(), ..Default::default() });
     beat(&mut s, T0, &rep).unwrap();
@@ -2642,7 +2641,7 @@ fn rules_count_unmatched_cards() {
     let lc = label(&mut s, "claude");
     let a = new_card(&mut s, T0, "A");
     new_card(&mut s, T0, "B");
-    let docs = ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    let docs = ui(&mut s, |w| w.create_board("default", "文档", "docs", "")).unwrap();
     s.write(T0, Origin::ui(None), |w| {
         let b = w.resolve(&docs)?;
         w.exec(&b, &Actor::human(), Cmd::New { title: "文档卡".into(), body: None, column: None, top: false, labels: vec![], from: None })
@@ -3360,7 +3359,7 @@ fn board_repo_and_branch_are_optional_and_validated() {
 fn repo_belongs_to_the_project_and_all_its_boards_share_it() {
     let mut s = store();
     s.write(T0, Origin::ui(None), |w| {
-        w.create_board("default", "文档", "docs", "", None)
+        w.create_board("default", "文档", "docs", "")
     })
     .unwrap();
     let ws = |s: &Store| s.read(|r| r.workspace(T0)).unwrap().projects[0].clone();
@@ -3423,7 +3422,7 @@ fn old_database_moves_board_repo_to_the_project() {
         let mut s = Store::open(&path).unwrap();
         s.ensure_default(T0).unwrap();
         s.write(T0, Origin::ui(None), |w| {
-            w.create_board("default", "文档", "docs", "", None)
+            w.create_board("default", "文档", "docs", "")
         })
         .unwrap();
     }
@@ -5094,7 +5093,7 @@ fn project_repo_must_be_cloned_right_before_the_host_takes_its_cards() {
     assert_eq!(blocks(&s), vec![("mbp".to_string(), B.to_string(), "BOARD_NOT_ON_HOST".to_string())]);
     assert!(pull(&mut s, T0 + S).is_none(), "目录不存在的项目不领");
     // 同一个项目的另一块白板共用这个目录：它还没被这台机器报过，也按这个目录的状态算
-    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "")).unwrap();
     assert_eq!(blocks(&s).len(), 2, "{:?}", blocks(&s));
     // 不是 git 仓库
     beat(&mut s, T0 + 2 * S, &dir_report("not_git", None)).unwrap();
@@ -5123,7 +5122,7 @@ fn blocks_list_every_host_board_pair_that_cannot_take_cards() {
     assert_eq!(ws.blocks.len(), 1);
     assert_eq!((ws.blocks[0].code.as_str(), ws.blocks[0].why.as_str()), ("BOARD_NOT_ON_HOST", "还没有配工作空间"));
     s.write(T0, Origin::ui(None), |w| {
-        w.create_board("default", "文档", "docs", "", None)
+        w.create_board("default", "文档", "docs", "")
     })
     .unwrap();
     let ws = s.read(|r| r.workspace(T0)).unwrap();
@@ -5766,7 +5765,7 @@ fn auto_claim_follows_the_board_switch_and_sees_new_boards() {
     assert!(pull_on(&mut s, T0 + S, "mbp", "i1").is_none(), "不参与的白板不领");
     assert_eq!(dispatch(&mut s, T0 + S, a, "mbp", None).unwrap().state, "queued", "手动派发照常");
     // 机器上报之后才建的白板：没有出现在它上报的目录里，照样被领到
-    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "")).unwrap();
     let l = s.read(|r| r.labels("default")).unwrap().into_iter().find(|l| l.name == "deepseek").unwrap();
     let c = s
         .write(T0, Origin::ui(None), |w| {
@@ -5788,8 +5787,8 @@ fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
     let mut s = store();
     beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
     assert_eq!(host(&s, T0).dirs.iter().map(|d| d.board.as_str()).collect::<Vec<_>>(), vec![B]);
-    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
-    s.write(T0, Origin::ui(None), |w| w.create_project("新项目", "newp", "", None, None, NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new(), pos: None })).unwrap();
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "")).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.create_project("新项目", "newp", "", None, NewBoard { name: "主白板".into(), key: "main".into(), desc: String::new() })).unwrap();
     let w = beat(&mut s, T0 + S, &report("mbp", "i1", vec![])).unwrap();
     let got: Vec<(String, String)> = w.host.dirs.iter().map(|d| (d.board.clone(), d.path.clone())).collect();
     assert!(got.contains(&("default/docs".into(), "/tmp/default".into())), "{got:?}");
@@ -5813,7 +5812,7 @@ fn boards_created_after_the_host_started_reach_it_with_their_dirs() {
     // 旧版 board host（没有工作空间路径）：不替它派生
     let mut s = store();
     beat(&mut s, T0, &legacy_report("old", "o1")).unwrap();
-    ui(&mut s, |w| w.create_board("default", "文档", "docs", "", None)).unwrap();
+    ui(&mut s, |w| w.create_board("default", "文档", "docs", "")).unwrap();
     let h = s.read(|r| r.host("old", T0)).unwrap();
     assert!(!h.dirs.iter().any(|d| d.board == "default/docs"), "{:?}", h.dirs.iter().map(|d| &d.board).collect::<Vec<_>>());
 }
