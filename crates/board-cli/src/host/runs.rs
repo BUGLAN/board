@@ -166,10 +166,24 @@ fn dsh_patch_file(run: &Path, id: i64) -> PathBuf {
     run.join(format!("{id}.dsh-patch.yml"))
 }
 
-/// 删掉一次派发/对话的供应商和 dsh 补丁文件（里面有 key）
+/// Codex 这次的模型目录、包装脚本（sh、Windows 的 .cmd）（#726，见 codexmodels.rs）
+fn codex_files(run: &Path, id: i64) -> CodexRun {
+    CodexRun {
+        models: run.join(format!("{id}.codex-models.json")),
+        sh: run.join(format!("{id}.codex")),
+        cmd: run.join(format!("{id}.codex.cmd")),
+        efforts: vec![],
+    }
+}
+
+/// 删掉一次派发/对话的供应商和 dsh 补丁文件（里面有 key），以及 Codex 这次的模型目录和包装脚本
 pub(super) fn remove_secret_files(run: &Path, id: i64) {
     let _ = std::fs::remove_file(provider_file(run, id));
     let _ = std::fs::remove_file(dsh_patch_file(run, id));
+    let c = codex_files(run, id);
+    for p in [c.models, c.sh, c.cmd] {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 /// 启动过程中兜底删密钥文件：成功建出 Run / ChatRun 后由它自己的 cleanup 接着管
@@ -186,6 +200,10 @@ impl SecretFiles {
         }
         if role.and_then(|r| r.dsh_patch.as_ref()).is_some() {
             paths.push(dsh_patch_file(run, id));
+        }
+        if role.and_then(|r| r.codex.as_ref()).is_some() {
+            let c = codex_files(run, id);
+            paths.extend([c.models, c.sh, c.cmd]);
         }
         SecretFiles { paths, keep: false }
     }
@@ -330,6 +348,19 @@ pub(super) struct RoleRun {
     pub(super) dsh_key: Option<String>,
     /// 「官方订阅」的角色（#667）：board acp 开会话前确认 agent 用的是订阅（`--auth subscription`）
     pub(super) subscription: bool,
+    /// Codex 用供应商、填了模型时：这次的模型目录和包装脚本（#726，见 [`codex_catalog`]）
+    pub(super) codex: Option<CodexRun>,
+}
+
+/// Codex 这一个进程的模型目录（#726）：文件放在 run 目录里，按派发 ID 命名，结束时删
+pub(super) struct CodexRun {
+    /// 只有角色模型一条的目录（`model_catalog_json`）
+    pub(super) models: PathBuf,
+    /// 包装脚本：sh（含 WSL 里的 Codex）、Windows 的 .cmd
+    pub(super) sh: PathBuf,
+    pub(super) cmd: PathBuf,
+    /// 供应商给这个模型标的、Codex 能设的强度
+    pub(super) efforts: Vec<String>,
 }
 
 /// Claude Code 的自定义模型选项：进 SDK 的模型表（[文档](https://code.claude.com/docs/en/model-config#add-a-custom-model-option)）
@@ -345,6 +376,51 @@ pub(super) fn role_vars(agent: &str, role: Option<&RoleRun>) -> Vec<(String, Str
         "claude" => vec![(CLAUDE_CUSTOM_MODEL_ENV.to_string(), r.model.clone())],
         _ => vec![],
     }
+}
+
+/// 在启动环境里跑 `<codex> debug models --bundled` 的时限：不联网，平常不到 0.1 秒，登录 shell、WSL 起得慢些
+const CODEX_BUNDLED_LIMIT: Duration = Duration::from_secs(60);
+
+/// Codex 用供应商、填了模型的派发（#726）：在启动环境里取 Codex 自带的模型目录（`debug models --bundled`），
+/// 再按 [`apply_codex_catalog`] 写这次的目录和包装脚本、换 `CODEX_PATH`。取不到时出错（不按默认模型跑）。
+/// 返回 WSL 里要换成 WSL 路径的变量
+pub(super) fn codex_catalog(env: &Env, cx: &CodexRun, model: &str, effort: &str, vars: &mut Vec<(String, String)>) -> std::result::Result<Vec<String>, String> {
+    let bin = vars.iter().find(|(k, _)| k == "CODEX_PATH").map(|(_, v)| v.clone()).ok_or("找不到这台机器上的 Codex 程序：生成不了这次的模型目录")?;
+    let args = ["debug", "models", "--bundled"].map(String::from);
+    let out = envs::run_out(env.command(&bin, &args, None, false), CODEX_BUNDLED_LIMIT)
+        .ok_or_else(|| format!("取不到 Codex 自带的模型目录：{bin} debug models --bundled 没有跑完"))?;
+    if !out.ok {
+        let why = out.stderr.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+        return Err(format!("取不到 Codex 自带的模型目录（{bin} debug models --bundled）：{why}。Codex 太旧时先升级"));
+    }
+    apply_codex_catalog(&out.stdout, cx, model, effort, vars, cfg!(windows) && env.wsl().is_none(), env.wsl().is_some())
+}
+
+/// 按 Codex 自带的目录给角色的模型写这次的目录文件和包装脚本（`windows`：Windows 上的 .cmd，否则 sh），`CODEX_PATH`
+/// 换成包装脚本，原来的 Codex、目录文件放进 [`codexmodels::BIN_ENV`]、[`codexmodels::MODELS_ENV`]。角色的模型本来就在
+/// 自带目录里时什么都不改。返回 WSL 里（`wsl`）要换成 WSL 路径的变量：包装脚本和目录文件在 Windows 这边的 run 目录里
+pub(super) fn apply_codex_catalog(bundled: &str, cx: &CodexRun, model: &str, effort: &str, vars: &mut Vec<(String, String)>, windows: bool, wsl: bool) -> std::result::Result<Vec<String>, String> {
+    use crate::codexmodels;
+    let Some(entry) = codexmodels::entry(bundled, model, &cx.efforts, effort)? else { return Ok(vec![]) };
+    let write = |p: &Path, text: &str| -> std::result::Result<(), String> {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        std::fs::write(p, text).map_err(|e| format!("无法写 {}：{e}", p.display()))
+    };
+    write(&cx.models, &codexmodels::catalog(&entry))?;
+    let script = if windows { &cx.cmd } else { &cx.sh };
+    write(script, &codexmodels::wrapper(windows))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("无法设 {} 可执行：{e}", script.display()))?;
+    }
+    let slot = vars.iter_mut().find(|(k, _)| k == "CODEX_PATH").ok_or("找不到这台机器上的 Codex 程序：生成不了这次的模型目录")?;
+    let bin = std::mem::replace(&mut slot.1, script.display().to_string());
+    vars.push((codexmodels::BIN_ENV.to_string(), bin));
+    vars.push((codexmodels::MODELS_ENV.to_string(), cx.models.display().to_string()));
+    Ok(if wsl { vec!["CODEX_PATH".to_string(), codexmodels::MODELS_ENV.to_string()] } else { vec![] })
 }
 
 /// 写只有自己能读的文件（里面有 key）
@@ -514,7 +590,12 @@ impl Host<'_> {
         // 按角色加的变量和适配器要的一起交给 launch_env：WSL 里的 agent 也经 WSLENV 收到
         let mut vars = spec.acp_vars(check);
         vars.extend(role_vars(&spec.id, role));
-        for (k, v) in launch_env(vars, &prog, env.wsl().is_some(), &self.host_dir().join("npm-cache")) {
+        // Codex 用供应商、填了模型：换上这次的模型目录（#726）；返回的是 WSL 里要换成 WSL 路径的变量
+        let paths = match role.and_then(|r| r.codex.as_ref().map(|cx| (r, cx))) {
+            Some((r, cx)) => codex_catalog(env, cx, &r.model, &r.effort, &mut vars)?,
+            None => vec![],
+        };
+        for (k, v) in launch_env(vars, &prog, env.wsl().is_some(), &paths, &self.host_dir().join("npm-cache")) {
             c.env(k, v);
         }
         // dsh 用角色的供应商：key 只给这一个进程（补丁里写的是环境变量名）
@@ -534,7 +615,7 @@ impl Host<'_> {
         }
         let model = d.model.clone().unwrap_or_default();
         let effort = d.effort.clone().unwrap_or_default();
-        let mut out = RoleRun { model: model.clone(), effort: effort.clone(), provider_file: None, dsh_patch: None, dsh_key: None, subscription: false };
+        let mut out = RoleRun { model: model.clone(), effort: effort.clone(), provider_file: None, dsh_patch: None, dsh_key: None, subscription: false, codex: None };
         if d.provider.is_empty() {
             return Ok(Some(out));
         }
@@ -555,6 +636,10 @@ impl Host<'_> {
                 let _ = std::fs::create_dir_all(&self.run);
                 write_secret(&f, &v.to_string()).map_err(|e| format!("无法写 {}：{e}", f.display()))?;
                 out.provider_file = Some(f);
+                // Codex：模型下拉只留自带目录里网关也列了的，自定义网关模型要这次带上目录（#726）
+                if d.agent == "codex" && !model.is_empty() {
+                    out.codex = Some(CodexRun { efforts: board_core::providers::writable_efforts("codex", p, &model), ..codex_files(&self.run, d.id) });
+                }
             }
             crate::providersync::Route::Dsh { patch, key } => {
                 out.dsh_patch = Some((dsh_patch_file(&self.run, d.id), patch));

@@ -15,6 +15,7 @@ mod backend;
 mod base;
 mod card;
 mod code;
+mod codexmodels;
 mod config;
 mod doctor;
 mod envs;

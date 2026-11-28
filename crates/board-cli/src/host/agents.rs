@@ -746,15 +746,16 @@ pub(super) const NPX_QUIET: &[(&str, &str)] = &[("npm_config_update_notifier", "
 
 /// `board acp` 要带的环境变量：适配器要的（[`Spec::acp_vars`]）；入口是 npx 时加上 [`NPX_QUIET`]，npm 缓存放在
 /// board host 自己的目录里（npm_cache，不受用户 ~/.npm 权限出错的影响；WSL 里用它自己的）。
-/// WSL 里这些都经 WSLENV 传进去（BOARD_CONFIG、BOARD_PIDFILE 换成 WSL 路径，不传 BOARD_EXE；这些原样传）
-pub(super) fn launch_env(mut vars: Vec<(String, String)>, prog: &str, wsl: bool, npm_cache: &Path) -> Vec<(String, std::ffi::OsString)> {
+/// WSL 里这些都经 WSLENV 传进去（BOARD_CONFIG、BOARD_PIDFILE 换成 WSL 路径，不传 BOARD_EXE；这些原样传，`paths` 里的
+/// 是 Windows 这边的路径，也换成 WSL 路径，例如 Codex 这次的包装脚本，#726）
+pub(super) fn launch_env(mut vars: Vec<(String, String)>, prog: &str, wsl: bool, paths: &[String], npm_cache: &Path) -> Vec<(String, std::ffi::OsString)> {
     let npx = prog == "npx";
     if npx {
         vars.extend(NPX_QUIET.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     }
     let mut out: Vec<(String, std::ffi::OsString)> = vars.iter().map(|(k, v)| (k.clone(), v.into())).collect();
     if wsl {
-        let extra: Vec<String> = vars.iter().map(|(k, _)| format!("{k}/u")).collect();
+        let extra: Vec<String> = vars.iter().map(|(k, _)| format!("{k}/{}", if paths.contains(k) { "pu" } else { "u" })).collect();
         out.push(("WSLENV".into(), envs::wslenv(std::env::var("WSLENV").ok().as_deref(), &extra).into()));
     } else if npx {
         out.push(("npm_config_cache".into(), npm_cache.into()));

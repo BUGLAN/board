@@ -242,30 +242,92 @@ fn secret_files_are_removed_on_cleanup_and_start_failure() {
     let provider = dir.path().join("9.provider.json");
     let patch = dir.path().join("9.dsh-patch.yml");
     let prompt = dir.path().join("9.prompt");
-    for path in [&provider, &patch, &prompt] {
+    // Codex 这次的模型目录、包装脚本（#726）一起删
+    let codex = |id: &str| ["codex-models.json", "codex", "codex.cmd"].map(|x| dir.path().join(format!("{id}.{x}")));
+    for path in [&provider, &patch, &prompt].into_iter().chain(&codex("9")) {
         std::fs::write(path, "secret").unwrap();
     }
     run.cleanup();
     assert!(!provider.exists() && !patch.exists() && !prompt.exists(), "派发收尾要删密钥文件");
+    assert!(codex("9").iter().all(|p| !p.exists()), "派发收尾要删 Codex 的模型目录和包装脚本");
 
     let chat = test_chat_run(&dir.path().join("7.log"));
     let provider = dir.path().join("-7.provider.json");
     let patch = dir.path().join("-7.dsh-patch.yml");
-    for path in [&provider, &patch] {
+    for path in [&provider, &patch].into_iter().chain(&codex("-7")) {
         std::fs::write(path, "secret").unwrap();
     }
     chat.cleanup();
     assert!(!provider.exists() && !patch.exists(), "对话收尾要删密钥文件");
+    assert!(codex("-7").iter().all(|p| !p.exists()), "对话收尾要删 Codex 的模型目录和包装脚本");
 
     let provider = dir.path().join("9.provider.json");
     let patch = dir.path().join("9.dsh-patch.yml");
-    let role = RoleRun { model: String::new(), effort: String::new(), provider_file: Some(provider.clone()), dsh_patch: Some((patch.clone(), String::new())), dsh_key: None, subscription: false };
+    let cx = CodexRun { models: PathBuf::new(), sh: PathBuf::new(), cmd: PathBuf::new(), efforts: vec![] };
+    let role = RoleRun { model: String::new(), effort: String::new(), provider_file: Some(provider.clone()), dsh_patch: Some((patch.clone(), String::new())), dsh_key: None, subscription: false, codex: Some(cx) };
     {
         let _cleanup = SecretFiles::for_role(dir.path(), 9, Some(&role));
-        std::fs::write(&provider, "secret").unwrap();
-        std::fs::write(&patch, "secret").unwrap();
+        for path in [&provider, &patch].into_iter().chain(&codex("9")) {
+            std::fs::write(path, "secret").unwrap();
+        }
     }
     assert!(!provider.exists() && !patch.exists(), "启动中途失败也要删密钥文件");
+    assert!(codex("9").iter().all(|p| !p.exists()), "启动中途失败也要删 Codex 的模型目录和包装脚本");
+}
+
+/// #726：Codex 用供应商、填了模型时写这次的目录和包装脚本，CODEX_PATH 换成包装脚本，原来的 Codex 和目录文件放进环境变量；
+/// WSL 里包装脚本、目录文件按路径换；角色的模型本来就在 Codex 自带目录里时什么都不改
+#[test]
+fn codex_catalog_wraps_codex_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let cx = CodexRun {
+        models: dir.path().join("5.codex-models.json"),
+        sh: dir.path().join("5.codex"),
+        cmd: dir.path().join("5.codex.cmd"),
+        efforts: vec!["low".into(), "max".into()],
+    };
+    let bundled = r#"{"models":[{"slug":"gpt-a","visibility":"list","priority":1,"base_instructions":"A"}]}"#;
+    let base = || vec![("CODEX_PATH".to_string(), "/usr/local/bin/codex".to_string()), ("X".to_string(), "1".to_string())];
+
+    let mut vars = base();
+    assert_eq!(apply_codex_catalog(bundled, &cx, "group/4.1f", "max", &mut vars, false, false).unwrap(), Vec::<String>::new());
+    let get = |vars: &[(String, String)], k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    assert_eq!(get(&vars, "CODEX_PATH"), Some(cx.sh.display().to_string()));
+    assert_eq!(get(&vars, crate::codexmodels::BIN_ENV), Some("/usr/local/bin/codex".into()));
+    assert_eq!(get(&vars, crate::codexmodels::MODELS_ENV), Some(cx.models.display().to_string()));
+    assert_eq!(get(&vars, "X"), Some("1".into()));
+    let cat: Value = serde_json::from_str(&std::fs::read_to_string(&cx.models).unwrap()).unwrap();
+    assert_eq!(cat["models"][0]["slug"], "group/4.1f");
+    assert_eq!(cat["models"][0]["default_reasoning_level"], "max");
+    assert_eq!(std::fs::read_to_string(&cx.sh).unwrap(), crate::codexmodels::wrapper(false));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&cx.sh).unwrap().permissions().mode() & 0o111, 0o111, "包装脚本要能执行");
+    }
+
+    // Windows：.cmd
+    let mut vars = base();
+    apply_codex_catalog(bundled, &cx, "group/4.1f", "", &mut vars, true, false).unwrap();
+    assert_eq!(get(&vars, "CODEX_PATH"), Some(cx.cmd.display().to_string()));
+    assert_eq!(std::fs::read_to_string(&cx.cmd).unwrap(), crate::codexmodels::wrapper(true));
+
+    // WSL：sh，包装脚本和目录文件经 WSLENV 换成 WSL 路径，原来的 Codex（WSL 里的路径）原样传
+    let mut vars = base();
+    let paths = apply_codex_catalog(bundled, &cx, "group/4.1f", "", &mut vars, false, true).unwrap();
+    assert_eq!(paths, vec!["CODEX_PATH".to_string(), crate::codexmodels::MODELS_ENV.to_string()]);
+    let out = launch_env(vars, "npx", true, &paths, Path::new("/tmp/npm-cache"));
+    let wslenv = out.iter().find(|(k, _)| k == "WSLENV").map(|(_, v)| v.to_string_lossy().to_string()).unwrap_or_default();
+    assert!(wslenv.contains("CODEX_PATH/pu") && wslenv.contains("BOARD_CODEX_MODELS/pu") && wslenv.contains("BOARD_CODEX_BIN/u"), "{wslenv}");
+    assert!(!wslenv.contains("BOARD_CODEX_BIN/pu") && wslenv.contains(":X/u"), "{wslenv}");
+
+    // 角色的模型在 Codex 自带目录里：不包装
+    let mut vars = base();
+    assert!(apply_codex_catalog(bundled, &cx, "gpt-a", "", &mut vars, false, false).unwrap().is_empty());
+    assert_eq!(vars, base());
+    // 找不到 Codex 程序：出错
+    let mut vars = vec![];
+    assert!(apply_codex_catalog(bundled, &cx, "group/4.1f", "", &mut vars, false, false).unwrap_err().contains("找不到"));
 }
 
 /// #727：Claude Code 按角色用供应商、填了模型时，给这个进程带上自定义模型选项（网关只列自定义模型时才设得上）；
@@ -279,6 +341,7 @@ fn role_vars_add_claude_custom_model_only_for_provider_roles() {
         dsh_patch: None,
         dsh_key: None,
         subscription,
+        codex: None,
     };
     let custom = vec![(CLAUDE_CUSTOM_MODEL_ENV.to_string(), "group/4.1f".to_string())];
     assert_eq!(role_vars("claude", Some(&role("group/4.1f", true, false))), custom);
@@ -289,7 +352,7 @@ fn role_vars_add_claude_custom_model_only_for_provider_roles() {
     assert!(role_vars("codex", Some(&role("group/4.1f", true, false))).is_empty());
     assert!(role_vars("dsh", Some(&role("group/4.1f", true, false))).is_empty());
     // WSL 里的 Claude Code 也要收到：经 WSLENV 传进去
-    let out = launch_env(custom, "npx", true, Path::new("/tmp/npm-cache"));
+    let out = launch_env(custom, "npx", true, &[], Path::new("/tmp/npm-cache"));
     let wslenv = out.iter().find(|(k, _)| k == "WSLENV").map(|(_, v)| v.to_string_lossy().to_string()).unwrap_or_default();
     assert!(wslenv.contains(&format!("{CLAUDE_CUSTOM_MODEL_ENV}/u")), "{wslenv}");
 }
@@ -600,18 +663,18 @@ fn npx_entry_keeps_npm_quiet() {
     let cache = Path::new("/h/npm-cache");
     let get = |v: &[(String, std::ffi::OsString)], k: &str| v.iter().find(|(x, _)| x == k).map(|(_, v)| v.to_string_lossy().into_owned());
     let path = || vec![("CODEX_PATH".to_string(), "/bin/codex".to_string())];
-    let out = launch_env(path(), "npx", false, cache);
+    let out = launch_env(path(), "npx", false, &[], cache);
     for k in ["npm_config_update_notifier", "npm_config_fund", "npm_config_audit"] {
         assert_eq!(get(&out, k).as_deref(), Some("false"), "{k}");
     }
     assert_eq!((get(&out, "npm_config_cache").as_deref(), get(&out, "CODEX_PATH").as_deref()), (Some("/h/npm-cache"), Some("/bin/codex")));
     assert!(get(&out, "WSLENV").is_none());
-    let out = launch_env(path(), "npx", true, cache);
+    let out = launch_env(path(), "npx", true, &[], cache);
     let w = get(&out, "WSLENV").unwrap();
     assert!(w.contains("npm_config_update_notifier/u") && w.contains("npm_config_fund/u") && w.contains("CODEX_PATH/u"), "{w}");
     assert_eq!((get(&out, "npm_config_update_notifier").as_deref(), get(&out, "npm_config_cache")), (Some("false"), None), "WSL 里的 npm 用它自己的缓存");
     // 入口不是 npx（dsh 自己讲 ACP）：只带适配器要的
-    let out = launch_env(vec![("DSH_PERMISSION_MODE".into(), "danger-full-access".into())], "dsh", false, cache);
+    let out = launch_env(vec![("DSH_PERMISSION_MODE".into(), "danger-full-access".into())], "dsh", false, &[], cache);
     assert_eq!(out.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["DSH_PERMISSION_MODE"]);
 }
 
