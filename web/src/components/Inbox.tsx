@@ -74,6 +74,8 @@ export const useInbox = create<InboxUI>(() => ({
   view: savedView === 'one' ? 'one' : 'list', focus: null, page: 'inbox', reverse: pref.get<boolean>('inboxReverse', false) === true,
 }));
 const setInbox = (p: Partial<InboxUI>) => useInbox.setState(p);
+/** 上面这些状态是哪块白板的：换了白板才清空（InboxPage 每次切回「未整理」Tab 都重新挂载） */
+let inboxPath: string | null = null;
 const setGroup = (group: Group) => {
   setInbox({ group });
   pref.set('inboxGroup', group);
@@ -418,8 +420,14 @@ export function InboxPage() {
   const [sent, setSent] = useState<number | null>(null);
   const newCount = useMemo(() => (all ?? []).filter(c => entryIsNew(path, c) && (sent == null || c.createdAt > sent)).length, [all, path, sent]);
 
-  // 换白板：勾选、展开、来源筛选清空
-  useEffect(() => setInbox({ checked: [], open: null, src: null, merge: null, focus: null, page: 'inbox' }), [path]);
+  // 换白板：勾选、展开、来源筛选清空。这一页只在当前 Tab 挂载，切到白板再切回来会重新挂载：
+  // 只在白板真的换了时才清（#682），子页、筛选、逐条视图停在哪、合并预览里的改动都留着
+  useEffect(() => {
+    if (inboxPath === path) return;
+    const first = inboxPath == null;
+    inboxPath = path;
+    if (!first) setInbox({ checked: [], open: null, src: null, merge: null, focus: null, page: 'inbox' });
+  }, [path]);
   // 已经不在「未整理」里的条目从勾选里去掉（整理走了、别的窗口删了）
   useEffect(() => {
     if (!all) return;

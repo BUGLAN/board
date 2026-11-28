@@ -166,6 +166,38 @@ describe('白板页的定时建卡弹窗', () => {
     expect(JSON.parse(String((sent![1] as RequestInit).body))).toMatchObject({ pick: 'host', host: 'mbp', profile: 'p1' });
   });
 
+  it('表单里输入时 Esc 先退出输入框、再按一次才关；改过表单后点遮罩不关（#682）', async () => {
+    act(() => useData.setState({ ws: data(), path: 'p/a' }));
+    await act(async () => root.render(<CardCronDialog path="p/a" />));
+    act(() => openCardCrons('p/a'));
+    act(() => [...dialog().querySelectorAll('button')].find(b => b.textContent?.includes('加一条定时建卡'))!.click());
+    const name = dialog().querySelector<HTMLInputElement>('.cc-form input.input')!;
+    act(() => name.focus());
+    act(() => name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(useUI.getState().cardCrons).toBe('p/a');
+    expect(document.activeElement).not.toBe(name);
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, '每周清理');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => document.querySelector<HTMLElement>('.scrim')!.click());
+    expect(useUI.getState().cardCrons).toBe('p/a');
+    expect(name.value).toBe('每周清理');
+    // 不在输入框里：Esc 照常关
+    esc();
+    expect(useUI.getState().cardCrons).toBe(null);
+  });
+
+  it('表单没改过：点遮罩照常关', async () => {
+    act(() => useData.setState({ ws: data(), path: 'p/a' }));
+    await act(async () => root.render(<CardCronDialog path="p/a" />));
+    act(() => openCardCrons('p/a'));
+    act(() => [...dialog().querySelectorAll('button')].find(b => b.textContent?.includes('加一条定时建卡'))!.click());
+    expect(dialog().querySelector('.cc-form')).not.toBeNull();
+    act(() => document.querySelector<HTMLElement>('.scrim')!.click());
+    expect(useUI.getState().cardCrons).toBe(null);
+  });
+
   it('别的白板的弹窗不开', async () => {
     act(() => useData.setState({ ws: data(), path: 'p/a' }));
     await act(async () => root.render(<CardCronDialog path="p/a" />));

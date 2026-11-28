@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import { LABEL_COLORS } from '../../lib/schema';
 import { hiddenBy, hiddenRules, ruleError, visibleLabels } from '../../lib/sidebarLabels';
 import { cx, replay } from '../../lib/util';
-import { deleteLabelPatch, editLabelPatch, hiddenLabelsKey, hiddenLabelsPatch, optimistic, reorderLabels, useBusy, useData, type Patch } from '../../store/data';
+import { deleteLabelPatch, editLabelPatch, hiddenLabelsKey, hiddenLabelsPatch, labelKey, optimistic, reorderLabels, useBusy, useData, type Patch } from '../../store/data';
 import { closeLabels, closePicker, confirm, manageLabels, toastError, updatePicker, useUI } from '../../store/ui';
 import { ColorPick, InfoTip, LabelChip, Tip } from '../bits';
 import type { Label } from '../../lib/types';
@@ -176,6 +176,33 @@ function IconToggle({ kind, on, onChange, label }: { kind: 'human' | 'prio'; on:
   );
 }
 
+/** 标签名称输入：失焦或回车时提交；这个标签保存中时只读（#682），保存完再改 */
+function LabelName({ pk, label: l, value, onChange, onCommit }: { pk: string; label: Label; value: string; onChange: (v: string) => void; onCommit: () => void }) {
+  const busy = useBusy(labelKey(pk, l.id));
+  return (
+    <input
+      className="lbm-name"
+      value={value}
+      maxLength={24}
+      size={1}
+      spellCheck={false}
+      readOnly={busy}
+      aria-busy={busy || undefined}
+      aria-label="标签名称"
+      onChange={e => onChange(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      onBlur={() => {
+        if (!busy) onCommit();
+      }}
+    />
+  );
+}
+
 /** 色板浮层：九个颜色 + 取色器 */
 function Swatches({ value, label, onPick }: { value: string; label: string; onPick: (c: string) => void }) {
   return (
@@ -337,25 +364,20 @@ function LabelManagerBody({ pk, on }: { pk: string; on: boolean }) {
           {l.humanOnly && <Icon name="lock" />}
           {/* 输入框跟着文字变宽：同一格里叠一个看不见的同样文字撑开宽度 */}
           <span className="lbm-name-wrap" data-text={shownName}>
-            <input
-              className="lbm-name"
+            <LabelName
+              pk={pk}
+              label={l}
               value={shownName}
-              maxLength={24}
-              size={1}
-              spellCheck={false}
-              aria-label="标签名称"
-              onChange={e => setNames(n => ({ ...n, [l.id]: e.target.value }))}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
-              onBlur={async () => {
+              onChange={v => setNames(n => ({ ...n, [l.id]: v }))}
+              onCommit={async () => {
                 const v = names[l.id];
-                const next = v?.trim();
-                if (v != null && next && next !== l.name) await run(editLabelPatch(pk, l.id, { name: next }), () => api.updateLabel(pk, l.id, { name: next }));
+                if (v == null) return;
+                const next = v.trim();
+                // 被拒绝时留着输入的名字（人输入的内容不能丢），可以改了再试
+                if (next && next !== l.name && !(await run(editLabelPatch(pk, l.id, { name: next }), () => api.updateLabel(pk, l.id, { name: next })))) return;
+                // 保存期间输入框只读；只在还是提交的那个值时才撤掉，不冲掉之后的输入
                 setNames(n => {
+                  if (n[l.id] !== v) return n;
                   const x = { ...n };
                   delete x[l.id];
                   return x;

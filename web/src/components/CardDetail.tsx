@@ -2,7 +2,8 @@
    卡片详情（PRD §10.8）
    桌面：居中弹窗 920×640，左内容 / 右动态；手机：底部 sheet，可下拉关闭
    ========================================================================== */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type SetStateAction } from 'react';
+import { create } from 'zustand';
 import { cardBack, cardFwd, copyCardPrompt, openLink, triage } from '../lib/actions';
 import { fileSize, stillUploading, useAttach } from '../lib/attach';
 import { cardDispatch, dispatchRoute } from '../lib/hosts';
@@ -463,11 +464,11 @@ function useRefit(ref: React.RefObject<HTMLTextAreaElement | null>, on?: unknown
   }, [ref, on]);
 }
 
-/** 编辑到一半卡片被 agent 领取（锁住）时没保存的内容：「白板路径#卡片」→ 标题、描述。再次编辑时先恢复它 */
+/** 没保存的标题、描述：「白板路径#卡片」→ 草稿。编辑到一半卡片被 agent 领取（锁住）时存下、再次编辑时先恢复；
+    换卡（详情整块卸载重建）时编辑中的描述也存在这里，回来时直接带着进编辑（#682）。key 在编辑器挂载时取定 */
 const drafts = new Map<string, { title?: string; body?: string }>();
 const draftKey = (id: number) => `${useData.getState().path}#${id}`;
-function takeDraft(id: number, field: 'title' | 'body'): string | undefined {
-  const k = draftKey(id);
+function takeDraft(k: string, field: 'title' | 'body'): string | undefined {
   const d = drafts.get(k);
   const v = d?.[field];
   if (d && v != null) {
@@ -476,10 +477,23 @@ function takeDraft(id: number, field: 'title' | 'body'): string | undefined {
   }
   return v;
 }
+function putDraft(k: string, field: 'title' | 'body', text: string) {
+  drafts.set(k, { ...drafts.get(k), [field]: text });
+}
+/** 评论框里没发出去的内容：「白板路径#卡片」→ 文字。换卡再回来、发送失败时（不管评论框还在不在）都在这里（#682） */
+const useCommentDrafts = create<Record<string, string>>(() => ({}));
+function setCommentDraft(k: string, v: SetStateAction<string>) {
+  useCommentDrafts.setState(s => {
+    const next = typeof v === 'function' ? v(s[k] ?? '') : v;
+    const out = { ...s };
+    if (next) out[k] = next;
+    else delete out[k];
+    return out;
+  }, true);
+}
 /** 存草稿并提示（人输入的内容不能丢）：提示里可以复制 */
 function keepDraft(c: Card, field: 'title' | 'body', text: string) {
-  const k = draftKey(c.id);
-  drafts.set(k, { ...drafts.get(k), [field]: text });
+  putDraft(draftKey(c.id), field, text);
   toast({
     type: 'info',
     title: `#${c.id} 被 ${c.holder ?? 'agent'} 领取了`,
@@ -599,7 +613,7 @@ export function TitleEditor({ card: c, locked, busy }: { card: Card; locked: boo
       onFocus={() => {
         if (locked || busy) return;
         editing.current = true;
-        const d = takeDraft(c.id, 'title');
+        const d = takeDraft(draftKey(c.id), 'title');
         if (d != null) setV(d);
       }}
       onChange={e => setV(e.target.value)}
@@ -671,13 +685,35 @@ function Attachments({ list }: { list: Attachment[] }) {
 
 /** 描述：预览 / 编辑，编辑时可以粘贴截图、拖入文件。卡片详情和「未整理」页的展开行共用 */
 export function DescEditor({ card: c, locked, busy }: { card: Card; locked: boolean; busy: boolean }) {
-  const [mode, setMode] = useState<'view' | 'edit'>('view');
-  const [v, setV] = useState(c.body);
+  // 换卡前没保存的描述（卸载时存的草稿）：能编辑时直接带着进编辑；被领取、保存中时先留着，再点编辑时恢复
+  const [start] = useState(() => {
+    const key = draftKey(c.id);
+    const d = locked || busy ? undefined : drafts.get(key)?.body;
+    return { key, draft: d != null && d.trim() !== c.body.trim() ? d : undefined, take: !locked && !busy };
+  });
+  const [mode, setMode] = useState<'view' | 'edit'>(start.draft != null ? 'edit' : 'view');
+  const [v, setV] = useState(start.draft ?? c.body);
   const ta = useRef<HTMLTextAreaElement>(null);
   const path = useData(s => s.path);
   const repo = useData(s => s.board?.repo);
   const attach = useAttach({ board: path, card: c.id, setValue: setV, textarea: ta });
   useRefit(ta, mode);
+  useLayoutEffect(() => {
+    if (start.draft != null) autosize(ta.current);
+  }, [start]);
+  // 卸载（换卡、收起展开行）时还在编辑、改过了：存成草稿，回来时还在。挂载时取走草稿（内容已经在输入框里）
+  const live = useRef({ mode, v, body: c.body });
+  live.current = { mode, v, body: c.body };
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    if (start.take) takeDraft(start.key, 'body');
+    return () => {
+      alive.current = false;
+      const x = live.current;
+      if (x.mode === 'edit' && x.v.trim() !== x.body.trim()) putDraft(start.key, 'body', x.v);
+    };
+  }, [start]);
   useEffect(() => {
     if (!locked || mode !== 'edit') return;
     // 编辑到一半被领取：改过的存成草稿（释放后再编辑时恢复），不丢
@@ -686,7 +722,7 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
   }, [locked, mode]); // eslint-disable-line react-hooks/exhaustive-deps
   const edit = () => {
     if (locked || busy) return;
-    setV(takeDraft(c.id, 'body') ?? c.body);
+    setV(takeDraft(start.key, 'body') ?? c.body);
     setMode('edit');
     requestAnimationFrame(() => {
       const t = ta.current;
@@ -706,7 +742,9 @@ export function DescEditor({ card: c, locked, busy }: { card: Card; locked: bool
       await exec({ op: 'edit', id: c.id, body }, editCard(c.id, { body }));
     } catch (e) {
       toastError(e);
-      setMode(m => (m === 'view' ? 'edit' : m));
+      // 已经换走了：存成草稿，回来时带着进编辑
+      if (!alive.current) putDraft(start.key, 'body', v);
+      else setMode(m => (m === 'view' ? 'edit' : m));
     }
   };
   return (
@@ -1022,7 +1060,10 @@ function AttachmentsSkeleton() {
 function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: number; loading: boolean; error: string | null }) {
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<number | null>(null);
-  const [text, setText] = useState('');
+  // 评论框的内容放在模块级草稿里（key 挂载时取定）：换卡再回来还在，发送失败时不管这里卸载没有都存回去
+  const [ck] = useState(() => draftKey(c.id));
+  const text = useCommentDrafts(s => s[ck] ?? '');
+  const setText = useCallback((v: SetStateAction<string>) => setCommentDraft(ck, v), [ck]);
   const ta = useRef<HTMLTextAreaElement>(null);
   const send = useRef<HTMLButtonElement>(null);
   const n = c.activity.length;
@@ -1071,7 +1112,7 @@ function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: num
     );
     requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' }));
     sendComment(c.id, t).catch(e => {
-      // 期间又写了新内容：原文放在前面，两段都留着
+      // 期间又写了新内容：原文放在前面，两段都留着。已经换走了也写回这张卡的草稿，回来时在评论框里
       setText(cur => (cur.trim() ? `${t}\n\n${cur}` : t));
       toastError(e);
     });

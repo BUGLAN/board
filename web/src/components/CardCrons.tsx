@@ -317,8 +317,11 @@ function CronForm({ path, cron, initial, close, reopen }: { path: string; cron?:
   };
 
   const picked = d.labels.map(id => labels.find(l => l.id === id)).filter(Boolean) as Label[];
+  // 和打开时比改过了：弹窗点遮罩不关（#682），由 CardCronDialog 按 data-dirty 认
+  const [orig] = useState(() => JSON.stringify(draftOf(cron)));
+  const dirty = JSON.stringify(d) !== orig;
   return (
-    <div className="cc-form" role="group" aria-label={cron ? `编辑「${cron.name}」` : '新的定时建卡'}>
+    <div className="cc-form" role="group" aria-label={cron ? `编辑「${cron.name}」` : '新的定时建卡'} data-dirty={dirty || undefined}>
       <label className="bs-rc-row">
         <span className="bs-rc-l">名称</span>
         <span className="cc-title">
@@ -610,6 +613,7 @@ export function CardCronDialog({ path }: { path: string }) {
     return () => clearTimeout(t);
   }, [on]);
   const close = () => openCardCrons(null);
+  const box = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!on) return;
     const key = (e: KeyboardEvent) => {
@@ -620,15 +624,22 @@ export function CardCronDialog({ path }: { path: string }) {
       e.preventDefault();
       e.stopPropagation();
       if (ui.picker) return closePicker();
+      // 正在表单里输入：这一次 Esc 只退出输入框，再按一次才关弹窗（#682，同白板设置）
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('.cc-form') && t.matches('input:not([readonly]), textarea:not([readonly])')) return t.blur();
       close();
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
   }, [on]);
+  // 表单改过了：点遮罩不关，免得没保存的模板丢掉（Esc、关闭按钮照常关）
+  const onScrim = () => {
+    if (!box.current?.querySelector('.cc-form[data-dirty]')) close();
+  };
   return createPortal(
     <>
-      <div className={cx('scrim', on && 'on')} onClick={close} />
-      <aside className={cx('drawer bs-modal ps-modal cc-modal', on && 'on')} role="dialog" aria-modal="true" aria-hidden={!on} aria-label="定时建卡">
+      <div className={cx('scrim', on && 'on')} onClick={onScrim} />
+      <aside ref={box} className={cx('drawer bs-modal ps-modal cc-modal', on && 'on')} role="dialog" aria-modal="true" aria-hidden={!on} aria-label="定时建卡">
         {shown && (
           <>
             <header className="d-head">
