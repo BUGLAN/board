@@ -15,11 +15,11 @@ import { flowOf, INBOX, statusColor, viewOf, type FlowQ } from '../lib/schema';
 import { statusRoles } from '../lib/review';
 import { orderDir, orderName, orderOf, orderOption, shownCols } from '../lib/sort';
 import type { BoardSnapshot, Label, Status, StatusView, Tile } from '../lib/types';
-import { cx, isMobile, reduceMotion, replay } from '../lib/util';
+import { cx, reduceMotion, replay } from '../lib/util';
 import { colCount, flowKey, loadFull, omittedIn, optimistic, renderKey, serverNow, setEarlier, useBusy, useCurrent, useData, useEarlier } from '../store/data';
 import { collapseCols, FINAL_RECENT, type Earlier } from '../lib/earlier';
 import { clearLabelSel, closeCtx, openBoardSettings, openCreator, openCtx, openReview, setBoardSheet, setFilter, toastError, useUI, type DragUI } from '../store/ui';
-import { Tip } from './bits';
+import { Tip, useMobile } from './bits';
 import { BoardSettings } from './BoardSettings';
 import { CardCronDialog } from './CardCrons';
 import { cardHit, CardView, TilePeek } from './Card';
@@ -745,17 +745,6 @@ export function withDefaults(keys: string[], saved: Record<string, Tile>) {
     tiles[k] = saved[k] ?? { x: (i % 4) * 3, w: 3, y: none && i < 4 ? 0 : 1e6 + i };
   });
   return tiles;
-}
-
-export function useMobile() {
-  const [m, setM] = useState(isMobile);
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 760px)');
-    const on = () => setM(mq.matches);
-    mq.addEventListener('change', on);
-    return () => mq.removeEventListener('change', on);
-  }, []);
-  return m;
 }
 
 export function Magnet({

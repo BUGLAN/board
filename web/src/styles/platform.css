@@ -96,6 +96,9 @@ html[data-titlebar="custom"] .topbar { padding-right: 0; }
   .search-keys { display: none; }
   .presence { display: none; }
 
+  /* 状态块不再常驻毛玻璃（#698）：手机上每块一张模糊合成层，滚动、静置都在耗电；底色调得不那么透，背景透上来的少一些 */
+  .col { backdrop-filter: none; -webkit-backdrop-filter: none; background: color-mix(in srgb, var(--surface-2) 82%, transparent); }
+
   .page-head { height: 44px; padding: 0 16px; gap: 8px; }
   .crumbs > span, .crumbs > svg { display: none; }
   .page-actions .btn kbd { display: none; }

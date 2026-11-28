@@ -137,6 +137,12 @@ case "$(cat "$FAKE_DIR/mode")" in
     echo "working"
     echo "boom"
     exit 3 ;;
+  crashgo)
+    # 起来了（上面已经留好文件）先说一声，等测试放行（$FAKE_DIR/go）再异常退出：只量收尾那一段，不把开始派发时的准备算进去
+    : > "$FAKE_DIR/ready"
+    n=0; while [ ! -f "$FAKE_DIR/go" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done
+    echo "boom"
+    exit 3 ;;
   rate)
     # 跑卡时像 Claude Code 那样推额度（5 小时、本周两个窗口），等测试放行（$FAKE_DIR/go）再交审：board host 在派发期间就要报上去
     upd '{"sessionUpdate":"usage_update","used":1,"size":2,"_meta":{"_claude/rateLimit":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1795676400,"unifiedWindows":{"five_hour":{"status":"allowed","resetsAt":1795676400,"utilization":0.39},"seven_day":{"status":"allowed","resetsAt":1795831200,"utilization":0.57}}}}}'
@@ -2511,10 +2517,16 @@ fn slow(rig: &Rig, cmd: &str, secs: Option<u64>) {
     }
 }
 
-/// 卡住的 git 要睡多久：默认 5 秒（上报间隔 0.5 秒，主循环等它时上报会停 5 秒）；`HOST_SLOW_GIT_SECS` 可以改长，
+/// 卡住的 git 要睡多久：默认 8 秒（上报间隔 0.5 秒，主循环等它时上报会停 8 秒）；`HOST_SLOW_GIT_SECS` 可以改长，
 /// 例如照卡片 #680 的验收标准手动跑一次 70 秒的克隆（push、fetch 超过 30 秒会被 `FETCH_LIMIT` 停掉，推 wip 的用例只能跑 30 秒以内）
 fn slow_secs() -> u64 {
-    std::env::var("HOST_SLOW_GIT_SECS").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(5)
+    std::env::var("HOST_SLOW_GIT_SECS").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(8)
+}
+
+/// 卡住期间允许的最长上报间隔（毫秒）：比 git 卡住的时间短 2 秒以上，最多 6 秒。主循环里还有别的同步步骤（上报本身、
+/// 重新检查、本地的目录检查），机器忙时会把间隔拉到 3 秒多；git 卡住时还在主循环里等的话，间隔至少是卡住的时长
+fn gap_limit() -> i64 {
+    6000.min(slow_secs() as i64 * 1000 - 2000)
 }
 
 /// 在后台每 100 毫秒看一次服务端记的这台机器最近一次上报的时间（`hosts.beat_at`）。`max_gap` 结束观察，
@@ -2620,7 +2632,7 @@ fn host_keeps_reporting_while_a_new_project_clones() {
         d["status"] == "ok" && d["clone"]["state"] == "done"
     });
     let gap = beats.max_gap();
-    assert!(gap < 3000, "克隆期间上报停了 {gap} 毫秒");
+    assert!(gap < gap_limit(), "克隆期间上报停了 {gap} 毫秒");
     let c = rig.show(1);
     assert_eq!(c["holder"], "mbp/opus-5.5", "派发还在跑：{:?}", activity(&c));
     assert!(!activity(&c).iter().any(|t| t.starts_with("派发结束")), "{:?}", activity(&c));
@@ -2646,16 +2658,19 @@ fn host_keeps_reporting_while_push_and_fetch_hang() {
     let host = host_path(&rig, &path);
     rig.online("mbp");
     let secs = slow_secs();
-    // 1. agent 留下没提交的文件后异常退出：收尾推 wip 分支，push 要等好几秒
+    // 1. agent 留下没提交的文件后异常退出：收尾推 wip 分支，push 要等好几秒。从 agent 起来之后开始量
+    //    （开始派发时的拉取、建 worktree 还在主循环里同步做，不归这里管）
     std::fs::write(rig.fake.with_file_name("leave"), "做到一半的内容\n").unwrap();
-    rig.mode("crash");
+    rig.mode("crashgo");
     slow(&rig, "push", Some(secs));
-    let beats = Beats::watch(&rig, "mbp");
     let r = rig.board(&["dispatch", "1", "--host", "mbp", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    wait_until("agent 起来了", Duration::from_secs(30), || rig.fake.with_file_name("ready").exists());
+    let beats = Beats::watch(&rig, "mbp");
+    std::fs::write(rig.fake.with_file_name("go"), "").unwrap();
     wait_until("#1 异常退出", Duration::from_secs(secs + 30), || ended(&rig.show(1), "异常退出"));
     let gap = beats.max_gap();
-    assert!(gap < 3000, "推 wip 分支期间上报停了 {gap} 毫秒");
+    assert!(gap < gap_limit(), "推 wip 分支期间上报停了 {gap} 毫秒");
     let acts = activity(&rig.show(1));
     let wip = acts.iter().position(|t| t.contains("已经保存到分支") && t.trim_end().ends_with("未完成的改动：wip/main/1"));
     let end = acts.iter().position(|t| t.starts_with("派发结束"));
@@ -2669,6 +2684,7 @@ fn host_keeps_reporting_while_push_and_fetch_hang() {
     let proj = rig.ws().join("default");
     git_in(&proj, &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
     rig.mode("review");
+    let _ = std::fs::remove_file(rig.fake.with_file_name("go"));
     let r = rig.board(&["dispatch", "2", "--host", "mbp", "--json"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let blocked = |rig: &Rig| {
@@ -2682,7 +2698,7 @@ fn host_keeps_reporting_while_push_and_fetch_hang() {
     board_core::Store::open(&rig.s.db).unwrap().write(board_core::now_ms(), board_core::Origin::ui(None), |w| w.host_ask("mbp", "recheck", false, "octocat")).unwrap();
     wait_until("拉取恢复", Duration::from_secs(secs + 30), || !blocked(&rig));
     let gap = beats.max_gap();
-    assert!(gap < 3000, "重试拉取期间上报停了 {gap} 毫秒");
+    assert!(gap < gap_limit(), "重试拉取期间上报停了 {gap} 毫秒");
     let (code, out) = stop(host);
     assert_eq!(code, 0);
     assert!(out.contains("又能拉到最新代码了") && out.contains("已经保存到分支 wip/main/1"), "{out}");

@@ -118,7 +118,9 @@ export function CardDetail() {
 
 function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; loading: boolean; error: string | null }) {
   const board = useData(s => s.board);
-  const now = useNow(1000);
+  // 「创建于」「最近更新」只到分钟：30 秒更新一次。关着时（留着上一张卡，给关闭动画用）不更新：
+  // 以前每秒都重渲染一次整块详情和全部动态，手机上一直耗电（#698）。每秒走的耗时在 ClaimPart 里自己计
+  const now = useNow(on ? 30_000 : null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const locked = !!c.holder;
@@ -364,10 +366,10 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             <CardLabels card={c} saving={saving} />
             <SplitLinks card={c} />
           </section>
-          <CardNext card={c.id} />
-          <DispatchNote board={useData.getState().path} card={c.id} />
+          <CardNext card={c.id} live={on} />
+          <DispatchNote board={useData.getState().path} card={c.id} live={on} />
           <DispatchHistory board={useData.getState().path} card={c.id} />
-          <ClaimPart card={c} now={now} busy={saving} />
+          <ClaimPart card={c} on={on} busy={saving} />
           <section className="d-section" data-part="desc" style={{ ['--i' as string]: 2 }}>
             <DescEditor card={c} locked={locked} busy={saving} />
           </section>
@@ -440,7 +442,7 @@ function Body({ card: c, on, loading, error }: { card: Detail; on: boolean; load
             </button>
           </div>
         </div>
-        <ActivityPart card={c} now={now} loading={loading} error={error} />
+        <ActivityPart card={c} on={on} loading={loading} error={error} />
       </div>
     </div>
   );
@@ -889,9 +891,11 @@ async function openSplitRef(id: number) {
   }
 }
 
-function ClaimPart({ card: c, now, busy }: { card: Card; now: number; busy: boolean }) {
+function ClaimPart({ card: c, on, busy }: { card: Card; on: boolean; busy: boolean }) {
   const start = boardFlow(useData(s => s.board)).home?.name ?? '待办';
   const online = useOnline();
+  // 有人在做：这一次的耗时每秒走；没人在做时只有「完成于 N 分钟前」，30 秒更新一次；详情关着时不更新
+  const now = useNow(on ? (c.holder ? 1000 : 30_000) : null);
   if (c.column === 'inbox') {
     return (
       <section className="d-section" data-part="claim" style={{ ['--i' as string]: 1 }}>
@@ -1057,7 +1061,9 @@ function AttachmentsSkeleton() {
   );
 }
 
-function ActivityPart({ card: c, now, loading, error }: { card: Detail; now: number; loading: boolean; error: string | null }) {
+function ActivityPart({ card: c, on, loading, error }: { card: Detail; on: boolean; loading: boolean; error: string | null }) {
+  // 动态的时间只到分钟（「刚刚」「3 分钟前」）：30 秒更新一次，详情关着时不更新
+  const now = useNow(on ? 30_000 : null);
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useRef<number | null>(null);
   // 评论框的内容放在模块级草稿里（key 挂载时取定）：换卡再回来还在，发送失败时不管这里卸载没有都存回去

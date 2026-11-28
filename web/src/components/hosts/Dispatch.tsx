@@ -74,13 +74,15 @@ export function CardDispatchBadge({ card }: { card: number }) {
   );
 }
 
-/** 卡片详情里：排队或正在跑的派发，以及「取消派发」/「停止」。会话里排着的，下面一行写会话的名字和它正在做的卡片 */
-export function DispatchNote({ board, card }: { board: string; card: number }) {
+/** 卡片详情里：排队或正在跑的派发，以及「取消派发」/「停止」。会话里排着的，下面一行写会话的名字和它正在做的卡片。
+ *  `live`：详情开着（关着时留着上一张卡给关闭动画用，「排了 / 已跑多久」不用再走） */
+export function DispatchNote({ board, card, live = true }: { board: string; card: number; live?: boolean }) {
   const d = useData(s => cardDispatch(s.ws, board, card));
   const h = useData(s => (d ? hostsOf(s.ws).find(x => x.id === d.hostId) : undefined));
   const lead = useData(s => (d && inSession(d) ? sessionRunning(s.ws, d) : undefined));
   const block = useData(s => (d && d.host && d.state === 'queued' ? blockOf(s.ws, d.host, d.board) : undefined));
-  const now = useNow(1000);
+  // 没有排队、在跑的派发时不计时（#698）
+  const now = useNow(d && live ? 1000 : null);
   if (!d) return null;
   const queued = d.state === 'queued';
   const split = isSplit(d);

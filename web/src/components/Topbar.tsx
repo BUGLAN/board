@@ -11,7 +11,7 @@ import type { Workspace } from '../lib/types';
 import { clock, cx, MOD, reduceMotion, touchFirst } from '../lib/util';
 import { allBoards, useCurrent, useData } from '../store/data';
 import { closeSwitcher, openPalette, openSwitcher, setTab, useUI } from '../store/ui';
-import { AgentAvatar, BrandMark, ProjectAvatar, Tip, useNow } from './bits';
+import { AgentAvatar, BrandMark, ProjectAvatar, Tip, useMobile, useNow } from './bits';
 import { Icon } from './Icon';
 import { WindowControls } from './WindowControls';
 
@@ -69,7 +69,9 @@ function Offline() {
 function Presence() {
   const agents = useData(s => s.ws?.agents);
   const path = useData(s => s.path);
-  const now = useNow(1000);
+  // 没有在线的 agent、手机上（顶栏放不下，整块藏起来）时不计时：以前一直每秒重渲染（#698）
+  const hidden = useMobile();
+  const now = useNow(agents?.length && !hidden ? 1000 : null);
   if (!agents?.length) return <div className="presence" aria-label="在线的 agent" />;
   return (
     <div className="presence" aria-label="在线的 agent">

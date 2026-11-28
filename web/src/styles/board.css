@@ -73,6 +73,10 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-dot { width: 8px; height: 8px; border-radius: var(--r-hair); background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 18%, transparent); }
 .col:has(.card.doing) .col-dot { border-radius: 50%; animation: breathe 2.4s var(--ease-in-out) infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--c) 0%, transparent); } }
+/* 触屏上「有卡在做」的圆点、顶栏的绿点不呼吸：呼吸改的是 box-shadow，每帧都要重绘，手机上一直耗电（#698） */
+@media (hover: none) {
+  .col:has(.card.doing) .col-dot, .pj-elsewhere, .pj-live i, .pt-live i { animation: none; }
+}
 .col-name { flex: 1 1 3.2em; font-family: var(--f-display); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3.2em; }
 .col-count {
   flex: none; min-width: 24px; height: 22px; padding: 0 7px; display: inline-grid; place-items: center;
@@ -168,13 +172,15 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-veto {
   position: absolute; inset: 0; z-index: 5; border-radius: inherit; pointer-events: none;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 14px; text-align: center;
-  color: var(--danger-text); opacity: 0; transform: scale(.98);
+  color: var(--danger-text); opacity: 0; transform: scale(.98); visibility: hidden;
   background:
     repeating-linear-gradient(-45deg, color-mix(in srgb, var(--danger) 9%, transparent) 0 8px, transparent 8px 16px),
     color-mix(in srgb, var(--surface) 70%, transparent);
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--danger) 55%, transparent);
-  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
-  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-3) var(--spring);
+  /* 每个状态块都有一层：只在拖到不能放的块上时才建模糊层（同 overlays.css 的遮罩，#637、#698）。opacity: 0 的 backdrop-filter
+     照样占一张合成层，iOS 上白板一直带着这些层。离开时立刻撤掉模糊，等淡出结束再隐藏 */
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-3) var(--spring), visibility 0s linear var(--dur-2);
 }
 .col-veto .veto-icon {
   width: 36px; height: 36px; border-radius: var(--r-md); display: grid; place-items: center;
@@ -184,7 +190,11 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 .col-veto b { font-family: var(--f-display); font-size: 15px; color: var(--text); }
 .col-veto span { font-size: 12px; color: var(--text-2); max-width: 220px; line-height: 1.5; }
 .col-veto code { font-family: var(--f-mono); font-size: 11px; color: var(--danger-text); background: var(--danger-soft); padding: 1px 5px; border-radius: var(--r-xs); }
-.col.drop-bad .col-veto { opacity: 1; transform: none; }
+.col.drop-bad .col-veto {
+  opacity: 1; transform: none; visibility: visible;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-3) var(--spring), visibility 0s;
+}
 .col.drop-bad .col-veto .veto-icon { animation: veto-wiggle .5s var(--ease-out); }
 @keyframes veto-wiggle { 25% { transform: rotate(-10deg); } 55% { transform: rotate(8deg); } 80% { transform: rotate(-3deg); } }
 .col.reject { animation: shake .45s var(--ease-out); }
@@ -256,6 +266,14 @@ body.tile-sizing, body.tile-sizing * { cursor: ew-resize !important; user-select
 }
 @property --angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes orbit { to { --angle: 360deg; } }
+/* 流光停下时（触屏、减弱动效）换成一圈静态描边：转动的是自定义属性，交不给合成线程，每帧都要重算样式、重绘（#698） */
+@media (hover: none) {
+  .card.doing::before { animation: none; background: color-mix(in srgb, var(--c) 55%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.doing::before { animation: none; background: color-mix(in srgb, var(--c) 55%, transparent); }
+}
+:root[data-motion="reduced"] .card.doing::before { background: color-mix(in srgb, var(--c) 55%, transparent); }
 /* 派发排队：在「进行中」里等机器开始，还没有人持有。虚线框、底色淡一些，和正在做的（流光边框）分开 */
 .card.queued {
   --c: var(--ac, var(--c-doing));

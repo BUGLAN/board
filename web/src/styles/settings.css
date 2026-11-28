@@ -119,13 +119,25 @@
 :root[data-motion="reduced"] { --dur-1: 1ms; --dur-2: 1ms; --dur-3: 1ms; --dur-4: 1ms; }
 :root[data-motion="reduced"] .logo i,
 :root[data-motion="reduced"] .card.doing::before,
-:root[data-motion="reduced"] .ie-art i { animation: none !important; }
+:root[data-motion="reduced"] .ie-art i,
+:root[data-motion="reduced"] .col-dot,
+:root[data-motion="reduced"] .pj-elsewhere,
+:root[data-motion="reduced"] .pj-live i,
+:root[data-motion="reduced"] .pt-live i,
+:root[data-motion="reduced"] .cv-link .flow { animation: none !important; }
 /* 顶栏的心跳波纹、画布上正在工作的头像原来写死了 2 秒多的时长，变量改不到，这里一起停 */
 :root[data-motion="reduced"] .pres-pulse { animation: none; opacity: .6; }
 :root[data-motion="reduced"] .cv-board.active .cvb-agents .avatar { animation: none; }
 /* agent logo 的状态（default/main#357）：不闪、不呼吸，只用颜色表示 */
 :root[data-motion="reduced"] .pres-item.is-logo.late .logo-art { animation: none; filter: grayscale(1) opacity(.7) drop-shadow(0 0 2.5px var(--warn)); }
 :root[data-motion="reduced"] .pres-item.is-logo.wait .logo-art { animation: none; opacity: .5; }
+
+/* 系统设置了「减少动态效果」：和上面的偏好一样停掉常驻的动画（#698）。时长变量 tokens.css 已经跟着系统改了，
+   但写死时长的循环动画（流光、呼吸、logo 柱子）变量管不到；顶栏的波纹、logo 状态在 layout.css 里，卡片上的心跳点在 board.css 里 */
+@media (prefers-reduced-motion: reduce) {
+  .logo i, .card.doing::before, .ie-art i, .col-dot, .pj-elsewhere, .pj-live i, .pt-live i, .cv-link .flow { animation: none !important; }
+  .cv-board.active .cvb-agents .avatar { animation: none; }
+}
 
 /* 本机：让这台电脑接任务（桌面端） */
 .lh-warn { color: var(--warn-text); }

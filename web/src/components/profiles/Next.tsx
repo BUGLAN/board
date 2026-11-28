@@ -18,19 +18,20 @@ import { Icon } from '../Icon';
 import { AgentIcon } from '../hosts/bits';
 import { PMark, RuleView, agentName } from './bits';
 
-/** 一块白板的推算，按（工作区, 白板, 分钟）缓存：白板上每张卡片都要问一次 */
+/** 一块白板的推算，按（工作区, 白板, 分钟）缓存：白板上每张卡片都要问一次。`live` 为 false 时不按分钟刷新（关着的详情） */
 let cache: { ws: Workspace | null; b: BoardSnapshot | null; t: number; out: Map<number, Fc> } | null = null;
-function useBoardFc(): Map<number, Fc> {
+function useBoardFc(live = true): Map<number, Fc> {
   const ws = useData(s => s.ws);
   const b = useData(s => s.board);
-  const now = useNow(60_000);
+  const now = useNow(live ? 60_000 : null);
   const t = Math.floor(now / 60_000);
   if (!cache || cache.ws !== ws || cache.b !== b || cache.t !== t) cache = { ws, b, t, out: forecast(ws, b, now) };
   return cache.out;
 }
 
-export function CardNext({ card }: { card: number }) {
-  const fc = useBoardFc();
+/** 卡片详情里「接下来」会交给谁。`live`：详情开着（关着时留着上一张卡给关闭动画用，不用每分钟重算，#698） */
+export function CardNext({ card, live = true }: { card: number; live?: boolean }) {
+  const fc = useBoardFc(live);
   const ws = useData(s => s.ws);
   const dispatched = useData(s => cardDispatch(s.ws, s.path, card));
   const [open, setOpen] = useState(false);

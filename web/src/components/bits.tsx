@@ -11,7 +11,7 @@ import { PROJECT_COLORS } from '../lib/schema';
 import { placeTip } from '../lib/tooltip';
 import { staleText } from '../lib/stale';
 import type { Actor, Label } from '../lib/types';
-import { agentColor, agentGlyph, cx, initial, reduceMotion } from '../lib/util';
+import { agentColor, agentGlyph, cx, initial, isMobile, reduceMotion } from '../lib/util';
 import { useAuth } from '../store/auth';
 import { serverNow, useData } from '../store/data';
 import { closeCtx, openCtx, openImage, openTextFile, toastError, useUI } from '../store/ui';
@@ -49,6 +49,18 @@ export function useNow(interval: number | null = 1000) {
     return tick(interval, () => setNow(serverNow()));
   }, [interval]);
   return now;
+}
+
+/** 现在是不是手机布局（窄于 760px，和 platform.css 的手机断点一致），跟着窗口宽度变 */
+export function useMobile() {
+  const [m, setM] = useState(isMobile);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 760px)');
+    const on = () => setM(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return m;
 }
 
 /** 界面上怎么称呼「你」：线上用 GitHub 昵称（没有昵称时用登录名）；本机模式没有名字 */
