@@ -7,6 +7,8 @@ const read = (f: string) => readFileSync(new URL(`./${f}`, pathToFileURL(__filen
 const board = read('board.css');
 const settings = read('settings.css');
 const platform = read('platform.css');
+const inbox = read('inbox.css');
+const labels = read('labels.css');
 
 /** 从 start 起取一个花括号块（含外层的花括号） */
 const block = (src: string, start: number) => {
@@ -54,6 +56,24 @@ describe('状态块的模糊层', () => {
     const phone = rule(platform, '@media (max-width: 760px) {');
     expect(block(phone, phone.indexOf('  .col {'))).toMatch(/backdrop-filter: none/);
   });
+});
+
+describe('平时隐藏的浮层（#732）', () => {
+  for (const [name, src, off, on] of [
+    ['批量操作条（白板、未整理共用）', inbox, '.ib-bulk {', '.ib-bulk.on {'],
+    ['标签选择器', labels, '.lb-picker {', '.lb-picker.on {'],
+  ] as const) {
+    it(`${name}关着时没有 backdrop-filter，打开才建模糊层`, () => {
+      const closed = rule(src, off);
+      expect(closed).toMatch(/visibility: hidden/);
+      expect(closed).toMatch(/backdrop-filter: none; -webkit-backdrop-filter: none;/);
+      expect(closed).not.toMatch(/blur\(/);
+
+      const open = rule(src, on);
+      expect(open).toMatch(/visibility: visible/);
+      expect(open).toMatch(/backdrop-filter: blur\(24px\) saturate\(1\.5\); -webkit-backdrop-filter: blur\(24px\) saturate\(1\.5\);/);
+    });
+  }
 });
 
 describe('常驻的循环动画', () => {

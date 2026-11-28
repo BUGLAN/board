@@ -111,12 +111,18 @@
 .lb-picker {
   position: fixed; z-index: 330; width: 260px; max-height: 340px; display: flex; flex-direction: column; overflow: hidden;
   border-radius: var(--r-md); background: var(--glass-strong);
-  backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  /* 平时隐藏：只在打开时建模糊层（同 overlays.css 的遮罩，#637、#732）。opacity: 0 的 backdrop-filter 照样占一张合成层；
+     关掉时立刻撤掉模糊，等淡出结束再隐藏 */
+  backdrop-filter: none; -webkit-backdrop-filter: none;
   box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
   opacity: 0; transform: translateY(-4px) scale(.97); pointer-events: none; visibility: hidden;
   transition: opacity var(--dur-1), transform var(--dur-2) var(--spring-soft), visibility 0s linear var(--dur-2);
 }
-.lb-picker.on { opacity: 1; transform: none; pointer-events: auto; visibility: visible; transition: opacity var(--dur-1), transform var(--dur-2) var(--spring-soft), visibility 0s; }
+.lb-picker.on {
+  opacity: 1; transform: none; pointer-events: auto; visibility: visible;
+  backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  transition: opacity var(--dur-1), transform var(--dur-2) var(--spring-soft), visibility 0s;
+}
 .lbp-search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--text-3); flex: none; }
 .lbp-search svg { width: 15px; height: 15px; }
 .lbp-search input { flex: 1; border: 0; background: transparent; font-size: 13px; }

@@ -236,12 +236,19 @@
 .ib-bulk {
   position: absolute; z-index: 30; left: 50%; bottom: 24px;
   display: flex; align-items: center; gap: 4px; height: 46px; padding: 0 6px 0 16px; border-radius: 999px;
-  background: var(--glass-strong); backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  background: var(--glass-strong);
+  /* 白板、未整理的批量操作条共用这一条，平时隐藏：只在弹上来时建模糊层（同 overlays.css 的遮罩，#637、#698、#732）。
+     opacity: 0 的 backdrop-filter 照样占一张合成层；收起时立刻撤掉模糊，等滑下去再隐藏 */
+  backdrop-filter: none; -webkit-backdrop-filter: none;
   box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-3);
   transform: translate(-50%, 22px) scale(.94); opacity: 0; pointer-events: none; visibility: hidden;
   transition: transform var(--dur-4) var(--spring-soft), opacity var(--dur-2) var(--ease-out), visibility 0s linear var(--dur-3);
 }
-.ib-bulk.on { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; visibility: visible; transition: transform var(--dur-4) var(--spring-soft), opacity var(--dur-2) var(--ease-out), visibility 0s; }
+.ib-bulk.on {
+  transform: translate(-50%, 0); opacity: 1; pointer-events: auto; visibility: visible;
+  backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  transition: transform var(--dur-4) var(--spring-soft), opacity var(--dur-2) var(--ease-out), visibility 0s;
+}
 .ib-bulk-n { display: inline-flex; align-items: baseline; gap: 5px; margin-right: 4px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .ib-bulk-n b { display: inline-block; font-size: 15px; font-weight: 600; color: var(--text); animation: ib-num var(--dur-3) var(--spring); }
 @keyframes ib-num { from { transform: translateY(-6px) scale(.8); opacity: 0; } }
