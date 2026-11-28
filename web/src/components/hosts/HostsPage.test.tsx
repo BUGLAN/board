@@ -144,7 +144,7 @@ describe('机位卡片：机器 → 会话 → 会话里的卡', () => {
     expect(empty.length).toBe(3);
     expect(empty[0].textContent).toContain('一次排好最多 4 张');
     expect(empty[1].querySelector('p')).toBeNull();
-    expect(host.querySelector('.hp-sess-sum')?.textContent).toBe('会话 1/4自动领取的会话一个最多做 4 张');
+    expect(host.querySelector('.hp-sess-sum')?.textContent).toBe('会话 1/4一个会话最多做 4 张');
   });
 
   it('暂停接单：空的会话位画成暂停；离线：不画会话，只写离线', () => {

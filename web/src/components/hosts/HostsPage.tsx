@@ -294,7 +294,7 @@ export function Rack({ h, ws, now, index, server }: { h: HostInfo; ws: Workspace
                 会话 <b>{running.length}</b>/{h.max}
               </span>
               <i />
-              <span>{per > 1 ? `自动领取的会话一个最多做 ${per} 张` : '一个会话做一张'}</span>
+              <span>{per > 1 ? `一个会话最多做 ${per} 张` : '一个会话做一张'}</span>
               {h.paused && <span className="warn">· 暂停接单，不开新会话</span>}
             </div>
             <div className="hp-sess-grid" data-n={Math.min(slots, 4)}>

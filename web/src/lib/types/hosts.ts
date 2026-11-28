@@ -214,7 +214,7 @@ export interface HostInfo {
   dirsRev?: number;
   /** 最多几个会话：同一时间最多开几个 agent 进程（1–8） */
   max: number;
-  /** 自动领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
+  /** 自动领取、批量派发排成的会话一个最多做几张（1–8，默认 4）；旧版服务端没有 */
   perSession?: number;
   /** 单次最长运行（分钟，0 = 不限）：所有机器一个值，在 Agent tab「跑多久停」里改（Sched.maxRun） */
   maxRun?: number;

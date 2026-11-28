@@ -16,7 +16,7 @@ vi.mock('../store/data', () => ({
 vi.mock('../store/ui', () => ({ overlayOpen: () => false, toastError: (e: unknown) => toastError(e), toast: (t: unknown) => toast(t) }));
 
 const { FLOW, snapshot } = await import('../../test/fixtures');
-const { blockState, bulkDispatchToast, bulkLabel, bulkMove, clearSelect, dispatchPlan, moveTargets, rangeIds, runBulkDispatch, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
+const { blockState, bulkDispatchToast, bulkLabel, bulkMove, clearSelect, dispatchPlan, moveTargets, rangeIds, bulkDispatchResult, selectIds, selectRange, startSelect, toggleBlock, toggleCard, useBoardSel } =
   await import('./boardSelect');
 
 beforeEach(() => {
@@ -213,7 +213,7 @@ describe('dispatchPlan（批量派送跳过规则）', () => {
   });
 });
 
-describe('runBulkDispatch（逐张派发）', () => {
+describe('批量派发的结果和收尾提示', () => {
   const made = (id: number) =>
     ({
       id,
@@ -236,22 +236,12 @@ describe('runBulkDispatch（逐张派发）', () => {
       beatAt: null,
     }) as Dispatch;
 
-  it('一张接一张发；中间一张失败不影响后面的', async () => {
-    const err = new Error('BOARD_NOT_ON_HOST');
-    const send = vi.fn(async (id: number) => {
-      if (id === 2) throw err;
-      return made(id);
-    });
-    const r = await runBulkDispatch([1, 2, 3], send);
-    expect(send.mock.calls).toEqual([[1], [2], [3]]);
+  it('批量派发接口的返回：失败的换成带错误码、原因的错误，提示照常汇总', () => {
+    const r = bulkDispatchResult({ ok: [made(1), made(3)], failed: [{ id: 2, code: 'BOARD_NOT_ON_HOST', message: '机器没有这块白板的目录' }] });
     expect(r.ok.map(d => d.card)).toEqual([1, 3]);
-    expect(r.failed).toEqual([{ id: 2, error: err }]);
-  });
-
-  it('没有能派的：一张请求也不发', async () => {
-    const send = vi.fn(async (id: number) => made(id));
-    expect(await runBulkDispatch([], send)).toEqual({ ok: [], failed: [] });
-    expect(send).not.toHaveBeenCalled();
+    expect(r.failed[0].id).toBe(2);
+    expect(r.failed[0].error).toMatchObject({ code: 'BOARD_NOT_ON_HOST', message: '机器没有这块白板的目录' });
+    expect(bulkDispatchToast(r, [], '').text).toBe('失败：#2 机器没有这块白板的目录');
   });
 
   it('收尾汇总：张数写在标题；去向、跳过、失败的原因写在正文；有失败时是错误提示', () => {

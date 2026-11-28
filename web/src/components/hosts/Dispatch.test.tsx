@@ -8,13 +8,18 @@ import { useData } from '../../store/data';
 import { useUI } from '../../store/ui';
 import { CardDispatchBadge, DispatchDialog } from './Dispatch';
 
-const { dispatchApi } = vi.hoisted(() => ({ dispatchApi: vi.fn() }));
+const { dispatchApi, batchApi } = vi.hoisted(() => ({ dispatchApi: vi.fn(), batchApi: vi.fn() }));
 
 vi.mock('../../lib/api', async orig => {
   const real = await orig<typeof import('../../lib/api')>();
   return {
     ...real,
-    api: { ...real.api, dispatch: (...args: [string, number, string, string?]) => dispatchApi(...args), providers: async () => ({ providers: [], meta: [] }) },
+    api: {
+      ...real.api,
+      dispatch: (...args: [string, number, string, string?]) => dispatchApi(...args),
+      dispatchBatch: (...args: unknown[]) => batchApi(...args),
+      providers: async () => ({ providers: [], meta: [] }),
+    },
   };
 });
 
@@ -88,6 +93,7 @@ beforeEach(() => {
   document.body.appendChild(host);
   root = createRoot(host);
   dispatchApi.mockReset();
+  batchApi.mockReset();
   useUI.setState({ dispatchOf: null, toasts: [] });
 });
 
@@ -129,7 +135,7 @@ describe('卡片上的派发排队角标', () => {
 });
 
 describe('批量派送对话框', () => {
-  it('显示张数和跳过原因；逐张派发，失败不影响后面的，并汇总结果', async () => {
+  it('显示张数和跳过原因；一个请求派整批，失败的不影响别的，并汇总结果', async () => {
     const active = { ...dispatch('codex', 'Codex'), board: 'p/a', card: 1 };
     useData.setState({
       ws: workspace({ hosts: [machine], dispatches: [active] }),
@@ -137,13 +143,15 @@ describe('批量派送对话框', () => {
       board: snapshot('p/a', { todo: [1], doing: [2], review: [3, 4] }),
     } as never);
     useUI.setState({ dispatchOf: { cards: [1, 2, 3, 4] } });
-    dispatchApi.mockImplementation(async (_board: string, card: number) => {
-      if (card === 3) throw new Error('机器没有这块白板的目录');
-      return { ...dispatch('codex', 'Codex'), id: 8, board: 'p/a', card, hostId: machine.id, host: machine.name };
-    });
+    batchApi.mockImplementation(async (_board: string, cards: number[]) => ({
+      ok: cards.filter(c => c !== 3).map(card => ({ ...dispatch('codex', 'Codex'), id: 8, board: 'p/a', card, hostId: machine.id, host: machine.name })),
+      failed: [{ id: 3, code: 'BOARD_NOT_ON_HOST', message: '机器没有这块白板的目录' }],
+      rev: 2,
+    }));
 
     await act(async () => root.render(<DispatchDialog />));
     expect(host.querySelector('h3')?.textContent).toBe('派发 4 张卡片');
+    expect(host.querySelector('.dp-sub')?.textContent).toBe('共 4 张卡片，按会话分组排队');
     expect(host.querySelector('.dp-plan')?.textContent).toBe('可派发 2 张；跳过 2 张：#1 已有排队或在跑的派发；#2 在锁定状态「doing」');
     const button = host.querySelector<HTMLButtonElement>('.dialog-actions .btn.brand')!;
     expect(button.textContent).toBe('派送 2 张');
@@ -153,10 +161,8 @@ describe('批量派送对话框', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
 
-    expect(dispatchApi.mock.calls).toEqual([
-      ['p/a', 3, 'win-preview', 'codex'],
-      ['p/a', 4, 'win-preview', 'codex'],
-    ]);
+    expect(batchApi.mock.calls).toEqual([['p/a', [3, 4], 'win-preview', 'codex']]);
+    expect(dispatchApi).not.toHaveBeenCalled();
     expect(useUI.getState().dispatchOf).toBeNull();
     expect(useUI.getState().toasts.at(-1)).toMatchObject({
       type: 'error',

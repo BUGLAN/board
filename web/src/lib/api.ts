@@ -329,6 +329,10 @@ export const api = {
   hostRecent: (name: string) => req<Dispatch[]>('GET', `/api/hosts/${q(name)}/recent`).then(normDispatches),
   /** host 是空的 = 任意机器：服务端在能接的机器里挑空位最多的一台 */
   dispatch: (board: string, card: number, host: string, agent?: string, profile?: string) => req<Dispatch>('POST', '/api/dispatches', { board, card, host, agent, profile }),
+  /** 批量派发（default/main#737）：一次请求派整批（按选中的顺序），服务端按机器「一个会话最多做几张」排成几个会话；
+      校验不过的卡在 failed，其余照常派 */
+  dispatchBatch: (board: string, cards: number[], host: string, agent?: string, profile?: string) =>
+    req<{ ok: Dispatch[]; failed: { id: number; code: ErrorCode; message: string }[]; rev: number }>('POST', '/api/dispatches/batch', { board, cards, host, agent, profile }),
   /** 改派一条还在排队的派发：换到 host 这台机器，host 是空的 = 交给任意机器；profile 换成这个角色（不带时沿用原来的） */
   moveDispatch: (id: number, host: string, agent?: string, profile?: string) => req<Dispatch>('POST', '/api/dispatches/move', { id, host, agent, profile }),
   /** 新建（不带 id）或修改一个角色 */

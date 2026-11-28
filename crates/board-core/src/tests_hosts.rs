@@ -6871,3 +6871,193 @@ fn host_secrets_follow_the_sync_switches() {
     ui(&mut s, |w: &mut W| w.host_update("mbp", &HostPatch { sync_git: Some(false), ..Default::default() }).map(|_| ())).unwrap();
     assert_eq!(at(&s, 1, HostSecret::Git, T0 + S), SecretAccess::SyncOff);
 }
+
+/* ---------------- 批量派发（default/main#737） ---------------- */
+
+fn batch(s: &mut Store, at: i64, cards: &[i64], host: Option<&str>, profile: Option<&str>) -> Result<hosts::DispatchBatch> {
+    s.write(at, Origin::ui(None), |w| {
+        let b = w.resolve(B)?;
+        w.dispatch_batch(&b, cards, host, None, profile, &Actor::human())
+    })
+}
+
+/// 会话第 1 张（board host 从排队里开始的）和排在会话里的
+fn heads(ds: &[Dispatch]) -> Vec<&Dispatch> {
+    ds.iter().filter(|d| !d.in_session_queue()).collect()
+}
+
+#[test]
+fn batch_groups_by_per_session_and_free_slots() {
+    assert_eq!(hosts::batch_groups(10, 2, 4), vec![2; 5], "per 2、空 4 位、10 张：5 组各 2 张");
+    assert_eq!(hosts::batch_groups(4, 4, 4), vec![1; 4], "per 4、空 4 位、4 张：4 组各 1 张，不让空位干等");
+    assert_eq!(hosts::batch_groups(10, 4, 2), vec![4, 3, 3], "各组尽量平均");
+    assert_eq!(hosts::batch_groups(5, 2, 0), vec![2, 2, 1], "没有空位：按每个会话最多几张切");
+    assert_eq!(hosts::batch_groups(3, 4, 9), vec![1, 1, 1]);
+    assert_eq!(hosts::batch_groups(3, 0, 0), vec![1, 1, 1], "每个会话最多几张至少按 1 算");
+    assert!(hosts::batch_groups(0, 2, 4).is_empty());
+}
+
+/// per_session = 2、空 4 个位，批量派 10 张：一次写入排成 5 个会话（各 2 张），4 个马上能开始、1 个排队；
+/// 会话做完第一张 board next 接着做组里的下一张，组里做完 SESSION_DONE；前后共 5 个 agent 进程
+#[test]
+fn batch_dispatch_fills_sessions_by_per_session() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    set_host(&mut s, HostPatch { max: Some(4), per_session: Some(2), ..Default::default() }).unwrap();
+    let cards: Vec<i64> = (0..10).map(|i| new_card(&mut s, T0, &format!("卡 {i}"))).collect();
+    let r = batch(&mut s, T0 + S, &cards, Some("mbp"), None).unwrap();
+    assert!(r.failed.is_empty());
+    assert_eq!(r.ok.iter().map(|d| d.card).collect::<Vec<_>>(), cards, "按选中的顺序返回");
+    let hs = heads(&r.ok);
+    assert_eq!(hs.iter().map(|d| d.card).collect::<Vec<_>>(), vec![cards[0], cards[2], cards[4], cards[6], cards[8]], "按选中的顺序连续切");
+    assert!(r.ok.iter().all(|d| d.total == 2), "每个会话 2 张");
+    assert_eq!((r.ok[1].session, r.ok[1].seq), (r.ok[0].id, 2), "第 2 张排在第 1 张的会话里");
+    assert!(col(&s, "doing").len() == 10, "10 张都进锁定状态排队");
+    let text = card(&s, cards[1]).activity.iter().map(|x| x.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains(&format!("批量派发，会话第 2/2 张，等 #{} 的会话接着做", cards[0])), "{text}");
+    // board host 只拿到 5 个会话第 1 张；4 个位置开 4 个会话，第 5 个排队
+    let w = s.read(|r| r.host_work("mbp", T0 + S)).unwrap();
+    assert_eq!(w.queued.iter().map(|d| d.id).collect::<Vec<_>>(), hs.iter().map(|d| d.id).collect::<Vec<_>>());
+    for d in &hs[..4] {
+        assert_eq!(begin(&mut s, T0 + 2 * S, d.id).unwrap().state, "running");
+    }
+    assert_eq!(begin(&mut s, T0 + 2 * S, hs[4].id).unwrap_err().code, ErrorCode::Usage, "会话位满了");
+    assert_eq!(begin(&mut s, T0 + 2 * S, r.ok[1].id).unwrap_err().code, ErrorCode::Usage, "排在会话里的不由 board host 开始");
+    // 第一个会话：交审后 board next 领到组里的下一张，同一个名字；再 next 结束
+    let name = get(&s, hs[0].id).name.unwrap();
+    submit(&mut s, T0 + 3 * S, &name, cards[0]);
+    let c = next(&mut s, T0 + 3 * S, &name).unwrap();
+    assert_eq!((c.card.id, c.card.holder.as_deref()), (cards[1], Some(name.as_str())));
+    let d2 = get(&s, r.ok[1].id);
+    assert_eq!((d2.state.as_str(), d2.host.as_str(), d2.name.as_deref()), ("running", "mbp", Some(name.as_str())));
+    assert!(card(&s, cards[1]).activity.iter().any(|a| a.text.contains("接着做（手动，这个会话的第 2 张")));
+    submit(&mut s, T0 + 4 * S, &name, cards[1]);
+    let e = next(&mut s, T0 + 4 * S, &name).unwrap_err();
+    assert_eq!(e.code, ErrorCode::SessionDone);
+    assert!(e.message.contains("排着的卡片都开始过或取消了"), "{}", e.message);
+    end(&mut s, T0 + 5 * S, hs[0].id, Some(0), &[]);
+    // 空出一个会话位：第 5 个会话开始。一共开了 5 个 agent 进程
+    assert_eq!(begin(&mut s, T0 + 6 * S, hs[4].id).unwrap().state, "running");
+    // 单张派发不变：只做指定的那一张
+    let one = new_card(&mut s, T0, "单张");
+    let d = dispatch(&mut s, T0 + 7 * S, one, "mbp", None).unwrap();
+    assert_eq!((d.session, d.total), (d.id, 1));
+}
+
+/// per_session = 4、空 4 个位，批量派 4 张：4 个会话同时开始，各做 1 张；空位少时才合成大的会话
+#[test]
+fn batch_dispatch_uses_free_slots_before_packing() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    set_host(&mut s, HostPatch { max: Some(4), per_session: Some(4), ..Default::default() }).unwrap();
+    let cards: Vec<i64> = (0..4).map(|i| new_card(&mut s, T0, &format!("卡 {i}"))).collect();
+    let r = batch(&mut s, T0 + S, &cards, Some("mbp"), None).unwrap();
+    assert_eq!(heads(&r.ok).len(), 4);
+    assert!(r.ok.iter().all(|d| d.total == 1));
+    // 2 个会话在跑（空 2 个位）时再派 4 张：2 个会话各 2 张
+    for d in &r.ok[..2] {
+        begin(&mut s, T0 + 2 * S, d.id).unwrap();
+    }
+    for d in &r.ok[2..] {
+        s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(d.id, &Actor::human(), "人")).unwrap();
+    }
+    let more: Vec<i64> = (0..4).map(|i| new_card(&mut s, T0, &format!("再 {i}"))).collect();
+    let r = batch(&mut s, T0 + 3 * S, &more, Some("mbp"), None).unwrap();
+    assert_eq!(heads(&r.ok).iter().map(|d| d.card).collect::<Vec<_>>(), vec![more[0], more[2]]);
+    assert!(r.ok.iter().all(|d| d.total == 2));
+    // 离线的机器：没有空位，按每个会话最多几张切（4 张一个会话）
+    let late: Vec<i64> = (0..4).map(|i| new_card(&mut s, T0, &format!("晚 {i}"))).collect();
+    let r = batch(&mut s, T0 + 200 * S, &late, Some("mbp"), None).unwrap();
+    assert_eq!((heads(&r.ok).len(), r.ok[0].total), (1, 4));
+}
+
+/// 校验不过的卡记进 failed，其余照常派；会交给不同角色的卡不排进同一个会话；拆解各做各的
+#[test]
+fn batch_dispatch_reports_failures_and_keeps_roles_apart() {
+    let mut s = store();
+    beat(&mut s, T0, &switching(report_cd("i1"))).unwrap();
+    set_host(&mut s, HostPatch { max: Some(1), per_session: Some(4), ..Default::default() }).unwrap();
+    s.write(T0, Origin::ui(None), |w| w.provider_put(relay(), "人", "界面")).unwrap();
+    let a = put_role(&mut s, T0, role("A", "claude", "relay", "model-a", "")).unwrap();
+    let b = put_role(&mut s, T0, role("B", "claude", "relay", "model-b", "")).unwrap();
+    let la = label(&mut s, "a");
+    let lb = label(&mut s, "b");
+    let mut ra = cond("in", &["a"], "");
+    ra.profile = a.id.clone();
+    let mut rb = cond("in", &["b"], "");
+    rb.profile = b.id.clone();
+    s.write(T0, Origin::ui(None), |w| w.sched_update(Some(&[ra, rb]), None)).unwrap();
+    let cards: Vec<i64> = (0..4).map(|i| new_card(&mut s, T0, &format!("卡 {i}"))).collect();
+    for (i, c) in cards.iter().enumerate() {
+        tag(&mut s, *c, if i % 2 == 0 { la } else { lb });
+    }
+    let taken = new_card(&mut s, T0, "已经派过");
+    tag(&mut s, taken, la);
+    dispatch(&mut s, T0, taken, "mbp", None).unwrap();
+    let idea = exec(&mut s, T0, &Actor::human(), Cmd::New { title: "一句话需求".into(), body: None, column: Some(INBOX.into()), top: false, labels: vec![], from: None })
+        .unwrap()
+        .card
+        .id;
+    let r = batch(&mut s, T0 + S, &[cards[0], taken, cards[1], 9999, cards[2], idea, cards[3]], Some("mbp"), None).unwrap();
+    assert_eq!(
+        r.failed.iter().map(|f| (f.id, f.code)).collect::<Vec<_>>(),
+        vec![(taken, ErrorCode::AlreadyDispatched), (9999, ErrorCode::NotFound)]
+    );
+    let by = |card: i64| r.ok.iter().find(|d| d.card == card).unwrap().clone();
+    // 交给 A 的 0、2 一个会话，交给 B 的 1、3 一个会话（机器只有 1 个位、已经被占：按每个会话最多几张切）
+    assert_eq!((by(cards[2]).session, by(cards[2]).profile.clone()), (by(cards[0]).id, a.id.clone()));
+    assert_eq!((by(cards[3]).session, by(cards[3]).profile.clone()), (by(cards[1]).id, b.id.clone()));
+    let split = by(idea);
+    assert_eq!((split.kind.as_str(), split.total), (hosts::KIND_SPLIT, 1), "拆解不进会话");
+    assert_eq!(heads(&r.ok).iter().map(|d| d.card).collect::<Vec<_>>(), vec![cards[0], cards[1], idea], "会话按第 1 张的先后");
+}
+
+/// 会话提前结束：手动批量排进来、还没开始的不取消，改成各自单独排队，有空位就开始；会话第 1 张没开始就被取消、
+/// 改派时，后面的接替开头；组员能单独改派（拿出来单独排队）
+#[test]
+fn batch_session_members_survive_early_end_cancel_and_move() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    set_host(&mut s, HostPatch { max: Some(1), per_session: Some(3), ..Default::default() }).unwrap();
+    let cards: Vec<i64> = (0..3).map(|i| new_card(&mut s, T0, &format!("卡 {i}"))).collect();
+    let r = batch(&mut s, T0 + S, &cards, Some("mbp"), None).unwrap();
+    assert_eq!((heads(&r.ok).len(), r.ok[0].total), (1, 3));
+    // 第 1 张没开始就取消：第 2 张接替开头，第 3 张排在它后面
+    s.write(T0 + 2 * S, Origin::ui(None), |w| w.dispatch_cancel(r.ok[0].id, &Actor::human(), "人")).unwrap();
+    let (d1, d2) = (get(&s, r.ok[1].id), get(&s, r.ok[2].id));
+    assert!(!d1.in_session_queue() && d1.total == 2, "{d1:?}");
+    assert_eq!(d2.session, d1.id);
+    let w = s.read(|r| r.host_work("mbp", T0 + 2 * S)).unwrap();
+    assert_eq!(w.queued.iter().map(|d| d.id).collect::<Vec<_>>(), vec![d1.id]);
+    // 开始后异常退出：组里没开始的第 3 张不丢，改成单独排队，等空位
+    let run = begin(&mut s, T0 + 3 * S, d1.id).unwrap();
+    assert_eq!(run.state, "running");
+    end(&mut s, T0 + 4 * S, d1.id, Some(1), &["boom"]);
+    let d2 = get(&s, r.ok[2].id);
+    assert_eq!((d2.state.as_str(), d2.in_session_queue()), ("queued", false));
+    assert!(card(&s, cards[2]).activity.iter().any(|a| a.text.contains("改成单独排队")));
+    assert_eq!(begin(&mut s, T0 + 5 * S, d2.id).unwrap().state, "running", "有空位就照单张派发开始");
+    // 组员单独改派：拿出来单独排队
+    let more: Vec<i64> = (0..3).map(|i| new_card(&mut s, T0, &format!("再 {i}"))).collect();
+    let r = batch(&mut s, T0 + 6 * S, &more, Some("mbp"), None).unwrap();
+    assert_eq!(heads(&r.ok).len(), 1);
+    let moved = s.write(T0 + 7 * S, Origin::ui(None), |w| w.dispatch_move(r.ok[2].id, None, None, None, &Actor::human())).unwrap();
+    assert!(!moved.in_session_queue() && moved.any, "改派给任意机器后单独排队");
+    assert_eq!(get(&s, r.ok[0].id).total, 2, "原来的会话剩 2 张");
+}
+
+/// 任意机器：后面几张跟着会话第 1 张分到的机器走
+#[test]
+fn batch_dispatch_to_any_host_members_follow_the_head() {
+    let mut s = store();
+    beat(&mut s, T0, &report("mbp", "i1", vec![])).unwrap();
+    set_host(&mut s, HostPatch { max: Some(2), per_session: Some(2), ..Default::default() }).unwrap();
+    let cards: Vec<i64> = (0..4).map(|i| new_card(&mut s, T0, &format!("卡 {i}"))).collect();
+    let r = batch(&mut s, T0 + S, &cards, None, None).unwrap();
+    assert!(r.failed.is_empty());
+    assert_eq!(heads(&r.ok).len(), 2, "空 2 个位、每个会话最多 2 张：2 个会话");
+    assert!(r.ok.iter().all(|d| d.any && d.host == "mbp"), "{:?}", r.ok.iter().map(|d| (&d.host, d.any)).collect::<Vec<_>>());
+    let name = begin(&mut s, T0 + 2 * S, r.ok[0].id).unwrap().name.unwrap();
+    submit(&mut s, T0 + 3 * S, &name, cards[0]);
+    assert_eq!(next(&mut s, T0 + 3 * S, &name).unwrap().card.id, cards[1]);
+}

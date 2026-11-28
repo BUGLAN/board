@@ -7,9 +7,10 @@ import { useData } from '../../store/data';
 import { useUI } from '../../store/ui';
 import { DispatchFlow } from './DispatchFlow';
 
-const { cloneHostDir, dispatchApi } = vi.hoisted(() => ({
+const { cloneHostDir, dispatchApi, batchApi } = vi.hoisted(() => ({
   cloneHostDir: vi.fn(async (..._a: unknown[]) => ({}) as never),
   dispatchApi: vi.fn(),
+  batchApi: vi.fn(),
 }));
 
 vi.mock('../../lib/api', async orig => {
@@ -21,6 +22,7 @@ vi.mock('../../lib/api', async orig => {
       providers: async () => ({ providers: [], meta: [] }),
       cloneHostDir: (...args: unknown[]) => cloneHostDir(...args),
       dispatch: (...args: unknown[]) => dispatchApi(...args),
+      dispatchBatch: (...args: unknown[]) => batchApi(...args),
     },
   };
 });
@@ -130,6 +132,7 @@ describe('批量派送（多张卡片）', () => {
   // 规则 1：带 bug 的给 Codex；规则 2：带 ui 的给 Claude。#6 在锁定状态，跳过
   beforeEach(() => {
     dispatchApi.mockReset();
+    batchApi.mockReset();
     useUI.setState({ dispatchOf: { cards: [2, 3, 4, 5, 6] }, toasts: [] });
     useData.setState({
       ws: workspace({
@@ -179,26 +182,23 @@ describe('批量派送（多张卡片）', () => {
     expect(host.querySelector('.dp-hosts')).toBeNull();
   });
 
-  it('能派的逐张带上选中的角色派发；单张失败不影响后面的，汇总成功、跳过、失败', async () => {
-    dispatchApi.mockImplementation(async (board: string, card: number) => {
-      if (card === 4) throw new Error('机器没有这块白板的目录');
-      return { id: 100 + card, board, card, hostId: 1, host: 'win-preview', state: 'queued', profile: 'p1' };
-    });
+  it('能派的一个请求带上选中的角色派整批；单张失败不影响别的，汇总成功、跳过、失败', async () => {
+    batchApi.mockImplementation(async (board: string, cards: number[]) => ({
+      ok: cards.filter(c => c !== 4).map(card => ({ id: 100 + card, board, card, hostId: 1, host: 'win-preview', state: 'queued', profile: 'p1' })),
+      failed: [{ id: 4, code: 'BOARD_NOT_ON_HOST', message: '机器没有这块白板的目录' }],
+      rev: 2,
+    }));
     await act(async () => root.render(<DispatchFlow cards={[2, 3, 4, 5, 6]} on />));
     // 换成 Codex、指定 win-preview
     await act(async () => [...host.querySelectorAll<HTMLButtonElement>('.pfz-prof')].find(b => b.textContent?.includes('Codex'))!.click());
     await act(async () => [...host.querySelectorAll<HTMLButtonElement>('.pfz-host:not(.pfz-any)')].find(b => b.textContent?.includes('win-preview'))!.click());
-    expect(host.querySelector('.pfd-say')?.textContent).toContain('4 张派给「Codex」· win-preview');
+    expect(host.querySelector('.pfd-say')?.textContent).toContain('4 张派给「Codex」· win-preview：按会话分组排队');
     await act(async () => {
       host.querySelector<HTMLButtonElement>('.pfz-foot .btn.brand')!.click();
       await new Promise(resolve => setTimeout(resolve, 0));
     });
-    expect(dispatchApi.mock.calls).toEqual([
-      ['p/a', 2, 'win-preview', undefined, 'p1'],
-      ['p/a', 3, 'win-preview', undefined, 'p1'],
-      ['p/a', 4, 'win-preview', undefined, 'p1'],
-      ['p/a', 5, 'win-preview', undefined, 'p1'],
-    ]);
+    expect(batchApi.mock.calls).toEqual([['p/a', [2, 3, 4, 5], 'win-preview', undefined, 'p1']]);
+    expect(dispatchApi).not.toHaveBeenCalled();
     expect(useUI.getState().dispatchOf).toBeNull();
     const t = useUI.getState().toasts.at(-1)!;
     expect(t).toMatchObject({ type: 'error', title: '成功 3 张 · 跳过 1 张 · 失败 1 张' });

@@ -34,7 +34,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use board_core::hosts::EndHow;
 use board_core::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::auth::{human, Caller};
@@ -819,6 +819,49 @@ pub(crate) async fn create(State(s): State<AppState>, Extension(caller): Extensi
                     host => w.dispatch_create(&board, b.card, host, b.agent.as_deref(), b.profile.as_deref(), &actor),
                 }
             })
+        })
+        .await?;
+    s.poke();
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BatchBody {
+    board: String,
+    /// 按人选中的顺序
+    cards: Vec<i64>,
+    /// 机器名；不带或是空的 = 任意机器（服务端挑）
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default, rename = "as")]
+    who: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct BatchOut {
+    #[serde(flatten)]
+    batch: board_core::hosts::DispatchBatch,
+    rev: i64,
+}
+
+/// `POST /api/dispatches/batch`：批量派发（default/main#737）。一次写入派整批，按目标机器「一个会话最多做几张」排成几个会话；
+/// 校验不过的卡记在 `failed`，其余照常派。返回格式同 `POST /api/cards/batch`
+pub(crate) async fn create_batch(State(s): State<AppState>, Extension(caller): Extension<Caller>, h: HeaderMap, Json(v): Json<Value>) -> ApiResult<BatchOut> {
+    let b: BatchBody = parse(v)?;
+    let (actor, _) = who(&s, &caller, b.who.as_deref()).await?;
+    let origin = origin_of(&caller, &h);
+    let out = s
+        .db(move |st| {
+            let batch = st.write(now_ms(), origin, |w| {
+                let board = w.resolve(&b.board)?;
+                let host = Some(b.host.trim()).filter(|x| !x.is_empty());
+                w.dispatch_batch(&board, &b.cards, host, b.agent.as_deref(), b.profile.as_deref(), &actor)
+            })?;
+            Ok(BatchOut { batch, rev: st.rev()? })
         })
         .await?;
     s.poke();

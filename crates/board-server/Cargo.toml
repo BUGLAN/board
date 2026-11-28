@@ -55,6 +55,11 @@ path = "tests/cards_batch.rs"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "dispatch_batch"
+path = "tests/dispatch_batch.rs"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "compression"
 path = "tests/compression.rs"
 required-features = ["test-hooks"]

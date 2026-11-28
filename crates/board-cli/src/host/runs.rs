@@ -332,7 +332,7 @@ pub(super) fn unpushed(dir: &Path) -> Option<String> {
 }
 
 /// 启动 agent 的提示词（一行 skill 调用，后面带 board host 的身份提示）。
-/// 做卡：定时领取的会话做完一张后用 board next 接着做（手动派发的会话 board next 会返回 SESSION_DONE）；
+/// 做卡：定时领取、批量派发排成的会话做完一张后用 board next 接着做（单张手动派发的会话 board next 会返回 SESSION_DONE）；
 /// 拆解「未整理」里的条目：不领取，先按粒度预检（偏小的不拆：能直接做的不建卡，只是原始需求的整理成一张），
 /// 拆完评论后直接结束（PRD §9.1）
 /// 按角色派发时这一个进程的设置（见 [`Host::role_run`]）

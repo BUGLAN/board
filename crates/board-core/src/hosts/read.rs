@@ -853,8 +853,9 @@ impl<'a> R<'a> {
         };
         Ok(HostWork {
             running: self.dispatches("WHERE d.host = ?1 AND d.state = 'running' ORDER BY d.id", [name])?,
-            // 会话里排着的派发只由那个会话的 board next 开始，不给 board host（它按创建先后开始 queued 里的）
-            queued: self.dispatches("WHERE d.host_id = ?1 AND d.state = 'queued' AND d.session IS NULL ORDER BY d.id", [h.id])?,
+            // 会话里排着的派发只由那个会话的 board next 开始，不给 board host（它按创建先后开始 queued 里的）；
+            // 批量派发排成的会话第 1 张 session 是自己（default/main#737），照样给
+            queued: self.dispatches("WHERE d.host_id = ?1 AND d.state = 'queued' AND (d.session IS NULL OR d.session = d.id) ORDER BY d.id", [h.id])?,
             host: self.host_info_with(&h, now, Some(&unmatched))?,
             now,
             skills: Some(self.skills()?),
@@ -932,8 +933,8 @@ impl<'a> W<'a> {
     }
 
     /// 这台机器现在开着几个会话（= 同时在跑的几个 agent 进程）。`max` 限制的是会话数，不是派发条数：
-    /// 定时领取的会话里排着的派发（`session != id`）不占额外的会话位，它们由同一个进程用 `board next` 接着做；
-    /// 手动派发的一张卡各自是一个会话（`session` 为空或等于自己）
+    /// 会话里排着的派发（`session != id`，定时领取、批量派发排成的）不占额外的会话位，它们由同一个进程用 `board next` 接着做；
+    /// 单张手动派发的一张卡各自是一个会话（`session` 为空或等于自己）
     pub(super) fn sessions_on(&self, h: &HostRow) -> Result<i64> {
         Ok(self.tx.query_row(
             "SELECT COUNT(DISTINCT COALESCE(session, id)) FROM dispatches WHERE host = ?1 AND state = 'running'",

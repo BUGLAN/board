@@ -5,7 +5,7 @@ import { DispatchFlow } from '../profiles/DispatchFlow';
 import { useEffect, useRef, useState } from 'react';
 import { openBoard, openCard } from '../../lib/actions';
 import { api } from '../../lib/api';
-import { bulkDispatchToast, dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
+import { bulkDispatchResult, bulkDispatchToast, dispatchPlan } from '../../lib/boardSelect';
 import { agentMark, agentUsable, agentWhy, blockOf, cardDispatch, dispatchRoute, envName, hostLoad, hostWords, hostsOf, inSession, isSplit, queueReason, sessionRunning, skillMiss, sourceOf } from '../../lib/hosts';
 import type { Dispatch, HostInfo } from '../../lib/types';
 import { cx, durWords, hhmm, isImeKey } from '../../lib/util';
@@ -279,9 +279,9 @@ function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on:
         return;
       }
 
-      // 批量：按选中顺序逐张发；单张失败只记下来，后面的照常发。全部返回后才关对话框
+      // 批量：一个请求派整批（服务端按机器「一个会话最多做几张」排成几个会话）；单张失败不影响别的。返回后才关对话框
       const ids = plan!.ids;
-      const result = await optimistic(null, () => runBulkDispatch(ids, id => api.dispatch(path, id, to, agent || undefined)));
+      const result = bulkDispatchResult(await optimistic(null, () => api.dispatchBatch(path, ids, to, agent || undefined)));
       close();
       const where = !any && result.ok[0] ? `派给 ${hostWords(result.ok[0])} · ${result.ok[0].agentLabel}` : '';
       toast(bulkDispatchToast(result, skipped, where));
@@ -296,7 +296,7 @@ function DispatchBody({ cards, move, on }: { cards: number[]; move?: number; on:
     <div className={cx('dialog-wrap', on && 'on')} onClick={e => e.target === e.currentTarget && close()}>
       <div className="dialog dp-dialog" role="dialog" aria-modal="true" aria-label={heading}>
         <h3>{heading}</h3>
-        <p className="dp-sub">{single != null ? title : `共 ${cards.length} 张卡片，逐张排队派发`}</p>
+        <p className="dp-sub">{single != null ? title : `共 ${cards.length} 张卡片，按会话分组排队`}</p>
         {route?.from && route.into && (
           <p className="dp-note dp-split">
             会从「{route.from.name}」移出，直接在「{route.into.name}」排队，不经过可领取状态；排队时取消派发，回到「{route.from.name}」。

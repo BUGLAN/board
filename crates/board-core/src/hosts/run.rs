@@ -271,16 +271,16 @@ impl<'a> W<'a> {
             ));
         }
         let h = self.host_row(&d.host)?;
-        let why = if d.source != "cron" {
-            Some(format!("这个会话是{}派发启动的，只做指定的那一张", source_words(&d.source)))
-        } else if d.stop_by.is_some() {
+        // 手动派发（批量派发排成的会话，default/main#737）不看领取规则、接单时段：会话里还排着就接着做
+        let cron = d.source == "cron";
+        let why = if d.stop_by.is_some() {
             Some("有人停止了这个会话".into())
         } else {
             match &h {
                 None => Some(format!("机器「{}」已被移除", d.host)),
                 Some(h) if h.paused => Some(format!("机器「{}」暂停接单", h.name)),
                 // 规则被删光：做完当前这张就结束，排着的取消
-                Some(h) if h.claim_rules(self.now).is_none() => Some(format!("机器「{}」已经没有领取规则", h.name)),
+                Some(h) if cron && h.claim_rules(self.now).is_none() => Some(format!("机器「{}」已经没有领取规则", h.name)),
                 Some(_) => None,
             }
         };
@@ -291,6 +291,10 @@ impl<'a> W<'a> {
         let queue: Vec<i64> =
             self.collect("SELECT id FROM dispatches WHERE session = ?1 AND state = 'queued' ORDER BY id", [d.session], |r| r.get(0))?;
         if queue.is_empty() {
+            let alone: bool = self.tx.query_row("SELECT COUNT(*) <= 1 FROM dispatches WHERE session = ?1", [d.session], |r| r.get(0))?;
+            if !cron && alone {
+                return self.session_done(&d, &format!("这个会话是{}派发启动的，只做指定的那一张", source_words(&d.source)));
+            }
             return self.session_done(&d, "这个会话排着的卡片都开始过或取消了");
         }
         // 结算上一张：卡片已经不由这个名字持有，在交审状态记「已交审」，其他状态记「做不下去」
@@ -328,16 +332,23 @@ impl<'a> W<'a> {
                             self.tx.execute("UPDATE dispatches SET path = ?2 WHERE id = ?1", params![q.id, path])?;
                         }
                     }
+                    // 在同一台机器上、同一个进程里做：机器、agent 跟着这个会话（任意机器的批量派发排进来时还没分到机器）
                     self.tx.execute(
-                        "UPDATE dispatches SET state = 'running', name = ?2, env = ?3, env_name = ?4, started_at = ?5, model = ?6, effort = ?7 WHERE id = ?1",
-                        params![q.id, name, q.env, q.env_name, self.now, q.model, q.effort],
+                        "UPDATE dispatches SET state = 'running', name = ?2, env = ?3, env_name = ?4, started_at = ?5, model = ?6, effort = ?7,
+                                host_id = ?8, host = ?9, agent = ?10, agent_label = ?11 WHERE id = ?1",
+                        params![q.id, name, q.env, q.env_name, self.now, q.model, q.effort, d.host_id, d.host, d.agent, d.agent_label],
                     )?;
                     let seq: i64 = self.tx.query_row("SELECT COUNT(*) FROM dispatches WHERE session = ?1 AND id <= ?2", params![d.session, q.id], |r| r.get(0))?;
                     let who = match &q.env_name {
-                        Some(e) => format!("{}（{e}）", q.agent_label),
-                        None => format!("{} ", q.agent_label),
+                        Some(e) => format!("{}（{e}）", d.agent_label),
+                        None => format!("{} ", d.agent_label),
                     };
-                    let text = format!("派发开始：{} 上的 {who}以 {name} 接着做（定时，这个会话的第 {seq} 张{}）", h.name, opts_words(&q.model, &q.effort));
+                    let text = format!(
+                        "派发开始：{} 上的 {who}以 {name} 接着做（{}，这个会话的第 {seq} 张{}）",
+                        h.name,
+                        source_words(&q.source),
+                        opts_words(&q.model, &q.effort)
+                    );
                     self.track(d.board, q.card, &actor, "dispatch", &text)?;
                     self.touch_hosts();
                     return Ok(Ok(self.read().card(&board, q.card)?));
@@ -361,16 +372,52 @@ impl<'a> W<'a> {
     }
 
     /// 会话不再接着做（board next 返回 SESSION_DONE、进程退出、被人停止、机器掉线）：这个会话还排着的派发都取消，
-    /// 结果「已取消」，卡片回到原来的可领取状态最上面；这一轮还没结束时由新开的会话重新排
+    /// 结果「已取消」，卡片回到原来的可领取状态最上面；这一轮还没结束时由新开的会话重新排。
+    /// 手动批量派发排进来的不取消（default/main#737）：改成各自单独排队（同一台机器 / 任意机器），有空位时照单张派发开始
     pub(super) fn cancel_session_rest(&mut self, session: i64, why: &str) -> Result<()> {
         // 后排的先回去：卡片一张张回到可领取状态最上面，最后回去的在最上面，回去后仍是排好的顺序
         let ids: Vec<i64> = self.collect("SELECT id FROM dispatches WHERE session = ?1 AND state = 'queued' ORDER BY id DESC", [session], |r| r.get(0))?;
+        let mut any = false;
         for id in ids {
             let q = self.drow(id)?;
+            if q.source != "cron" {
+                self.tx.execute("UPDATE dispatches SET session = NULL WHERE id = ?1", [id])?;
+                let text = format!("会话结束（{why}），这张还没开始，改成单独排队（{}）", Self::dispatch_words(&q));
+                self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
+                self.touch_hosts();
+                any |= q.any_host;
+                continue;
+            }
             self.close_dispatch(&q, "canceled", None)?;
             let back = self.unreserve(q.board, q.card, &Actor::system())?;
             let text = format!("会话结束（{why}），排着的派发取消（{}）{back}", Self::dispatch_words(&q));
             self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
+        }
+        if any {
+            self.assign_any()?;
+        }
+        Ok(())
+    }
+
+    /// 批量派发的会话第 1 张没开始就结束了（取消、没领到、卡片被移走或删掉、机器被移除），或被改派出了这个会话：
+    /// 排在它后面的几张不跟着丢，由下一张接替开头，其余改排在它后面（default/main#737）
+    pub(super) fn regroup(&mut self, head: i64) -> Result<()> {
+        let rest: Vec<i64> =
+            self.collect("SELECT id FROM dispatches WHERE session = ?1 AND id <> ?1 AND state = 'queued' ORDER BY id", [head], |r| r.get(0))?;
+        let Some(&first) = rest.first() else { return Ok(()) };
+        let lead = if rest.len() > 1 { Some(first) } else { None };
+        self.tx.execute("UPDATE dispatches SET session = ?2 WHERE id = ?1", params![first, lead])?;
+        self.tx.execute("UPDATE dispatches SET session = ?2 WHERE session = ?1 AND id <> ?1 AND id <> ?2 AND state = 'queued'", params![head, first])?;
+        let q = self.drow(first)?;
+        let text = if lead.is_some() {
+            format!("会话原来的第 1 张没开始就离开了会话，这张接替开头，排队（{}）", Self::dispatch_words(&q))
+        } else {
+            format!("会话原来的第 1 张没开始就离开了会话，这张改成单独排队（{}）", Self::dispatch_words(&q))
+        };
+        self.track_dispatch(q.board, q.card, &Actor::system(), "dispatch", &text)?;
+        self.touch_hosts();
+        if q.any_host {
+            self.assign_any()?;
         }
         Ok(())
     }
@@ -445,13 +492,16 @@ impl<'a> W<'a> {
         Ok(())
     }
 
-    /// 写一条派发的结束（不动名字：board next 接着做下一张时用）
+    /// 写一条派发的结束（不动名字：board next 接着做下一张时用）。没开始就结束的会话第 1 张：后面排着的接替它（[`W::regroup`]）
     pub(super) fn close_row(&mut self, d: &DRow, result: &str, exit_code: Option<i64>) -> Result<()> {
         self.tx.execute(
             "UPDATE dispatches SET state = 'done', result = ?2, ended_at = ?3, exit_code = ?4 WHERE id = ?1",
             params![d.id, result, self.now, exit_code],
         )?;
         self.touch_hosts();
+        if d.state == "queued" && d.session == d.id {
+            self.regroup(d.id)?;
+        }
         Ok(())
     }
 
@@ -774,7 +824,7 @@ impl<'a> W<'a> {
             }
             let Some((card, agent, role)) = hit else { continue };
             self.tx.execute("UPDATE hosts SET rr = ?2 WHERE id = ?1", params![h.id, ((i + 1) % n) as i64])?;
-            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, Some(&role), "cron", &Actor::system(), "", None)?;
+            let d = self.insert_dispatch(board.id, card, &h, &agent.id, &agent.name, Some(&role), "cron", &Actor::system(), "", None, None)?;
             let d = self.start(&h, self.drow(d.id)?, token)?;
             if d.state == "running" {
                 // 开会话时把这个会话要做的卡片一次排好：先把一个会话排满，再开下一个

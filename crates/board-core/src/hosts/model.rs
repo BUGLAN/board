@@ -788,7 +788,7 @@ pub struct HostInfo {
     pub dirs_rev: i64,
     /// 最多几个会话：同一时间最多开几个 agent 进程（1–8）
     pub max: i64,
-    /// 定时领取启动的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
+    /// 定时领取、批量派发排成的会话一个最多做几张（1–8，默认 4）；旧版服务端没有这一项
     #[serde(default = "default_per_session")]
     pub per_session: i64,
     /// 单次最长运行（分钟，0 = 不限，默认 180）：所有机器一个值（`sched` 表），随机器发给 board host；旧版服务端没有这一项

@@ -8,14 +8,15 @@
      移动走 batchCards（一次 POST /api/cards/batch）：乐观更新，当帧生效；一张失败只撤那一张
    - 移动到：同一块白板的状态（和「未整理」），规则同拖动（lib/drag vetoFor）：锁定状态不能移入，被持有的跳过
    - 派送：按单卡同一套规则留下能派的（lib/hosts dispatchRoute），已有排队 / 在跑、锁定、被持有的跳过；
-     逐张调用已有接口，单张失败不影响后面的
+     其余一次 POST /api/dispatches/batch 派整批（服务端按会话分组），单张失败不影响别的
    ========================================================================== */
 import { create } from 'zustand';
+import { ApiError } from './api';
 import { justDropped, vetoFor } from './drag';
 import { dispatchRoute } from './hosts';
 import { boardFlow, INBOX, INBOX_NAME } from './schema';
 import { rangeIds, unionIds } from './selection';
-import type { BoardSnapshot, Card, ColumnKey, Dispatch, Status } from './types';
+import type { BoardSnapshot, Card, ColumnKey, Dispatch, ErrorCode, Status } from './types';
 import { batchCards, batchMovePatch, labelCards, useData, type LabelBatchResult } from '../store/data';
 import { overlayOpen, toast, toastError } from '../store/ui';
 
@@ -122,21 +123,12 @@ export function dispatchPlan(statuses: Status[], cards: Record<number, Card>, id
   return plan;
 }
 
-/** 逐张派发：单张失败只记下来，后面的照常发。调用方负责放进写队列并汇总结果 */
-export async function runBulkDispatch(
-  ids: number[],
-  send: (id: number) => Promise<Dispatch>,
-): Promise<{ ok: Dispatch[]; failed: { id: number; error: unknown }[] }> {
-  const ok: Dispatch[] = [];
-  const failed: { id: number; error: unknown }[] = [];
-  for (const id of ids) {
-    try {
-      ok.push(await send(id));
-    } catch (error) {
-      failed.push({ id, error });
-    }
-  }
-  return { ok, failed };
+/** 批量派发接口（api.dispatchBatch）的返回换成收尾提示要的样子：失败的带上服务端的错误码和原因 */
+export function bulkDispatchResult(r: { ok: Dispatch[]; failed: { id: number; code: ErrorCode; message: string }[] }): {
+  ok: Dispatch[];
+  failed: { id: number; error: unknown }[];
+} {
+  return { ok: r.ok, failed: r.failed.map(f => ({ id: f.id, error: new ApiError(f.code, f.message) })) };
 }
 
 /** 批量派送收尾的提示：成功、跳过、失败各几张，正文写去向和每张跳过、失败的原因。

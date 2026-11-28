@@ -401,6 +401,7 @@ pub fn router(state: AppState, cfg: &Config) -> Router {
         .route("/chats/{id}/prompt", post(chats::prompt))
         .route("/chats/{id}/cancel", post(chats::cancel))
         .route("/dispatches", post(hosts::create).get(hosts::card_dispatches))
+        .route("/dispatches/batch", post(hosts::create_batch))
         .route("/sessions/{id}", get(hosts::session))
         .route("/dispatches/cancel", post(hosts::cancel))
         .route("/dispatches/move", post(hosts::move_to))

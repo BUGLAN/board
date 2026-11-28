@@ -95,6 +95,61 @@ pub(super) struct CardCheck {
     pub(super) from: Option<String>,
 }
 
+/// 一张卡派到哪（校验都通过了，还没写）：手动派发、批量派发共用（[`W::dispatch_prep`]）
+pub(super) struct Prep {
+    pub(super) card: i64,
+    pub(super) check: CardCheck,
+    pub(super) role: Option<crate::profiles::Profile>,
+    pub(super) target: Target,
+}
+
+pub(super) enum Target {
+    /// 指定的机器和它上面的 agent
+    Host(HostRow, HostAgent),
+    /// 任意机器：指定的 agent（没指定为空）和写进派发的名称
+    Any(Option<String>, String),
+}
+
+impl Prep {
+    /// 批量派发分组用：会交给同一个角色 / agent 的卡才能排进同一个会话；拆解不进会话（各做各的，不 board next）
+    fn key(&self) -> Option<(String, String)> {
+        if self.check.split {
+            return None;
+        }
+        let agent = match &self.target {
+            Target::Host(_, a) => a.id.clone(),
+            Target::Any(a, _) => a.clone().unwrap_or_default(),
+        };
+        Some((self.role.as_ref().map(|p| p.id.clone()).unwrap_or_default(), agent))
+    }
+}
+
+/// 批量派发里这张排在会话的第几张（[`W::dispatch_batch`]）：k 从 1 开始，n 是这个会话一共几张；
+/// head 是会话第 1 张的派发 ID 和卡片（第 1 张自己为空）
+#[derive(Clone, Copy)]
+pub(super) struct Seat {
+    pub(super) k: usize,
+    pub(super) n: usize,
+    pub(super) head: Option<(i64, i64)>,
+}
+
+/// 批量派发的结果（`POST /api/dispatches/batch`）：派出去的（按选中的顺序）和没派成的卡片
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DispatchBatch {
+    pub ok: Vec<Dispatch>,
+    pub failed: Vec<crate::engine::CardBatchFail>,
+}
+
+/// 批量派发把同一种的 n 张卡切成几个会话：组数 = max(⌈n / 每个会话最多几张⌉, min(n, 现在空着的会话位))，
+/// 各组张数尽量平均（前面的组多一张）。返回每组几张（default/main#737）
+pub fn batch_groups(n: usize, per: usize, free: usize) -> Vec<usize> {
+    if n == 0 {
+        return vec![];
+    }
+    let groups = n.div_ceil(per.max(1)).max(free.min(n));
+    (0..groups).map(|i| n / groups + usize::from(i < n % groups)).collect()
+}
+
 /// 派发的来源：定时建卡建出卡后按这一条的设置派给指定的机器（PRD §4「定时建卡」）。
 /// 和手动派发一样排队、占用卡片，只做这一张；动态里写「定时建卡」
 pub const SOURCE_SCHEDULE: &str = "schedule";
@@ -180,6 +235,15 @@ pub(super) fn source_words(s: &str) -> &'static str {
         "cron" => "定时",
         SOURCE_SCHEDULE => "定时建卡",
         _ => "手动",
+    }
+}
+
+/// 批量派发的动态后半句：第 1 张「，在「进行中」排队；批量派发，会话第 1/3 张」；
+/// 后面几张「，在「进行中」排队：批量派发，会话第 2/3 张，等 #12 的会话接着做」
+pub(super) fn seat_words(s: Seat, at: &str, wait: &str) -> String {
+    match s.head {
+        Some((_, card)) => format!("，{at}排队：批量派发，会话第 {}/{} 张，等 #{card} 的会话接着做", s.k, s.n),
+        None => format!("{wait}；批量派发，会话第 1/{} 张", s.n),
     }
 }
 
@@ -361,9 +425,23 @@ impl<'a> W<'a> {
     /// 派发一张卡（手动派发、定时建卡共用）：source 是 manual 或 [`SOURCE_SCHEDULE`]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_create_from(&mut self, board: &BoardRef, card: i64, host: &str, agent: Option<&str>, profile: Option<&str>, by: &Actor, source: &str) -> Result<Dispatch> {
+        let p = self.dispatch_prep(board, card, Some(host), agent, profile, by)?;
+        self.insert_prep(board, &p, source, by, None)
+    }
+
+    /// 派发前的全部校验（不写）：卡片能不能派、用哪个角色、去哪台机器和 agent。host 为空 = 任意机器
+    pub(super) fn dispatch_prep(&self, board: &BoardRef, card: i64, host: Option<&str>, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<Prep> {
         let check = self.dispatch_card_check(board, card, by)?;
-        let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         let role = self.dispatch_profile(board, card, agent, profile)?;
+        let Some(host) = host else {
+            let agent = match &role {
+                Some(p) => Some(p.agent.as_str()),
+                None => agent.map(str::trim).filter(|s| !s.is_empty()),
+            };
+            let label = self.any_target(board, agent, role.as_ref())?;
+            return Ok(Prep { card, check, target: Target::Any(agent.map(str::to_string), label), role });
+        };
+        let h = self.host_row(host)?.ok_or_else(|| no_such_host(host))?;
         if let Some(p) = &role {
             if let Err(why) = crate::profiles::fit(p, &h, self.now) {
                 return Err(BoardError::new(ErrorCode::AgentNotOnHost, format!("机器「{host}」跑不了角色「{}」：{why}", p.name))
@@ -375,8 +453,16 @@ impl<'a> W<'a> {
         if let Some(u) = self.read().board_unfit(&h, board)? {
             return Err(u.error(host, board));
         }
-        let kind = if check.split { KIND_SPLIT } else { "" };
-        self.insert_dispatch(board.id, card, &h, &a.id, &a.name, role.as_ref(), source, by, kind, check.from.as_deref())
+        Ok(Prep { card, check, role, target: Target::Host(h, a) })
+    }
+
+    /// 按校验好的去向记一条排队的派发。seat：批量派发时这张在会话里的位置（第 2 张起记成会话里排着的，由会话头的 board next 开始）
+    pub(super) fn insert_prep(&mut self, board: &BoardRef, p: &Prep, source: &str, by: &Actor, seat: Option<Seat>) -> Result<Dispatch> {
+        let kind = if p.check.split { KIND_SPLIT } else { "" };
+        match &p.target {
+            Target::Host(h, a) => self.insert_dispatch(board.id, p.card, h, &a.id, &a.name, p.role.as_ref(), source, by, kind, p.check.from.as_deref(), seat),
+            Target::Any(agent, label) => self.insert_any(board, p, agent.as_deref(), label, by, seat),
+        }
     }
 
     /// 派发前看卡片：存在、没有排队或在跑的派发、在可领取状态或「未整理」。人派发时也可以在别的状态（待审核、错误节点、
@@ -507,6 +593,7 @@ impl<'a> W<'a> {
         by: &Actor,
         kind: &str,
         from: Option<&str>,
+        seat: Option<Seat>,
     ) -> Result<Dispatch> {
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![b, card], |r| r.get(0))?;
         self.tx.execute(
@@ -516,6 +603,7 @@ impl<'a> W<'a> {
         )?;
         let id = self.tx.last_insert_rowid();
         self.set_profile(id, role)?;
+        self.set_seat(id, seat)?;
         let label = &role_label(label, role);
         let label = label.as_str();
         let split = kind == KIND_SPLIT;
@@ -529,6 +617,10 @@ impl<'a> W<'a> {
         } else {
             format!("，{at}排队")
         };
+        let wait = match seat {
+            Some(s) => seat_words(s, &at, &wait),
+            None => wait,
+        };
         let what = if split { format!("派给 {} · {} 拆解", h.name, label) } else { format!("{}派发到 {} · {}", self.from_words(b, from)?, h.name, label) };
         self.track(b, card, by, "dispatch", &format!("{what}（{}）{wait}", source_words(source)))?;
         self.touch_hosts();
@@ -539,15 +631,16 @@ impl<'a> W<'a> {
     /// 开始的就排着，等有机器上线、恢复接单、空出位置。agent 为空时用挑中那台的默认 agent。
     /// 一台能接这块白板的机器都没有（看的是能不能接，不看在不在线）时拒绝
     pub fn dispatch_create_any(&mut self, board: &BoardRef, card: i64, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<Dispatch> {
-        let check = self.dispatch_card_check(board, card, by)?;
-        let split = check.split;
-        let role = self.dispatch_profile(board, card, agent, profile)?;
-        let agent = match &role {
-            Some(p) => Some(p.agent.as_str()),
-            None => agent.map(str::trim).filter(|s| !s.is_empty()),
-        };
-        let label = self.any_target(board, agent, role.as_ref())?;
-        let who = role_label(&label, role.as_ref());
+        let p = self.dispatch_prep(board, card, None, agent, profile, by)?;
+        let d = self.insert_prep(board, &p, "manual", by, None)?;
+        self.assign_any()?;
+        self.read().dispatch(d.id)
+    }
+
+    /// 记一条派给任意机器的排队派发（还没挑机器，由 [`W::assign_any`] 挑）
+    fn insert_any(&mut self, board: &BoardRef, p: &Prep, agent: Option<&str>, label: &str, by: &Actor, seat: Option<Seat>) -> Result<Dispatch> {
+        let (card, split) = (p.card, p.check.split);
+        let who = role_label(label, p.role.as_ref());
         let title: String = self.tx.query_row("SELECT title FROM cards WHERE board = ?1 AND id = ?2 AND deleted_at IS NULL", params![board.id, card], |r| r.get(0))?;
         self.tx.execute(
             "INSERT INTO dispatches (board, card, title, host_id, host, agent, agent_label, source, by_kind, by_name, state, created_at, kind, any_host, any_agent)
@@ -555,14 +648,152 @@ impl<'a> W<'a> {
             params![board.id, card, title, agent.unwrap_or(""), label, by.kind.as_str(), by.name, self.now, if split { KIND_SPLIT } else { "" }, agent.is_none() as i64],
         )?;
         let id = self.tx.last_insert_rowid();
-        self.set_profile(id, role.as_ref())?;
+        self.set_profile(id, p.role.as_ref())?;
+        self.set_seat(id, seat)?;
         let into = if split { None } else { self.reserve(board.id, card, by)? };
-        let at = into.map(|n| format!("，在「{n}」排队")).unwrap_or_else(|| "，排队".into());
-        let what = if split { format!("派给任意机器 · {who} 拆解") } else { format!("{}派发到任意机器 · {who}", self.from_words(board.id, check.from.as_deref())?) };
-        self.track(board.id, card, by, "dispatch", &format!("{what}（手动）{at}，等服务端挑一台能接的机器"))?;
+        let at = into.map(|n| format!("在「{n}」")).unwrap_or_default();
+        let wait = match seat {
+            Some(s @ Seat { head: Some(_), .. }) => seat_words(s, &at, &format!("，{at}排队")),
+            Some(s) => seat_words(s, &at, &format!("，{at}排队，等服务端挑一台能接的机器")),
+            None => format!("，{at}排队，等服务端挑一台能接的机器"),
+        };
+        let what = if split { format!("派给任意机器 · {who} 拆解") } else { format!("{}派发到任意机器 · {who}", self.from_words(board.id, p.check.from.as_deref())?) };
+        self.track(board.id, card, by, "dispatch", &format!("{what}（手动）{wait}"))?;
         self.touch_hosts();
-        self.assign_any()?;
         self.read().dispatch(id)
+    }
+
+    /// 批量派发记下会话：第 1 张（后面还有）的 session 记成自己，后面几张记成第 1 张的派发 ID（由它的 board next 开始）
+    fn set_seat(&mut self, id: i64, seat: Option<Seat>) -> Result<()> {
+        match seat {
+            Some(Seat { head: Some((head, _)), .. }) => {
+                self.tx.execute("UPDATE dispatches SET session = ?2 WHERE id = ?1", params![id, head])?;
+            }
+            Some(Seat { n, .. }) if n > 1 => {
+                self.tx.execute("UPDATE dispatches SET session = id WHERE id = ?1", [id])?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// 批量派发（界面多选后派发，default/main#737）：一次写入派整批。每张卡的校验和单张派发一样，不通过的记进
+    /// `failed`、其余照常派；按目标机器的「一个会话最多做几张」把会交给同一个角色 / agent 的卡按选中的顺序连续切成几个会话
+    /// （[`batch_groups`]，空着的会话位按现在能开始、接得了的机器合计）：每个会话第 1 张照单张派发排队、开始，后面几张排在
+    /// 这个会话里，由它做完一张后的 `board next` 接着做。host 为空 = 任意机器（后面几张跟着第 1 张分到的机器走）
+    pub fn dispatch_batch(&mut self, board: &BoardRef, cards: &[i64], host: Option<&str>, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<DispatchBatch> {
+        let mut ids: Vec<i64> = vec![];
+        for c in cards {
+            if !ids.contains(c) {
+                ids.push(*c);
+            }
+        }
+        if ids.len() > crate::engine::BATCH_MAX {
+            return Err(BoardError::usage(format!("一次最多派发 {} 张卡片，这次选了 {} 张", crate::engine::BATCH_MAX, ids.len())));
+        }
+        let host = host.map(str::trim).filter(|s| !s.is_empty());
+        let mut out = DispatchBatch::default();
+        let mut preps: Vec<Prep> = vec![];
+        for id in ids {
+            match self.dispatch_prep(board, id, host, agent, profile, by) {
+                Ok(p) => preps.push(p),
+                Err(e) if e.code == ErrorCode::Internal => return Err(e),
+                Err(e) => out.failed.push(crate::engine::CardBatchFail { id, code: e.code, message: e.message }),
+            }
+        }
+        // 现在空着的会话位：每台能开始新派发的机器（上限 − 在跑的会话 − 排着的会话），分组时按种类依次占
+        let hosts = self.read().host_rows()?;
+        let mut free: Vec<(usize, i64)> = vec![];
+        for (i, h) in hosts.iter().enumerate() {
+            if Self::can_start(h, self.now) {
+                free.push((i, self.candidate(h)?.free.max(0)));
+            }
+        }
+        // 同一种的卡（按第一次出现的先后），各自切成几组；组按组里第一张的先后排
+        let mut kinds: Vec<(Option<(String, String)>, Vec<usize>)> = vec![];
+        for (i, p) in preps.iter().enumerate() {
+            let k = p.key();
+            match kinds.iter_mut().find(|(x, _)| k.is_some() && *x == k) {
+                Some((_, list)) => list.push(i),
+                None => kinds.push((k, vec![i])),
+            }
+        }
+        let mut groups: Vec<Vec<usize>> = vec![];
+        for (k, list) in kinds {
+            if k.is_none() {
+                groups.extend(list.into_iter().map(|i| vec![i]));
+                continue;
+            }
+            // 能接这一种的机器：每个会话最多几张取其中最小的（不让哪台超出它的设置），空位取它们的合计
+            let first = &preps[list[0]];
+            let mut able: Vec<usize> = vec![];
+            for (i, h) in hosts.iter().enumerate() {
+                if self.batch_able(h, board, first)? {
+                    able.push(i);
+                }
+            }
+            let per = able.iter().map(|i| hosts[*i].per_session.max(1)).min().unwrap_or(1) as usize;
+            let mut spare: Vec<&mut (usize, i64)> = free.iter_mut().filter(|(i, _)| able.contains(i)).collect();
+            let total: i64 = spare.iter().map(|(_, n)| *n).sum();
+            let sizes = batch_groups(list.len(), per, total as usize);
+            // 马上能开始的组占掉空位：先占空位多的机器
+            let mut take = sizes.len().min(total as usize);
+            while take > 0 {
+                spare.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                let Some(top) = spare.first_mut() else { break };
+                top.1 -= 1;
+                take -= 1;
+            }
+            let mut at = 0;
+            for n in sizes {
+                groups.push(list[at..at + n].to_vec());
+                at += n;
+            }
+        }
+        groups.sort_by_key(|g| g[0]);
+        let mut made: Vec<(usize, i64)> = vec![];
+        for g in groups {
+            let n = g.len();
+            let mut head: Option<(i64, i64)> = None;
+            for (k, i) in g.into_iter().enumerate() {
+                let p = &preps[i];
+                let seat = (n > 1).then_some(Seat { k: k + 1, n, head });
+                let d = self.insert_prep(board, p, "manual", by, seat)?;
+                if head.is_none() {
+                    head = Some((d.id, p.card));
+                }
+                made.push((i, d.id));
+            }
+        }
+        self.assign_any()?;
+        made.sort();
+        for (_, id) in made {
+            out.ok.push(self.read().dispatch(id)?);
+        }
+        Ok(out)
+    }
+
+    /// 批量派发算空位时：这台机器能不能接这一种卡（接得了这块白板、跑得了这个角色、有能用的这个 agent）
+    fn batch_able(&self, h: &HostRow, board: &BoardRef, p: &Prep) -> Result<bool> {
+        if let Target::Host(x, _) = &p.target {
+            return Ok(x.id == h.id);
+        }
+        if self.read().board_unfit(h, board)?.is_some() {
+            return Ok(false);
+        }
+        if let Some(r) = &p.role {
+            if !h.can_run(&r.id, self.now) {
+                return Ok(false);
+            }
+        }
+        let a = match &p.target {
+            Target::Any(Some(id), _) => h.resolved().into_iter().find(|a| &a.id == id && a.found),
+            _ => h.default_agent(),
+        };
+        Ok(match a {
+            Some(a) => !self.read().agent_tripped(h, &a.id)?,
+            None => false,
+        })
     }
 
     /// 「任意机器」能不能派：至少有一台机器接得了这块白板，并且上面有能用的这个 agent（没指定时是它的默认 agent）。
@@ -710,8 +941,10 @@ impl<'a> W<'a> {
             let Some((_, a)) = agents.into_iter().find(|(n, _)| *n == pick) else { continue };
             let Some((_, c)) = cands.iter_mut().find(|(_, c)| c.name == pick) else { continue };
             let h = hosts.iter().find(|h| h.name == pick).expect("候选来自 hosts");
+            // 批量派发排在这个会话里的几张跟着它走（default/main#737）
             self.tx.execute(
-                "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5 WHERE id = ?1",
+                "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5
+                 WHERE id = ?1 OR (session = ?1 AND state = 'queued')",
                 params![d.id, h.id, h.name, a.id, a.name],
             )?;
             let who = if d.profile.is_empty() { a.name.clone() } else { h.profile(&d.profile).map(|p| p.name.clone()).unwrap_or_else(|| a.name.clone()) };
@@ -732,7 +965,7 @@ impl<'a> W<'a> {
             "UPDATE dispatches SET host_id = 0, host = '',
                     agent = CASE WHEN any_agent = 1 THEN '' ELSE agent END,
                     agent_label = CASE WHEN any_agent = 1 THEN ?2 ELSE agent_label END
-             WHERE id = ?1",
+             WHERE id = ?1 OR (session = ?1 AND state = 'queued')",
             params![d.id, ANY_AGENT_LABEL],
         )?;
         self.track_dispatch(d.board, d.card, &Actor::system(), "dispatch", &format!("任意机器：{} {why}，这次派发收回，重新挑机器", d.host))?;
@@ -741,7 +974,8 @@ impl<'a> W<'a> {
     }
 
     /// 改派：把一条还在排队的派发换到另一台机器（`host` 是机器名），或者交给任意机器（`host` 为空）。
-    /// 已经开始的不能改（先停止它）；会话里排着的由那个会话接着做，也不能改。
+    /// 已经开始的不能改（先停止它）；定时领取的会话里排着的由那个会话接着做，也不能改。批量派发排成的会话里的
+    /// 改派后从会话里拿出来单独排队，会话第 1 张改派时由后面一张接替开头（default/main#737）。
     /// 换到指定机器时：`agent` 没给就沿用原来的，那台机器上用不了时换成它的默认 agent；校验和手动派发一样
     pub fn dispatch_move(&mut self, id: i64, host: Option<&str>, agent: Option<&str>, profile: Option<&str>, by: &Actor) -> Result<Dispatch> {
         let d = self.drow(id)?;
@@ -750,7 +984,7 @@ impl<'a> W<'a> {
             "running" => return Err(BoardError::usage(format!("派发 #{id} 已经开始，不能改派：先停止它，再重新派发"))),
             _ => return Err(BoardError::usage(format!("派发 #{id} 已经结束"))),
         }
-        if d.session != d.id {
+        if d.session != d.id && d.source == "cron" {
             return Err(BoardError::usage(format!("派发 #{id} 排在会话里，由那个会话接着做，不能改派：先取消它，再重新派发")));
         }
         let board = self.board_of(d.board)?;
@@ -769,6 +1003,7 @@ impl<'a> W<'a> {
             None => {
                 let label = self.any_target(&board, agent, role.as_ref())?;
                 let who = role_label(&label, role.as_ref());
+                self.leave_session(&d)?;
                 self.tx.execute(
                     "UPDATE dispatches SET host_id = 0, host = '', agent = ?2, agent_label = ?3, any_host = 1, any_agent = ?4,
                             profile = '', profile_name = '', provider = '', note = '' WHERE id = ?1",
@@ -802,6 +1037,7 @@ impl<'a> W<'a> {
                 if h.id == d.host_id && a.id == d.agent && !d.any_host && same_role {
                     return self.read().dispatch(id);
                 }
+                self.leave_session(&d)?;
                 self.tx.execute(
                     "UPDATE dispatches SET host_id = ?2, host = ?3, agent = ?4, agent_label = ?5, any_host = 0, any_agent = 0,
                             profile = '', profile_name = '', provider = '', note = '' WHERE id = ?1",
@@ -821,6 +1057,17 @@ impl<'a> W<'a> {
             }
         }
         self.read().dispatch(id)
+    }
+
+    /// 改派前离开批量派发排成的会话：排在会话里的拿出来单独排队；会话第 1 张由后面一张接替开头（[`W::regroup`]）
+    fn leave_session(&mut self, d: &DRow) -> Result<()> {
+        if d.session == d.id {
+            self.tx.execute("UPDATE dispatches SET session = NULL WHERE id = ?1", [d.id])?;
+            self.regroup(d.id)
+        } else {
+            self.tx.execute("UPDATE dispatches SET session = NULL WHERE id = ?1", [d.id])?;
+            Ok(())
+        }
     }
 
     /// 机器掉线超过 50 秒，服务端已经把它在跑的派发按「机器掉线」结束、卡片放回了可领取状态；之后机器恢复连接、

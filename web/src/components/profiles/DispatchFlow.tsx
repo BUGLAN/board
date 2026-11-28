@@ -6,11 +6,11 @@
    机器栏最上面是「随机」（默认）：在能跑这个角色的机器里挑空位最多的，都满就排队；点一台机器指定它，点「随机」换回去。
    手动派发不看接单时段。复制提示词在卡片上就有，这里不放。弹出框高度不随选择变
    派发要服务端排进队列才有记录：按钮转圈、禁用直到请求返回、随后的刷新也完成，机器页的旧轮询不会把派发画回去。
-   多张时按单卡同一套规则跳过不能派的（lib/boardSelect dispatchPlan），其余逐张派，单张失败不影响后面的
+   多张时按单卡同一套规则跳过不能派的（lib/boardSelect dispatchPlan），其余一次请求派整批（服务端按会话分组），单张失败不影响别的
    ========================================================================== */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { bulkDispatchToast, dispatchPlan, runBulkDispatch } from '../../lib/boardSelect';
+import { bulkDispatchResult, bulkDispatchToast, dispatchPlan } from '../../lib/boardSelect';
 import { blockOf, dirFresh, hostsOf } from '../../lib/hosts';
 import { groupPick, hostsFor, OP_WORDS, pickHost, profilesOf, ruleGroups, short, soonest, type HostWhy, type RuleGroup } from '../../lib/profiles';
 import { serverMinute } from '../../lib/sched';
@@ -176,7 +176,7 @@ export function DispatchFlow({ cards, move, on }: { cards: number[]; move?: numb
       : !hw.some(x => x.can)
         ? '没有机器能跑这个角色'
         : many
-          ? `${n} 张${where}：逐张排进队列，${got ? `${got.host.name} ${got.why}，有空位的马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `都要排队，${soonest(hw)}。`}`
+          ? `${n} 张${where}：按会话分组排队，${got ? `${got.host.name} ${got.why}，有空位的马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `都要排队，${soonest(hw)}。`}`
           : `${where}：${got ? `${got.host.name} ${got.why}，马上开始。` : pinned ? `${pinned.host.name} ${pinned.why}，排队等它。` : `排队，${soonest(hw)}。`}`;
   const verb = move != null ? '改派' : split ? '拆解' : '派发';
   const heading = many ? `派发 ${cards.length} 张卡片` : `${verb} #${card}`;
@@ -201,9 +201,9 @@ export function DispatchFlow({ cards, move, on }: { cards: number[]; move?: numb
     try {
       const to = pinned ? pinned.host.name : '';
       if (plan) {
-        // 多张：按选中的顺序逐张发，都带这个角色；单张失败只记下来，后面的照常发。全部返回后才关对话框
+        // 多张：一个请求派整批，都带这个角色，服务端按机器「一个会话最多做几张」排成几个会话；单张失败不影响别的。返回后才关对话框
         const { ids, skipped } = plan;
-        const result = await optimistic(null, () => runBulkDispatch(ids, id => api.dispatch(path, id, to, undefined, p.id)));
+        const result = bulkDispatchResult(await optimistic(null, () => api.dispatchBatch(path, ids, to, undefined, p.id)));
         close();
         toast(bulkDispatchToast(result, skipped, where));
         return;
